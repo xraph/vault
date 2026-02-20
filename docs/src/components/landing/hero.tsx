@@ -113,12 +113,7 @@ function MiniVaultDiagram() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="green" delay={3} />
-              <FlowNode
-                label="secret.set"
-                color="gray"
-                size="sm"
-                delay={1.1}
-              />
+              <FlowNode label="secret.set" color="gray" size="sm" delay={1.1} />
               <FlowLine length={24} color="green" delay={4} />
               <StatusBadge status="delivered" label="encrypted" />
             </motion.div>
@@ -131,12 +126,7 @@ function MiniVaultDiagram() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="amber" delay={5} />
-              <FlowNode
-                label="flag.eval"
-                color="gray"
-                size="sm"
-                delay={1.3}
-              />
+              <FlowNode label="flag.eval" color="gray" size="sm" delay={1.3} />
               <FlowLine length={24} color="amber" delay={6} />
               <StatusBadge status="retry" label="true" />
             </motion.div>
@@ -149,12 +139,7 @@ function MiniVaultDiagram() {
               className="flex items-center gap-0"
             >
               <FlowLine length={28} color="green" delay={7} />
-              <FlowNode
-                label="audit.log"
-                color="gray"
-                size="sm"
-                delay={1.5}
-              />
+              <FlowNode label="audit.log" color="gray" size="sm" delay={1.5} />
               <FlowLine length={24} color="green" delay={8} />
               <StatusBadge status="delivered" label="recorded" />
             </motion.div>

@@ -1,4 +1,9 @@
 {
   "title": "Guides",
-  "pages": ["full-example", "forge-extension", "custom-store", "multi-tenant-patterns"]
+  "pages": [
+    "full-example",
+    "forge-extension",
+    "custom-store",
+    "multi-tenant-patterns"
+  ]
 }
