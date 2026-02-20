@@ -1,0 +1,365 @@
+---
+title: Plugin System
+description: Extensible plugin architecture with 8 capability interfaces.
+---
+
+The `plugin` package provides an extensible architecture for adding custom behavior to Vault. Plugins implement a base interface and optionally implement additional capability interfaces. The `Registry` discovers capabilities via type assertion at registration time and categorizes plugins into the appropriate internal collections.
+
+## Architecture
+
+```
+plugin.Registry
+  ├── []Plugin             (all registered plugins)
+  ├── []OnInit             (initialization hooks)
+  ├── []OnShutdown         (shutdown hooks)
+  ├── []SourceProvider     (configuration sources)
+  ├── []EncryptionProvider (encryption key providers)
+  ├── map[string]FlagEvaluator    (custom flag evaluators)
+  ├── []OnSecretAccess     (secret access hooks)
+  ├── []OnConfigChange     (config change hooks)
+  └── map[string]RotationStrategy (custom rotation strategies)
+```
+
+When a plugin is registered, the registry uses Go type switches to discover which capability interfaces it implements and adds it to the appropriate collections. A single plugin can implement any combination of capabilities.
+
+## Installation
+
+```go
+import "github.com/xraph/vault/plugin"
+```
+
+## Base interface
+
+Every plugin must implement the `Plugin` interface:
+
+```go
+type Plugin interface {
+    Name() string
+}
+```
+
+The `Name()` method returns a unique human-readable identifier for the plugin.
+
+## Capability interfaces
+
+Plugins optionally implement any combination of these 8 capability interfaces.
+
+### OnInit
+
+Called during Vault startup. Use for establishing connections, loading configuration, or other one-time setup.
+
+```go
+type OnInit interface {
+    OnInit(ctx context.Context) error
+}
+```
+
+### OnShutdown
+
+Called during Vault shutdown. Use for closing connections, flushing buffers, or other cleanup.
+
+```go
+type OnShutdown interface {
+    OnShutdown(ctx context.Context) error
+}
+```
+
+### SourceProvider
+
+Provides a configuration source with an associated priority. Sources with lower priority numbers take precedence.
+
+```go
+type SourceProvider interface {
+    Source() source.Source
+    Priority() int
+}
+```
+
+```go
+func (p *MyPlugin) Source() source.Source { return p.consulSource }
+func (p *MyPlugin) Priority() int        { return 10 }
+```
+
+### EncryptionProvider
+
+Provides an encryption key provider for secret encryption.
+
+```go
+type EncryptionProvider interface {
+    EncryptionKeyProvider() crypto.EncryptionKeyProvider
+}
+```
+
+```go
+func (p *MyPlugin) EncryptionKeyProvider() crypto.EncryptionKeyProvider {
+    return p.awsKMSProvider
+}
+```
+
+### FlagEvaluator
+
+Provides a custom flag rule evaluator for `RuleCustom` rules. The `EvaluatorName()` must match the `Evaluator` field in the rule's `RuleConfig`.
+
+```go
+type FlagEvaluator interface {
+    EvaluatorName() string
+    Evaluate(ctx context.Context, rule *flag.Rule, tenantID, userID string) (bool, error)
+}
+```
+
+```go
+func (p *MyPlugin) EvaluatorName() string { return "geo-targeting" }
+func (p *MyPlugin) Evaluate(ctx context.Context, rule *flag.Rule, tenantID, userID string) (bool, error) {
+    region := extractRegion(ctx)
+    targetRegion, _ := rule.Config.Params["region"].(string)
+    return region == targetRegion, nil
+}
+```
+
+### OnSecretAccess
+
+Called when a secret is accessed. Use for custom audit logging, metrics, or access control.
+
+```go
+type OnSecretAccess interface {
+    OnSecretAccess(ctx context.Context, key, action string) error
+}
+```
+
+### OnConfigChange
+
+Called when a config entry changes. Use for cache invalidation, notification, or syncing.
+
+```go
+type OnConfigChange interface {
+    OnConfigChange(ctx context.Context, key string, oldValue, newValue any) error
+}
+```
+
+### RotationStrategy
+
+Provides a custom secret rotation strategy. The `RotationName()` is used to look up the strategy by name.
+
+```go
+type RotationStrategy interface {
+    RotationName() string
+    Rotate(ctx context.Context, key string, current []byte) ([]byte, error)
+}
+```
+
+```go
+func (p *MyPlugin) RotationName() string { return "aws-rds" }
+func (p *MyPlugin) Rotate(ctx context.Context, key string, current []byte) ([]byte, error) {
+    newPassword := generateRDSPassword()
+    if err := rotateRDSPassword(ctx, key, newPassword); err != nil {
+        return nil, err
+    }
+    return []byte(newPassword), nil
+}
+```
+
+## Registry
+
+The `Registry` manages plugin registration and provides typed access to plugins by capability.
+
+### Creating a Registry
+
+```go
+func NewRegistry(opts ...RegistryOption) *Registry
+```
+
+```go
+registry := plugin.NewRegistry(
+    plugin.WithLogger(logger),
+)
+```
+
+### RegistryOption
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithLogger` | `WithLogger(l *slog.Logger) RegistryOption` | Sets the logger for registration events |
+
+### Register
+
+Adds a plugin to the registry. Automatically discovers all implemented capability interfaces via type assertion and categorizes the plugin accordingly.
+
+```go
+func (r *Registry) Register(p Plugin)
+```
+
+```go
+registry.Register(&MyPlugin{})
+// logs: plugin: registered  name=my-plugin
+```
+
+The `Register` method performs the following type switches:
+
+```go
+if v, ok := p.(OnInit); ok           { /* add to init hooks */ }
+if v, ok := p.(OnShutdown); ok       { /* add to shutdown hooks */ }
+if v, ok := p.(SourceProvider); ok    { /* add to source providers */ }
+if v, ok := p.(EncryptionProvider); ok { /* add to encryption providers */ }
+if v, ok := p.(FlagEvaluator); ok     { /* index by EvaluatorName() */ }
+if v, ok := p.(OnSecretAccess); ok   { /* add to secret hooks */ }
+if v, ok := p.(OnConfigChange); ok   { /* add to config hooks */ }
+if v, ok := p.(RotationStrategy); ok  { /* index by RotationName() */ }
+```
+
+### Accessor methods
+
+All accessors return copies of the internal slices for thread safety.
+
+| Method | Return type | Description |
+|--------|-------------|-------------|
+| `Plugins()` | `[]Plugin` | All registered plugins |
+| `InitHooks()` | `[]OnInit` | Plugins implementing `OnInit` |
+| `ShutdownHooks()` | `[]OnShutdown` | Plugins implementing `OnShutdown` |
+| `SourceProviders()` | `[]SourceProvider` | Plugins implementing `SourceProvider` |
+| `EncryptionProviders()` | `[]EncryptionProvider` | Plugins implementing `EncryptionProvider` |
+| `FlagEvaluatorByName(name string)` | `FlagEvaluator` | The evaluator with the given name, or `nil` |
+| `SecretAccessHooks()` | `[]OnSecretAccess` | Plugins implementing `OnSecretAccess` |
+| `ConfigChangeHooks()` | `[]OnConfigChange` | Plugins implementing `OnConfigChange` |
+| `RotationStrategyByName(name string)` | `RotationStrategy` | The strategy with the given name, or `nil` |
+
+```go
+// Run all init hooks.
+for _, hook := range registry.InitHooks() {
+    if err := hook.OnInit(ctx); err != nil {
+        log.Fatal(err)
+    }
+}
+
+// Look up a custom flag evaluator.
+eval := registry.FlagEvaluatorByName("geo-targeting")
+if eval != nil {
+    matched, err := eval.Evaluate(ctx, rule, tenantID, userID)
+    // ...
+}
+
+// Look up a rotation strategy.
+strategy := registry.RotationStrategyByName("aws-rds")
+if strategy != nil {
+    newVal, err := strategy.Rotate(ctx, "db-password", currentVal)
+    // ...
+}
+```
+
+## Multi-capability plugin example
+
+A single plugin can implement multiple capability interfaces:
+
+```go
+package myplugin
+
+import (
+    "context"
+    "log/slog"
+
+    "github.com/xraph/vault/crypto"
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/source"
+)
+
+// InfraPlugin provides Consul-based config, AWS KMS encryption,
+// and geo-targeting flag evaluation.
+type InfraPlugin struct {
+    consulSource *consulSource
+    kmsProvider  *awsKMSProvider
+    logger       *slog.Logger
+}
+
+// Name implements plugin.Plugin.
+func (p *InfraPlugin) Name() string { return "infra" }
+
+// OnInit implements plugin.OnInit.
+func (p *InfraPlugin) OnInit(ctx context.Context) error {
+    p.logger.Info("infra plugin initializing")
+    return p.consulSource.Connect(ctx)
+}
+
+// OnShutdown implements plugin.OnShutdown.
+func (p *InfraPlugin) OnShutdown(ctx context.Context) error {
+    p.logger.Info("infra plugin shutting down")
+    return p.consulSource.Close()
+}
+
+// Source implements plugin.SourceProvider.
+func (p *InfraPlugin) Source() source.Source { return p.consulSource }
+
+// Priority implements plugin.SourceProvider.
+func (p *InfraPlugin) Priority() int { return 20 }
+
+// EncryptionKeyProvider implements plugin.EncryptionProvider.
+func (p *InfraPlugin) EncryptionKeyProvider() crypto.EncryptionKeyProvider {
+    return p.kmsProvider
+}
+
+// EvaluatorName implements plugin.FlagEvaluator.
+func (p *InfraPlugin) EvaluatorName() string { return "geo-targeting" }
+
+// Evaluate implements plugin.FlagEvaluator.
+func (p *InfraPlugin) Evaluate(ctx context.Context, rule *flag.Rule, tenantID, userID string) (bool, error) {
+    targetRegion, _ := rule.Config.Params["region"].(string)
+    tenantRegion := lookupTenantRegion(ctx, tenantID)
+    return tenantRegion == targetRegion, nil
+}
+
+// OnSecretAccess implements plugin.OnSecretAccess.
+func (p *InfraPlugin) OnSecretAccess(ctx context.Context, key, action string) error {
+    p.logger.Info("secret accessed", "key", key, "action", action)
+    return nil
+}
+
+// OnConfigChange implements plugin.OnConfigChange.
+func (p *InfraPlugin) OnConfigChange(ctx context.Context, key string, oldValue, newValue any) error {
+    p.logger.Info("config changed", "key", key, "old", oldValue, "new", newValue)
+    return nil
+}
+```
+
+Register the multi-capability plugin:
+
+```go
+registry := plugin.NewRegistry()
+registry.Register(&myplugin.InfraPlugin{
+    consulSource: newConsulSource(),
+    kmsProvider:  newAWSKMSProvider(),
+    logger:       slog.Default(),
+})
+
+// The registry now has:
+// - 1 OnInit hook
+// - 1 OnShutdown hook
+// - 1 SourceProvider
+// - 1 EncryptionProvider
+// - 1 FlagEvaluator ("geo-targeting")
+// - 1 OnSecretAccess hook
+// - 1 OnConfigChange hook
+```
+
+## Lifecycle integration
+
+Use the registry to drive plugin lifecycle during application startup and shutdown:
+
+```go
+// Startup: initialize all plugins.
+for _, hook := range registry.InitHooks() {
+    if err := hook.OnInit(ctx); err != nil {
+        log.Fatalf("plugin init failed: %v", err)
+    }
+}
+
+// Runtime: use capabilities.
+for _, sp := range registry.SourceProviders() {
+    chain.AddSource(sp.Source(), sp.Priority())
+}
+
+// Shutdown: clean up all plugins (reverse order).
+hooks := registry.ShutdownHooks()
+for i := len(hooks) - 1; i >= 0; i-- {
+    if err := hooks[i].OnShutdown(ctx); err != nil {
+        log.Printf("plugin shutdown error: %v", err)
+    }
+}
+```

@@ -1,0 +1,295 @@
+---
+title: Full Example
+description: End-to-end example using secrets, flags, configuration, and rotation.
+---
+
+This guide demonstrates all Vault subsystems working together in a single, runnable Go program: encrypted secrets, feature flags with targeting rules, type-safe configuration, per-tenant overrides, secret rotation, and audit logging.
+
+## Complete program
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/xraph/vault/audit"
+	audithook "github.com/xraph/vault/audit_hook"
+	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/crypto"
+	"github.com/xraph/vault/flag"
+	"github.com/xraph/vault/id"
+	"github.com/xraph/vault/override"
+	"github.com/xraph/vault/rotation"
+	"github.com/xraph/vault/scope"
+	"github.com/xraph/vault/secret"
+	"github.com/xraph/vault/store/memory"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// ─── 1. Create the in-memory store ─────────────────────
+	store := memory.New()
+	_ = store.Migrate(ctx) // no-op for memory store
+
+	// ─── 2. Create an AES-256-GCM encryptor ────────────────
+	key := make([]byte, 32)
+	copy(key, "a]32-byte-key-for-vault-encrypt")
+	enc, err := crypto.NewEncryptor(key)
+	if err != nil {
+		log.Fatal("encryptor:", err)
+	}
+
+	// ─── 3. Secrets: store and retrieve an encrypted secret ──
+	secretSvc := secret.NewService(store, enc, secret.WithAppID("myapp"))
+
+	meta, err := secretSvc.Set(ctx, "database_url",
+		[]byte("postgres://prod:s3cret@db.internal:5432/app"),
+		"", // use default appID
+		secret.WithMetadata(map[string]string{"env": "production"}),
+	)
+	if err != nil {
+		log.Fatal("secret set:", err)
+	}
+	fmt.Printf("[Secret] Stored: key=%s version=%d\n", meta.Key, meta.Version)
+
+	sec, err := secretSvc.Get(ctx, "database_url", "")
+	if err != nil {
+		log.Fatal("secret get:", err)
+	}
+	fmt.Printf("[Secret] Decrypted value: %s\n", string(sec.Value))
+
+	// Update the secret (auto-increments version).
+	meta2, _ := secretSvc.Set(ctx, "database_url",
+		[]byte("postgres://prod:n3wpass@db.internal:5432/app"), "")
+	fmt.Printf("[Secret] Updated: version=%d\n", meta2.Version)
+
+	// List all versions.
+	versions, _ := secretSvc.ListVersions(ctx, "database_url", "")
+	fmt.Printf("[Secret] Total versions: %d\n", len(versions))
+
+	// ─── 4. Feature flags: define, target, and evaluate ────
+	flagDef := &flag.Definition{
+		ID:           id.NewFlagID(),
+		Key:          "new_dashboard",
+		Type:         flag.TypeBool,
+		DefaultValue: false,
+		Description:  "Enable the redesigned dashboard",
+		Tags:         []string{"frontend", "beta"},
+		Enabled:      true,
+		AppID:        "myapp",
+	}
+	if err := store.DefineFlag(ctx, flagDef); err != nil {
+		log.Fatal("define flag:", err)
+	}
+	fmt.Printf("[Flag] Defined: key=%s default=%v\n", flagDef.Key, flagDef.DefaultValue)
+
+	// Add targeting rules: enable for specific tenants and 20% rollout.
+	rules := []*flag.Rule{
+		flag.WhenTenant("tenant-alpha", "tenant-beta").Return(true),
+		flag.Rollout(20).Return(true),
+	}
+	// Set priority (lower = higher priority).
+	rules[0].Priority = 1
+	rules[1].Priority = 2
+	rules[0].FlagKey = "new_dashboard"
+	rules[0].AppID = "myapp"
+	rules[1].FlagKey = "new_dashboard"
+	rules[1].AppID = "myapp"
+
+	if err := store.SetFlagRules(ctx, "new_dashboard", "myapp", rules); err != nil {
+		log.Fatal("set rules:", err)
+	}
+	fmt.Println("[Flag] Rules set: when_tenant (alpha, beta) + 20% rollout")
+
+	// Evaluate without tenant context -- should return default (false).
+	engine := flag.NewEngine(store)
+	val, _ := engine.Evaluate(ctx, "new_dashboard", "myapp")
+	fmt.Printf("[Flag] No tenant context: new_dashboard=%v\n", val)
+
+	// Evaluate with tenant-alpha -- should match WhenTenant rule (true).
+	tenantCtx := context.WithValue(ctx, flag.ContextKeyTenantID, "tenant-alpha")
+	val, _ = engine.Evaluate(tenantCtx, "new_dashboard", "myapp")
+	fmt.Printf("[Flag] tenant-alpha: new_dashboard=%v\n", val)
+
+	// Type-safe flag service.
+	flagSvc := flag.NewService(engine, flag.WithAppID("myapp"))
+	enabled := flagSvc.Bool(tenantCtx, "new_dashboard", false)
+	fmt.Printf("[Flag] Service.Bool: %v\n", enabled)
+
+	// Set a per-tenant override.
+	_ = store.SetFlagTenantOverride(ctx, "new_dashboard", "myapp", "tenant-gamma", true)
+	gammaCtx := context.WithValue(ctx, flag.ContextKeyTenantID, "tenant-gamma")
+	val, _ = engine.Evaluate(gammaCtx, "new_dashboard", "myapp")
+	fmt.Printf("[Flag] tenant-gamma override: new_dashboard=%v\n", val)
+
+	// ─── 5. Configuration: set entries and read type-safe ──
+	cfgSvc := config.NewService(store, config.WithAppID("myapp"))
+
+	_ = cfgSvc.Set(ctx, "rate_limit", 100, "",
+		config.WithDescription("Max requests per minute"),
+		config.WithValueType("int"),
+	)
+	_ = cfgSvc.Set(ctx, "feature_name", "Vault Pro", "")
+	_ = cfgSvc.Set(ctx, "debug_mode", false, "")
+	_ = cfgSvc.Set(ctx, "timeout", "30s", "")
+
+	fmt.Printf("[Config] rate_limit=%d\n", cfgSvc.Int(ctx, "rate_limit", 50))
+	fmt.Printf("[Config] feature_name=%s\n", cfgSvc.String(ctx, "feature_name", ""))
+	fmt.Printf("[Config] debug_mode=%v\n", cfgSvc.Bool(ctx, "debug_mode", true))
+	fmt.Printf("[Config] timeout=%s\n", cfgSvc.Duration(ctx, "timeout", time.Second))
+
+	// ─── 6. Per-tenant config overrides ────────────────────
+	resolver := override.NewResolver(store, store)
+
+	// Set a tenant-specific override for rate_limit.
+	_ = store.SetOverride(ctx, &override.Override{
+		ID:       id.NewOverrideID(),
+		Key:      "rate_limit",
+		Value:    200.0, // JSON numbers are float64
+		AppID:    "myapp",
+		TenantID: "tenant-premium",
+	})
+
+	// Resolve without tenant -- gets app-level default (100).
+	resolved, _ := resolver.Resolve(ctx, "rate_limit", "myapp")
+	fmt.Printf("[Override] No tenant: rate_limit=%v\n", resolved)
+
+	// Resolve with tenant context -- gets override (200).
+	premiumCtx := scope.WithTenantID(ctx, "tenant-premium")
+	resolved, _ = resolver.Resolve(premiumCtx, "rate_limit", "myapp")
+	fmt.Printf("[Override] tenant-premium: rate_limit=%v\n", resolved)
+
+	// Wire the resolver into the config service for automatic override resolution.
+	cfgSvcWithResolver := config.NewService(store,
+		config.WithAppID("myapp"),
+		config.WithResolver(resolver),
+	)
+	limit := cfgSvcWithResolver.Int(premiumCtx, "rate_limit", 50)
+	fmt.Printf("[Config+Override] tenant-premium rate_limit=%d\n", limit)
+
+	// ─── 7. Secret rotation ────────────────────────────────
+	// Save a rotation policy.
+	now := time.Now().UTC()
+	next := now.Add(24 * time.Hour)
+	policy := &rotation.Policy{
+		ID:             id.NewRotationID(),
+		SecretKey:      "database_url",
+		AppID:          "myapp",
+		Interval:       24 * time.Hour,
+		Enabled:        true,
+		NextRotationAt: &next,
+	}
+	_ = store.SaveRotationPolicy(ctx, policy)
+	fmt.Printf("[Rotation] Policy saved: interval=%s\n", policy.Interval)
+
+	// Create a rotation manager with a rotator function.
+	mgr := rotation.NewManager(store, secretSvc,
+		rotation.WithAppID("myapp"),
+		rotation.WithCheckInterval(1*time.Minute),
+	)
+
+	// Register a rotator that generates a new password.
+	mgr.RegisterRotator("database_url", func(ctx context.Context, current []byte) ([]byte, error) {
+		// In production, this would call your password rotation API.
+		return []byte("postgres://prod:rotated_pass@db.internal:5432/app"), nil
+	})
+
+	// Trigger an immediate rotation.
+	if err := mgr.RotateNow(ctx, "database_url", ""); err != nil {
+		log.Fatal("rotate:", err)
+	}
+
+	rotated, _ := secretSvc.Get(ctx, "database_url", "")
+	fmt.Printf("[Rotation] After rotation: version=%d value=%s\n",
+		rotated.Version, string(rotated.Value))
+
+	// Check rotation records.
+	records, _ := store.ListRotationRecords(ctx, "database_url", "myapp", rotation.ListOpts{})
+	fmt.Printf("[Rotation] Records: %d (v%d -> v%d)\n",
+		len(records), records[0].OldVersion, records[0].NewVersion)
+
+	// ─── 8. Audit logging ──────────────────────────────────
+	// Create an audit hook that prints events.
+	hook := audithook.New(audithook.RecorderFunc(
+		func(ctx context.Context, event *audithook.AuditEvent) error {
+			fmt.Printf("[AuditHook] action=%s resource=%s key=%s outcome=%s\n",
+				event.Action, event.Resource, event.Key, event.Outcome)
+			return nil
+		},
+	))
+
+	// Create the audit logger with the hook.
+	logger := audit.NewLogger(store, audit.WithHook(hook))
+
+	// Log an access event with scope context.
+	scopedCtx := scope.WithScope(ctx, "myapp", "tenant-alpha", "user-42", "10.0.0.1")
+	logger.LogAccess(scopedCtx, "database_url", audithook.ActionSecretAccessed, audithook.ResourceSecret)
+
+	// Log a failure event.
+	logger.LogFailure(scopedCtx, "missing_key", audithook.ActionSecretAccessed, audithook.ResourceSecret,
+		fmt.Errorf("secret not found"))
+
+	// Query audit entries.
+	entries, _ := store.ListAudit(ctx, "myapp", audit.ListOpts{Limit: 10})
+	fmt.Printf("[Audit] Total entries: %d\n", len(entries))
+	for _, e := range entries {
+		fmt.Printf("  - action=%s key=%s outcome=%s tenant=%s user=%s\n",
+			e.Action, e.Key, e.Outcome, e.TenantID, e.UserID)
+	}
+
+	fmt.Println("\nAll subsystems demonstrated successfully.")
+}
+```
+
+## Expected output
+
+```
+[Secret] Stored: key=database_url version=1
+[Secret] Decrypted value: postgres://prod:s3cret@db.internal:5432/app
+[Secret] Updated: version=2
+[Secret] Total versions: 2
+[Flag] Defined: key=new_dashboard default=false
+[Flag] Rules set: when_tenant (alpha, beta) + 20% rollout
+[Flag] No tenant context: new_dashboard=false
+[Flag] tenant-alpha: new_dashboard=true
+[Flag] Service.Bool: true
+[Flag] tenant-gamma override: new_dashboard=true
+[Config] rate_limit=100
+[Config] feature_name=Vault Pro
+[Config] debug_mode=false
+[Config] timeout=30s
+[Override] No tenant: rate_limit=100
+[Override] tenant-premium: rate_limit=200
+[Config+Override] tenant-premium rate_limit=200
+[Rotation] Policy saved: interval=24h0m0s
+[Rotation] After rotation: version=3 value=postgres://prod:rotated_pass@db.internal:5432/app
+[Rotation] Records: 1 (v2 -> v3)
+[AuditHook] action=secret.accessed resource=secret key=database_url outcome=success
+[AuditHook] action=secret.accessed resource=secret key=missing_key outcome=failure
+[Audit] Total entries: 2
+  - action=secret.accessed key=missing_key outcome=failure tenant=tenant-alpha user=user-42
+  - action=secret.accessed key=database_url outcome=success tenant=tenant-alpha user=user-42
+All subsystems demonstrated successfully.
+```
+
+## Subsystem summary
+
+| Subsystem | Key types used | What was demonstrated |
+|-----------|---------------|----------------------|
+| **Secrets** | `secret.Service`, `crypto.Encryptor` | Set, Get, auto-versioning, encryption/decryption |
+| **Flags** | `flag.Definition`, `flag.Engine`, `flag.Service`, `flag.Rule` | Define, WhenTenant, Rollout, per-tenant override, type-safe evaluation |
+| **Config** | `config.Service` | Set with options, type-safe readers (Int, String, Bool, Duration) |
+| **Overrides** | `override.Resolver`, `override.Override` | Per-tenant config override, resolver integration with config service |
+| **Rotation** | `rotation.Manager`, `rotation.Policy`, `rotation.Rotator` | Policy creation, rotator registration, immediate rotation, record history |
+| **Audit** | `audit.Logger`, `audithook.Extension` | Access logging, failure logging, hook broadcasting, scope extraction |
+
+## Next steps
+
+- [Custom Store](/docs/guides/custom-store) -- Implement your own store backend
+- [Multi-Tenant Patterns](/docs/guides/multi-tenant-patterns) -- Advanced tenant isolation strategies
+- [Forge Integration](/docs/guides/forge-extension) -- Use Vault in a Forge application

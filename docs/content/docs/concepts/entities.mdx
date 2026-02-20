@@ -1,0 +1,406 @@
+---
+title: Entities
+description: Core data types used across Vault.
+---
+
+Vault defines a set of entity types across its subsystem packages. All entities embed a shared `vault.Entity` base type (or carry equivalent timestamp fields) and use `id.ID` identifiers with entity-specific prefixes.
+
+## vault.Entity (base type)
+
+Every mutable Vault entity embeds `vault.Entity`, which provides standard timestamp fields.
+
+```go
+import "github.com/xraph/vault"
+
+type Entity struct {
+    CreatedAt time.Time `json:"created_at"`
+    UpdatedAt time.Time `json:"updated_at"`
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `vault.NewEntity()` | Creates a new Entity with both timestamps set to `time.Now().UTC()`. |
+| `e.Touch()` | Updates `UpdatedAt` to `time.Now().UTC()`. |
+
+---
+
+## Secret
+
+**Package:** `github.com/xraph/vault/secret`
+**ID prefix:** `sec_`
+
+A `Secret` represents a stored secret with its encrypted value, version, and metadata.
+
+```go
+type Secret struct {
+    vault.Entity
+    ID              id.ID             `json:"id"`
+    Key             string            `json:"key"`
+    Value           []byte            `json:"-"`    // decrypted value -- never serialized
+    EncryptedValue  []byte            `json:"-"`    // encrypted at rest
+    Version         int64             `json:"version"`
+    EncryptionAlg   string            `json:"encryption_alg"`
+    EncryptionKeyID string            `json:"encryption_key_id"`
+    ExpiresAt       *time.Time        `json:"expires_at,omitempty"`
+    AppID           string            `json:"app_id"`
+    Metadata        map[string]string `json:"metadata,omitempty"`
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ID` | Unique identifier with `sec_` prefix. |
+| `Key` | Human-readable key (e.g. `"openai-api-key"`). Unique within an app. |
+| `Value` | Decrypted plaintext. Never serialized to JSON -- only available after `Service.Get`. |
+| `EncryptedValue` | AES-256-GCM ciphertext with prepended nonce. Never serialized to JSON. |
+| `Version` | Auto-incrementing version number. Starts at 1, incremented on every `Set`. |
+| `EncryptionAlg` | Algorithm label (e.g. `"AES-256-GCM"`). Set automatically by the service. |
+| `EncryptionKeyID` | Identifier of the encryption key used (for key rotation tracking). |
+| `ExpiresAt` | Optional expiration time. |
+| `AppID` | Application scope identifier. |
+| `Metadata` | Arbitrary key-value metadata. |
+
+### Secret.Meta
+
+`Meta` is the public-facing metadata for a secret. It never includes the value or encrypted value.
+
+```go
+type Meta struct {
+    ID        id.ID             `json:"id"`
+    Key       string            `json:"key"`
+    Version   int64             `json:"version"`
+    ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+    AppID     string            `json:"app_id"`
+    Metadata  map[string]string `json:"metadata,omitempty"`
+    CreatedAt time.Time         `json:"created_at"`
+    UpdatedAt time.Time         `json:"updated_at"`
+}
+```
+
+`Secret.ToMeta()` converts a `Secret` to its `Meta` representation.
+
+### Secret.Version
+
+`Version` records a historical version of a secret.
+
+```go
+type Version struct {
+    ID             id.ID     `json:"id"`              // ver_ prefix
+    SecretKey      string    `json:"secret_key"`
+    AppID          string    `json:"app_id"`
+    Version        int64     `json:"version"`
+    EncryptedValue []byte    `json:"-"`
+    CreatedBy      string    `json:"created_by"`
+    CreatedAt      time.Time `json:"created_at"`
+}
+```
+
+---
+
+## Flag Definition
+
+**Package:** `github.com/xraph/vault/flag`
+**ID prefix:** `flag_`
+
+A `Definition` represents a feature flag definition with its type, default value, variants, and enabled state.
+
+```go
+type Definition struct {
+    vault.Entity
+    ID           id.ID             `json:"id"`
+    Key          string            `json:"key"`
+    Type         Type              `json:"type"`
+    DefaultValue any               `json:"default_value"`
+    Description  string            `json:"description"`
+    Tags         []string          `json:"tags,omitempty"`
+    Variants     []Variant         `json:"variants,omitempty"`
+    Enabled      bool              `json:"enabled"`
+    AppID        string            `json:"app_id"`
+    Metadata     map[string]string `json:"metadata,omitempty"`
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `Key` | Unique flag key within an app (e.g. `"new-dashboard"`). |
+| `Type` | Value type: `TypeBool`, `TypeString`, `TypeInt`, `TypeFloat`, or `TypeJSON`. |
+| `DefaultValue` | Value returned when no rules match or the flag is disabled. |
+| `Tags` | Optional string tags for filtering and grouping. |
+| `Variants` | Named variants for A/B testing (each has a `Value` and `Description`). |
+| `Enabled` | When `false`, the engine always returns `DefaultValue` regardless of rules. |
+
+### Flag types
+
+```go
+const (
+    TypeBool   Type = "bool"
+    TypeString Type = "string"
+    TypeInt    Type = "int"
+    TypeFloat  Type = "float"
+    TypeJSON   Type = "json"
+)
+```
+
+### Variant
+
+```go
+type Variant struct {
+    Value       any    `json:"value"`
+    Description string `json:"description"`
+}
+```
+
+---
+
+## Flag Rule
+
+**Package:** `github.com/xraph/vault/flag`
+**ID prefix:** `rule_`
+
+A `Rule` represents a targeting rule for a feature flag. Rules are evaluated in priority order (lower number = higher priority).
+
+```go
+type Rule struct {
+    vault.Entity
+    ID          id.ID      `json:"id"`
+    FlagKey     string     `json:"flag_key"`
+    AppID       string     `json:"app_id"`
+    Priority    int        `json:"priority"`      // lower = higher priority
+    Type        RuleType   `json:"type"`
+    Config      RuleConfig `json:"config"`
+    ReturnValue any        `json:"return_value"`
+}
+```
+
+### Rule types
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `RuleWhenTenant` | `"when_tenant"` | Match specific tenant IDs |
+| `RuleWhenTenantTag` | `"when_tenant_tag"` | Match tenants with a specific tag key/value |
+| `RuleWhenUser` | `"when_user"` | Match specific user IDs |
+| `RuleRollout` | `"rollout"` | Deterministic percentage-based rollout (0-100) |
+| `RuleSchedule` | `"schedule"` | Active only within a time window |
+| `RuleCustom` | `"custom"` | Plugin-evaluated via a named evaluator |
+
+### RuleConfig
+
+```go
+type RuleConfig struct {
+    TenantIDs  []string       `json:"tenant_ids,omitempty"`   // WhenTenant
+    TagKey     string         `json:"tag_key,omitempty"`      // WhenTenantTag
+    TagValue   string         `json:"tag_value,omitempty"`    // WhenTenantTag
+    UserIDs    []string       `json:"user_ids,omitempty"`     // WhenUser
+    Percentage int            `json:"percentage,omitempty"`   // Rollout (0-100)
+    StartAt    *time.Time     `json:"start_at,omitempty"`     // Schedule
+    EndAt      *time.Time     `json:"end_at,omitempty"`       // Schedule
+    Evaluator  string         `json:"evaluator,omitempty"`    // Custom (plugin name)
+    Params     map[string]any `json:"params,omitempty"`       // Custom (plugin params)
+}
+```
+
+### Rule constructors
+
+The `flag` package provides convenience constructors for common rule types:
+
+```go
+// Match specific tenants.
+rule := flag.WhenTenant("tenant-1", "tenant-2").Return(true)
+
+// Match tenants with a tag.
+rule := flag.WhenTenantTag("plan", "enterprise").Return(true)
+
+// Match specific users.
+rule := flag.WhenUser("user-42", "user-99").Return(true)
+
+// Percentage rollout (deterministic hash of tenantID:flagKey).
+rule := flag.Rollout(25).Return(true)
+
+// Time-window schedule.
+rule := flag.Schedule(startTime, endTime).Return(true)
+```
+
+The `.Return(value)` method sets the value returned when the rule matches.
+
+### Flag TenantOverride
+
+A `TenantOverride` is a direct per-tenant flag value that bypasses all rules.
+
+```go
+type TenantOverride struct {
+    vault.Entity
+    ID       id.ID  `json:"id"`
+    FlagKey  string `json:"flag_key"`
+    AppID    string `json:"app_id"`
+    TenantID string `json:"tenant_id"`
+    Value    any    `json:"value"`
+}
+```
+
+---
+
+## Config Entry
+
+**Package:** `github.com/xraph/vault/config`
+**ID prefix:** `cfg_`
+
+An `Entry` represents a runtime configuration entry with a typed value and version history.
+
+```go
+type Entry struct {
+    vault.Entity
+    ID          id.ID             `json:"id"`
+    Key         string            `json:"key"`
+    Value       any               `json:"value"`
+    ValueType   string            `json:"value_type"`
+    Version     int64             `json:"version"`
+    Description string            `json:"description"`
+    AppID       string            `json:"app_id"`
+    Metadata    map[string]string `json:"metadata,omitempty"`
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `Key` | Unique config key within an app (e.g. `"rate-limit"`). |
+| `Value` | The configuration value (`any` type -- coerced via type-safe accessors). |
+| `ValueType` | Type label: `"string"`, `"bool"`, `"int"`, `"float"`, or `"json"`. Auto-inferred if not set. |
+| `Version` | Auto-incrementing version number. |
+| `Description` | Human-readable description. |
+
+### Config EntryVersion
+
+```go
+type EntryVersion struct {
+    ID        id.ID     `json:"id"`           // ver_ prefix
+    ConfigKey string    `json:"config_key"`
+    AppID     string    `json:"app_id"`
+    Version   int64     `json:"version"`
+    Value     any       `json:"value"`
+    CreatedBy string    `json:"created_by"`
+    CreatedAt time.Time `json:"created_at"`
+}
+```
+
+---
+
+## Override
+
+**Package:** `github.com/xraph/vault/override`
+**ID prefix:** `ovr_`
+
+An `Override` represents a per-tenant override for a config entry. When a tenant has an override for a key, the `override.Resolver` returns the override value instead of the app-level config.
+
+```go
+type Override struct {
+    vault.Entity
+    ID       id.ID             `json:"id"`
+    Key      string            `json:"key"`
+    Value    any               `json:"value"`
+    AppID    string            `json:"app_id"`
+    TenantID string            `json:"tenant_id"`
+    Metadata map[string]string `json:"metadata,omitempty"`
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `Key` | The config key this override applies to. |
+| `Value` | The tenant-specific value that replaces the app-level config. |
+| `TenantID` | The tenant this override applies to. |
+
+---
+
+## Rotation Policy
+
+**Package:** `github.com/xraph/vault/rotation`
+**ID prefix:** `rot_`
+
+A `Policy` defines a scheduled rotation policy for a secret.
+
+```go
+type Policy struct {
+    vault.Entity
+    ID             id.ID         `json:"id"`
+    SecretKey      string        `json:"secret_key"`
+    AppID          string        `json:"app_id"`
+    Interval       time.Duration `json:"interval"`
+    Enabled        bool          `json:"enabled"`
+    LastRotatedAt  *time.Time    `json:"last_rotated_at,omitempty"`
+    NextRotationAt *time.Time    `json:"next_rotation_at,omitempty"`
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `SecretKey` | The secret key this policy applies to. |
+| `Interval` | How often the secret should be rotated (e.g. `24 * time.Hour`). |
+| `Enabled` | When `false`, the rotation manager skips this policy. |
+| `LastRotatedAt` | Timestamp of the last successful rotation. |
+| `NextRotationAt` | Computed as `LastRotatedAt + Interval`. The manager rotates when `time.Now()` is past this time. |
+
+---
+
+## Rotation Record
+
+**Package:** `github.com/xraph/vault/rotation`
+**ID prefix:** `rot_`
+
+A `Record` captures a completed rotation event.
+
+```go
+type Record struct {
+    ID         id.ID     `json:"id"`
+    SecretKey  string    `json:"secret_key"`
+    AppID      string    `json:"app_id"`
+    OldVersion int64     `json:"old_version"`
+    NewVersion int64     `json:"new_version"`
+    RotatedBy  string    `json:"rotated_by"`
+    RotatedAt  time.Time `json:"rotated_at"`
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `OldVersion` | Secret version before rotation. |
+| `NewVersion` | Secret version after rotation. |
+| `RotatedBy` | Identifier of who/what triggered the rotation (e.g. `"rotation-manager"`). |
+
+---
+
+## Audit Entry
+
+**Package:** `github.com/xraph/vault/audit`
+**ID prefix:** `vaudit_`
+
+An `Entry` is a single audit log entry recording a Vault operation.
+
+```go
+type Entry struct {
+    ID        id.ID          `json:"id"`
+    Action    string         `json:"action"`
+    Resource  string         `json:"resource"`
+    Key       string         `json:"key"`
+    AppID     string         `json:"app_id"`
+    TenantID  string         `json:"tenant_id,omitempty"`
+    UserID    string         `json:"user_id,omitempty"`
+    IP        string         `json:"ip,omitempty"`
+    Outcome   string         `json:"outcome"`
+    Metadata  map[string]any `json:"metadata,omitempty"`
+    CreatedAt time.Time      `json:"created_at"`
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `Action` | The operation performed (e.g. `"secret.accessed"`, `"flag.evaluated"`, `"config.set"`). |
+| `Resource` | The resource type (`"secret"`, `"flag"`, `"config"`, `"override"`). |
+| `Key` | The entity key that was operated on. |
+| `Outcome` | `"success"` or `"failure"`. |
+| `TenantID` | Extracted from context via `scope.FromContext`. |
+| `UserID` | Extracted from context via `scope.FromContext`. |
+| `IP` | Client IP extracted from context via `scope.FromContext`. |
+| `Metadata` | Additional context (e.g. `{"error": "..."}` on failure). |
+
+Audit entries are append-only. There is no update or delete operation in the `audit.Store` interface.

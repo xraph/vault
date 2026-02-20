@@ -1,0 +1,163 @@
+---
+title: Memory Store
+description: In-memory store for development and testing.
+---
+
+The memory store is a fully in-memory implementation of `store.Store`. It keeps all data in Go maps protected by a `sync.RWMutex`, making it safe for concurrent access. No external dependencies are required.
+
+## Installation
+
+The memory store is included in the Vault module. No additional packages are needed.
+
+```go
+import "github.com/xraph/vault/store/memory"
+```
+
+## Creating a store
+
+```go
+store := memory.New()
+```
+
+`memory.New()` returns a `*memory.Store` with all internal maps initialized and ready to use.
+
+## Implemented interfaces
+
+The memory store satisfies all six subsystem store interfaces plus the three lifecycle methods that form the composite `store.Store` interface:
+
+| Interface | Package | Methods |
+|-----------|---------|---------|
+| `secret.Store` | `github.com/xraph/vault/secret` | `GetSecret`, `SetSecret`, `DeleteSecret`, `ListSecrets`, `GetSecretVersion`, `ListSecretVersions` |
+| `flag.Store` | `github.com/xraph/vault/flag` | `DefineFlag`, `GetFlagDefinition`, `ListFlagDefinitions`, `DeleteFlagDefinition`, `SetFlagRules`, `GetFlagRules`, `SetFlagTenantOverride`, `GetFlagTenantOverride`, `DeleteFlagTenantOverride`, `ListFlagTenantOverrides` |
+| `config.Store` | `github.com/xraph/vault/config` | `GetConfig`, `SetConfig`, `DeleteConfig`, `ListConfig`, `GetConfigVersion`, `ListConfigVersions` |
+| `override.Store` | `github.com/xraph/vault/override` | `GetOverride`, `SetOverride`, `DeleteOverride`, `ListOverridesByTenant`, `ListOverridesByKey` |
+| `rotation.Store` | `github.com/xraph/vault/rotation` | `SaveRotationPolicy`, `GetRotationPolicy`, `ListRotationPolicies`, `DeleteRotationPolicy`, `RecordRotation`, `ListRotationRecords` |
+| `audit.Store` | `github.com/xraph/vault/audit` | `RecordAudit`, `ListAudit`, `ListAuditByKey` |
+
+Compile-time checks guarantee that the store satisfies every interface:
+
+```go
+var (
+    _ secret.Store   = (*Store)(nil)
+    _ flag.Store     = (*Store)(nil)
+    _ config.Store   = (*Store)(nil)
+    _ override.Store = (*Store)(nil)
+    _ rotation.Store = (*Store)(nil)
+    _ audit.Store    = (*Store)(nil)
+)
+```
+
+## Concurrency safety
+
+All methods acquire either a read lock (`RLock`) or a write lock (`Lock`) on the internal `sync.RWMutex`. Data returned from reads is deep-copied so that callers cannot mutate internal state. Byte slices (secret values) and `any` values (config, flag defaults) are copied via `copyBytes` and JSON round-trip respectively.
+
+## Lifecycle methods
+
+| Method | Behaviour |
+|--------|-----------|
+| `Migrate(ctx)` | No-op -- returns `nil` |
+| `Ping(ctx)` | Always returns `nil` |
+| `Close()` | No-op -- returns `nil` |
+
+The memory store has no schema to create and no connection to check, so all lifecycle methods succeed immediately.
+
+## Auto-versioning
+
+Both `SetSecret` and `SetConfig` perform automatic versioning. When an entry already exists, the version number is incremented and a version record is appended to the version history. When creating a new entry, the version starts at `1`.
+
+## Internal key scheme
+
+Entities are keyed using composite strings:
+
+| Entity | Key format |
+|--------|------------|
+| Secrets, Flags, Config, Rotation | `key:appID` |
+| Overrides, Flag Tenant Overrides | `key:appID:tenantID` |
+
+This ensures that entries with the same key but different app IDs or tenant IDs remain isolated.
+
+## When to use
+
+- **Unit tests** -- No setup, no teardown, zero dependencies.
+- **Development** -- Quick iteration without running a database.
+- **CI pipelines** -- Fast, deterministic tests with no external services.
+- **Prototyping** -- Explore Vault's API surface without configuring infrastructure.
+
+## When not to use
+
+- **Production** -- Data is lost on process restart.
+- **Multi-instance deployments** -- Each process has its own isolated store.
+- **Performance benchmarking** -- Behaviour characteristics differ from a real database.
+
+## Complete example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/crypto"
+    "github.com/xraph/vault/secret"
+    "github.com/xraph/vault/store/memory"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create the in-memory store.
+    store := memory.New()
+
+    // Migrate is a no-op but good practice to call.
+    if err := store.Migrate(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Create an encryptor with a 32-byte key.
+    key := make([]byte, 32)
+    copy(key, "my-secret-encryption-key-32byte")
+    enc, err := crypto.NewEncryptor(key)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Use the store with a secret service.
+    secretSvc := secret.NewService(store, enc, secret.WithAppID("myapp"))
+    meta, err := secretSvc.Set(ctx, "database_url", []byte("postgres://localhost/mydb"), "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Stored secret: key=%s version=%d\n", meta.Key, meta.Version)
+
+    // Retrieve and decrypt.
+    sec, err := secretSvc.Get(ctx, "database_url", "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Retrieved: %s\n", string(sec.Value))
+
+    // Use the store with a config service.
+    cfgSvc := config.NewService(store, config.WithAppID("myapp"))
+    if err := cfgSvc.Set(ctx, "rate_limit", 100, ""); err != nil {
+        log.Fatal(err)
+    }
+
+    limit := cfgSvc.Int(ctx, "rate_limit", 50)
+    fmt.Printf("Rate limit: %d\n", limit)
+}
+```
+
+## Swapping to PostgreSQL
+
+The memory store implements the same `store.Store` interface as the PostgreSQL and Bun stores. Switching to a production backend is a single-line change:
+
+```go
+// Development
+store := memory.New()
+
+// Production
+store, err := postgres.New(ctx, connString)
+```

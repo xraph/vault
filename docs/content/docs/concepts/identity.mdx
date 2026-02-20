@@ -1,0 +1,204 @@
+---
+title: Identity (TypeID)
+description: Type-safe, K-sortable entity identifiers.
+---
+
+Vault uses [TypeID](https://github.com/jetify-com/typeid) for all entity identifiers. TypeIDs are type-prefixed, K-sortable, UUIDv7-based identifiers that encode the entity type in the prefix and guarantee global uniqueness.
+
+The `id` package (`github.com/xraph/vault/id`) wraps `go.jetify.com/typeid` with a single `ID` struct, entity-specific prefixes, convenience constructors, and typed parsers.
+
+## What a TypeID looks like
+
+```
+sec_01h2xcejqtf2nbrexx3vqjhp41
+flag_01h455vbjdx6ycf56rnatbxqkh
+rule_01h455vbjdx6ycf56rnatbxqki
+cfg_01h455vbjdx6ycf56rnatbxqkj
+```
+
+The prefix encodes the entity type. The suffix is a base32-encoded UUIDv7, which is K-sortable (lexicographically ordered by creation time) and globally unique.
+
+## The `ID` struct
+
+All Vault entity IDs use a single `id.ID` struct:
+
+```go
+// ID is a type-safe, K-sortable identifier for any Vault entity.
+// It wraps a typeid.AnyID with a known prefix. The zero value is a nil/invalid ID.
+type ID struct {
+    inner typeid.AnyID
+    valid bool
+}
+```
+
+The zero value of `ID` is nil/invalid. Use `IsNil()` to check whether an ID has been set.
+
+## Entity prefixes
+
+The `Prefix` type is a string alias used to define known prefixes for each entity type.
+
+```go
+type Prefix string
+```
+
+| Prefix constant | Value | Entity | Example |
+|-----------------|-------|--------|---------|
+| `PrefixSecret` | `sec` | Secret | `sec_01h2xcejqtf2nbrexx3vqjhp41` |
+| `PrefixFlag` | `flag` | Flag definition | `flag_01h455vbjdx6ycf56rnatbxqkh` |
+| `PrefixRule` | `rule` | Targeting rule | `rule_01h455vbjdx6ycf56rnatbxqki` |
+| `PrefixConfig` | `cfg` | Config entry | `cfg_01h455vbjdx6ycf56rnatbxqkj` |
+| `PrefixOverride` | `ovr` | Override | `ovr_01h455vbjdx6ycf56rnatbxqkk` |
+| `PrefixRotation` | `rot` | Rotation policy | `rot_01h455vbjdx6ycf56rnatbxqkl` |
+| `PrefixVersion` | `ver` | Version record | `ver_01h455vbjdx6ycf56rnatbxqkm` |
+| `PrefixAudit` | `vaudit` | Audit entry | `vaudit_01h455vbjdx6ycf56rnatbxqkn` |
+
+## Creating IDs
+
+### Generic constructor
+
+Create an ID with any prefix:
+
+```go
+import "github.com/xraph/vault/id"
+
+secretID := id.New(id.PrefixSecret)
+fmt.Println(secretID.String()) // sec_01h2xcejqtf2nbrexx3vqjhp41
+```
+
+### Typed constructors
+
+Each entity type has a convenience constructor that calls `New` with the correct prefix:
+
+```go
+secretID  := id.NewSecretID()    // sec_...
+flagID    := id.NewFlagID()      // flag_...
+ruleID    := id.NewRuleID()      // rule_...
+configID  := id.NewConfigID()    // cfg_...
+overrideID := id.NewOverrideID() // ovr_...
+rotationID := id.NewRotationID() // rot_...
+versionID := id.NewVersionID()   // ver_...
+auditID   := id.NewAuditID()    // vaudit_...
+```
+
+## Parsing IDs
+
+### Parse any TypeID
+
+`Parse` accepts any valid TypeID string and returns an `ID`:
+
+```go
+parsed, err := id.Parse("sec_01h2xcejqtf2nbrexx3vqjhp41")
+if err != nil {
+    // not a valid TypeID
+}
+fmt.Println(parsed.IDPrefix()) // "sec"
+```
+
+Passing an empty string returns a nil ID without error.
+
+### Parse with prefix validation
+
+`ParseWithPrefix` validates that the parsed ID has the expected prefix. This prevents accidentally passing a flag ID where a secret ID is expected:
+
+```go
+// Succeeds -- prefix matches.
+parsed, err := id.ParseWithPrefix("sec_01h2xcejqtf2nbrexx3vqjhp41", id.PrefixSecret)
+
+// Fails -- prefix mismatch.
+_, err = id.ParseWithPrefix("flag_01h455vbjdx6ycf56rnatbxqkh", id.PrefixSecret)
+// err: id: expected prefix "sec", got "flag"
+```
+
+### Typed parsers
+
+Each entity type has a convenience parser that calls `ParseWithPrefix` with the correct prefix:
+
+```go
+secretID, err  := id.ParseSecretID("sec_01h2xcejqtf2nbrexx3vqjhp41")    // ok
+flagID, err    := id.ParseFlagID("flag_01h455vbjdx6ycf56rnatbxqkh")     // ok
+ruleID, err    := id.ParseRuleID("rule_01h455vbjdx6ycf56rnatbxqki")     // ok
+configID, err  := id.ParseConfigID("cfg_01h455vbjdx6ycf56rnatbxqkj")    // ok
+overrideID, err := id.ParseOverrideID("ovr_01h455vbjdx6ycf56rnatbxqkk") // ok
+rotationID, err := id.ParseRotationID("rot_01h455vbjdx6ycf56rnatbxqkl") // ok
+versionID, err := id.ParseVersionID("ver_01h455vbjdx6ycf56rnatbxqkm")   // ok
+auditID, err   := id.ParseAuditID("vaudit_01h455vbjdx6ycf56rnatbxqkn")  // ok
+
+// Type mismatch returns an error.
+_, err = id.ParseSecretID("flag_01h455vbjdx6ycf56rnatbxqkh")
+// err: id: expected prefix "sec", got "flag"
+```
+
+`ParseAny` is an alias for `Parse` that accepts any prefix:
+
+```go
+anyID, err := id.ParseAny("sec_01h2xcejqtf2nbrexx3vqjhp41")
+```
+
+## Instance methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `String` | `func (i ID) String() string` | Returns the full TypeID string (e.g. `sec_01h...`). Returns `""` for a nil ID. |
+| `IDPrefix` | `func (i ID) IDPrefix() Prefix` | Returns the entity type prefix (e.g. `PrefixSecret`). Returns `""` for a nil ID. |
+| `IsNil` | `func (i ID) IsNil() bool` | Returns `true` if this ID is the zero value (not set). |
+
+```go
+secretID := id.NewSecretID()
+
+fmt.Println(secretID.String())    // "sec_01h2xcejqtf2nbrexx3vqjhp41"
+fmt.Println(secretID.IDPrefix())  // "sec"
+fmt.Println(secretID.IsNil())     // false
+
+var nilID id.ID
+fmt.Println(nilID.IsNil())        // true
+fmt.Println(nilID.String())       // ""
+```
+
+## Serialization
+
+`id.ID` implements standard Go serialization interfaces for JSON, text, and database storage.
+
+### JSON
+
+```go
+// MarshalJSON produces a quoted string.
+data, _ := json.Marshal(secretID)
+// data: "sec_01h2xcejqtf2nbrexx3vqjhp41"
+
+// UnmarshalJSON parses from a quoted string.
+var parsed id.ID
+_ = json.Unmarshal(data, &parsed)
+```
+
+A nil ID serializes to `""`. JSON `null` and `""` both unmarshal to a nil ID.
+
+### Text
+
+```go
+// MarshalText / UnmarshalText for encoding.TextMarshaler / TextUnmarshaler.
+text, _ := secretID.MarshalText()
+// text: []byte("sec_01h2xcejqtf2nbrexx3vqjhp41")
+```
+
+### Database (sql.Scanner / driver.Valuer)
+
+```go
+// Value returns the string representation for database INSERT/UPDATE.
+val, _ := secretID.Value()
+// val: "sec_01h2xcejqtf2nbrexx3vqjhp41" (driver.Value)
+
+// Scan reads from a database column (string or []byte).
+var scanned id.ID
+_ = scanned.Scan("sec_01h2xcejqtf2nbrexx3vqjhp41")
+```
+
+A nil ID returns `nil` from `Value()`. `Scan(nil)` produces a nil ID.
+
+## K-sortability
+
+Because TypeIDs embed UUIDv7, they are K-sortable: IDs created later sort after IDs created earlier. This means:
+
+- Database indexes on ID columns are naturally insertion-ordered.
+- You can range-scan by ID to page through results in creation order without a separate `created_at` index.
+
+Vault's store implementations rely on this property for efficient pagination and ordering.

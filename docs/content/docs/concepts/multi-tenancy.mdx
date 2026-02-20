@@ -1,0 +1,207 @@
+---
+title: Multi-Tenancy
+description: Context-based tenant isolation across all subsystems.
+---
+
+Vault is tenant-scoped by design. Every operation -- secrets, flags, config, overrides, rotation, and audit -- uses context values to identify the caller. The `scope` package provides the helpers for injecting and extracting these values.
+
+## The scope package
+
+**Import:** `github.com/xraph/vault/scope`
+
+The `scope` package defines four context keys and helper functions for reading and writing them. All keys are of type `scope.ContextKey` (a `string` alias).
+
+### Context keys
+
+```go
+type ContextKey string
+
+const (
+    KeyAppID    ContextKey = "vault.app_id"
+    KeyTenantID ContextKey = "vault.tenant_id"
+    KeyUserID   ContextKey = "vault.user_id"
+    KeyIP       ContextKey = "vault.ip"
+)
+```
+
+| Key | Constant | Purpose |
+|-----|----------|---------|
+| `vault.app_id` | `scope.KeyAppID` | Application identifier -- scopes all entities to a logical application. |
+| `vault.tenant_id` | `scope.KeyTenantID` | Tenant identifier -- isolates data between tenants in a multi-tenant deployment. |
+| `vault.user_id` | `scope.KeyUserID` | User identifier -- used by flag rules (`WhenUser`) and audit logging. |
+| `vault.ip` | `scope.KeyIP` | Client IP address -- recorded in audit log entries. |
+
+### Setting scope values
+
+Each key has a dedicated `With*` helper that returns a new context with the value set:
+
+```go
+import "github.com/xraph/vault/scope"
+
+ctx := context.Background()
+ctx = scope.WithAppID(ctx, "myapp")
+ctx = scope.WithTenantID(ctx, "tenant-1")
+ctx = scope.WithUserID(ctx, "user-42")
+ctx = scope.WithIP(ctx, "10.0.0.1")
+```
+
+Or set all four values at once with `WithScope`:
+
+```go
+ctx = scope.WithScope(ctx, "myapp", "tenant-1", "user-42", "10.0.0.1")
+```
+
+The signature is:
+
+```go
+func WithScope(ctx context.Context, appID, tenantID, userID, ip string) context.Context
+```
+
+### Reading scope values
+
+`FromContext` extracts all four scope values from a context. Missing values are returned as empty strings.
+
+```go
+appID, tenantID, userID, ip := scope.FromContext(ctx)
+```
+
+The signature is:
+
+```go
+func FromContext(ctx context.Context) (appID, tenantID, userID, ip string)
+```
+
+## Cross-package consistency
+
+The context keys used by `scope`, `flag`, and `override` are intentionally identical. This means a single `scope.WithTenantID` call propagates the tenant ID to every subsystem automatically.
+
+| Package | Constant | Value |
+|---------|----------|-------|
+| `scope` | `scope.KeyTenantID` | `"vault.tenant_id"` |
+| `flag` | `flag.ContextKeyTenantID` | `"vault.tenant_id"` |
+| `override` | `override.ContextKeyTenantID` | `"vault.tenant_id"` |
+| `scope` | `scope.KeyUserID` | `"vault.user_id"` |
+| `flag` | `flag.ContextKeyUserID` | `"vault.user_id"` |
+
+Because these values match, you set scope once and all subsystems read from the same context keys:
+
+```go
+// Set once.
+ctx = scope.WithTenantID(ctx, "tenant-1")
+ctx = scope.WithUserID(ctx, "user-42")
+
+// flag.Engine reads vault.tenant_id and vault.user_id for rule evaluation.
+val, _ := engine.Evaluate(ctx, "new-dashboard", "myapp")
+
+// override.Resolver reads vault.tenant_id for per-tenant override lookup.
+val, _ = resolver.Resolve(ctx, "rate-limit", "myapp")
+
+// audit.Logger reads all four values for the audit entry.
+logger.LogAccess(ctx, "api-key", "secret.accessed", "secret")
+```
+
+## How each subsystem uses scope
+
+### Secret service
+
+The `secret.Service` uses `appID` as a parameter (not from context) to scope secrets. The context is passed through to the store and to `OnAccess`/`OnMutate` callbacks, which can extract scope values for audit logging.
+
+```go
+// appID is explicit in the API.
+sec, err := secretSvc.Get(ctx, "api-key", "myapp")
+```
+
+### Flag engine
+
+The `flag.Engine` reads `vault.tenant_id` and `vault.user_id` from context to evaluate targeting rules.
+
+- **Tenant override check** -- if `tenantID` is non-empty, checks for a direct tenant override first.
+- **Rule evaluation** -- `WhenTenant` rules match against `tenantID`, `WhenUser` rules match against `userID`, and `Rollout` rules hash `tenantID:flagKey` for deterministic bucketing.
+
+```go
+ctx = scope.WithTenantID(ctx, "tenant-1")
+ctx = scope.WithUserID(ctx, "user-42")
+
+// Engine extracts tenant and user from context.
+enabled := flagSvc.Bool(ctx, "new-dashboard", false)
+```
+
+### Override resolver
+
+The `override.Resolver` reads `vault.tenant_id` from context. If a tenant ID is present, it checks for a per-tenant override before falling back to the app-level config.
+
+```go
+ctx = scope.WithTenantID(ctx, "tenant-1")
+
+// Resolver checks for tenant-1's override of "rate-limit" first.
+val, _ := resolver.Resolve(ctx, "rate-limit", "myapp")
+```
+
+Resolution order:
+1. If `tenantID` is in context, look up `override.Store.GetOverride(key, appID, tenantID)`.
+2. If found, return the override value.
+3. If not found (or no tenant in context), fall back to `config.Store.GetConfig(key, appID)`.
+
+### Audit logger
+
+The `audit.Logger` calls `scope.FromContext(ctx)` to extract all four values and writes them into the audit entry:
+
+```go
+// Internally, the logger does:
+appID, tenantID, userID, ip := scope.FromContext(ctx)
+
+entry := &audit.Entry{
+    AppID:    appID,
+    TenantID: tenantID,
+    UserID:   userID,
+    IP:       ip,
+    // ...
+}
+```
+
+This ensures every audit entry has full provenance without the caller needing to pass these values explicitly.
+
+## Typical HTTP middleware setup
+
+In a web application, set scope values in an HTTP middleware so all downstream handlers have a scoped context:
+
+```go
+func scopeMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        ctx := r.Context()
+
+        // Extract from auth token, headers, or session.
+        ctx = scope.WithAppID(ctx, "myapp")
+        ctx = scope.WithTenantID(ctx, extractTenantID(r))
+        ctx = scope.WithUserID(ctx, extractUserID(r))
+        ctx = scope.WithIP(ctx, r.RemoteAddr)
+
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+## Mono-tenant deployments
+
+For single-tenant deployments, use a constant tenant ID:
+
+```go
+ctx = scope.WithTenantID(ctx, "default")
+```
+
+All Vault features work identically -- the tenant ID simply never varies. You can later migrate to multi-tenant by changing this value per request.
+
+## Background jobs
+
+For background jobs (rotation, cleanup, cron), inject scope explicitly from stored identifiers rather than relying on an HTTP request context:
+
+```go
+func rotateSecrets(mgr *rotation.Manager, appID string) {
+    ctx := context.Background()
+    ctx = scope.WithAppID(ctx, appID)
+    ctx = scope.WithTenantID(ctx, "system")
+    ctx = scope.WithUserID(ctx, "rotation-manager")
+
+    mgr.RotateNow(ctx, "database-password", appID)
+}
+```

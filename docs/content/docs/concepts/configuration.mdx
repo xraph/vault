@@ -1,0 +1,223 @@
+---
+title: Configuration
+description: Configuring a Vault instance.
+---
+
+The root `vault` package defines the `Config` struct, `DefaultConfig()` defaults, and `Option` functions for configuring a Vault instance. The `Storer` interface defines the minimal contract for store backends at the root level.
+
+## vault.Config
+
+`Config` holds the configuration for a Vault instance.
+
+```go
+import "github.com/xraph/vault"
+
+type Config struct {
+    // AppID is the application identifier used for scoping secrets, flags, and config.
+    AppID string `json:"app_id" yaml:"app_id"`
+
+    // EncryptionKey is the master encryption key (32 bytes for AES-256-GCM).
+    // If empty, encryption is disabled (not recommended for production).
+    EncryptionKey []byte `json:"-" yaml:"-"`
+
+    // EncryptionKeyEnv is the environment variable name for the encryption key.
+    // Used as a fallback if EncryptionKey is not set directly.
+    EncryptionKeyEnv string `json:"encryption_key_env" yaml:"encryption_key_env"`
+
+    // FlagCacheTTL is the TTL for the flag evaluation cache.
+    // Defaults to 30 seconds.
+    FlagCacheTTL time.Duration `json:"flag_cache_ttl" yaml:"flag_cache_ttl"`
+
+    // SourcePollInterval is the interval for polling database sources.
+    // Defaults to 30 seconds.
+    SourcePollInterval time.Duration `json:"source_poll_interval" yaml:"source_poll_interval"`
+}
+```
+
+### Field reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `AppID` | `string` | `""` | Application identifier used for scoping all entities. |
+| `EncryptionKey` | `[]byte` | `nil` | 32-byte AES-256-GCM master key. Excluded from JSON/YAML serialization. |
+| `EncryptionKeyEnv` | `string` | `""` | Environment variable name for the encryption key (fallback). |
+| `FlagCacheTTL` | `time.Duration` | `30s` | TTL for the flag evaluation cache. |
+| `SourcePollInterval` | `time.Duration` | `30s` | Interval for polling database configuration sources. |
+
+### DefaultConfig
+
+`DefaultConfig()` returns a `Config` with sensible defaults:
+
+```go
+cfg := vault.DefaultConfig()
+// cfg.FlagCacheTTL = 30 * time.Second
+// cfg.SourcePollInterval = 30 * time.Second
+```
+
+## Option functions
+
+`Option` is a function type that configures a `Vault` instance. Options are passed to the `Vault` constructor.
+
+```go
+type Option func(*Vault)
+```
+
+### Available options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithAppID` | `WithAppID(appID string) Option` | Sets the application identifier used for scoping. |
+| `WithEncryptionKey` | `WithEncryptionKey(key []byte) Option` | Sets the 32-byte AES-256-GCM master encryption key. |
+| `WithEncryptionKeyEnv` | `WithEncryptionKeyEnv(envVar string) Option` | Sets the environment variable name for the encryption key. |
+| `WithLogger` | `WithLogger(l *slog.Logger) Option` | Sets the structured logger for internal events. |
+| `WithConfig` | `WithConfig(cfg Config) Option` | Sets the entire configuration directly, overriding defaults. |
+
+### Usage
+
+```go
+import (
+    "log/slog"
+    "github.com/xraph/vault"
+)
+
+v := &vault.Vault{}
+opts := []vault.Option{
+    vault.WithAppID("myapp"),
+    vault.WithEncryptionKey([]byte("my-32-byte-secret-key-for-vault!")),
+    vault.WithLogger(slog.Default()),
+}
+
+for _, opt := range opts {
+    opt(v)
+}
+```
+
+### Loading the encryption key from an environment variable
+
+When `EncryptionKey` is not set directly, use `WithEncryptionKeyEnv` to specify an environment variable. The `crypto.EnvKeyProvider` reads and decodes the key at runtime:
+
+```go
+import "github.com/xraph/vault/crypto"
+
+// Set the env var name on the config.
+vault.WithEncryptionKeyEnv("VAULT_ENCRYPTION_KEY")
+
+// At runtime, read the key.
+provider := crypto.NewEnvKeyProvider("VAULT_ENCRYPTION_KEY")
+key, err := provider.GetKey(ctx)
+```
+
+The provider auto-detects hex encoding (64 characters = 32 bytes) and base64 encoding (standard, URL-safe, or raw/no-padding).
+
+## Storer interface
+
+The root `vault` package defines a minimal `Storer` interface to avoid import cycles. The full `store.Store` interface in the `store` package composes all subsystem store interfaces.
+
+```go
+type Storer interface {
+    Ping(ctx interface{ Deadline() (interface{}, bool) }) error
+    Close() error
+}
+```
+
+The `store.Store` interface (in `github.com/xraph/vault/store`) extends this with the full set of subsystem interfaces:
+
+```go
+type Store interface {
+    secret.Store
+    flag.Store
+    config.Store
+    override.Store
+    rotation.Store
+    audit.Store
+
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```
+
+All three backends (`memory`, `postgres`, `bun`) implement this composite interface.
+
+## Per-service configuration
+
+Each service package defines its own option functions for service-level configuration. These are independent of the root `vault.Option` functions.
+
+### secret.ServiceOption
+
+```go
+import "github.com/xraph/vault/secret"
+
+svc := secret.NewService(store, enc,
+    secret.WithAppID("myapp"),
+    secret.WithOnAccess(func(ctx context.Context, key, appID string) {
+        // called after every Get/GetVersion
+    }),
+    secret.WithOnMutate(func(ctx context.Context, action, key, appID string) {
+        // called after every Set/Delete
+    }),
+)
+```
+
+### flag.EngineOption
+
+```go
+import "github.com/xraph/vault/flag"
+
+engine := flag.NewEngine(store,
+    flag.WithCacheTTL(30 * time.Second),
+)
+```
+
+### flag.ServiceOption
+
+```go
+flagSvc := flag.NewService(engine,
+    flag.WithAppID("myapp"),
+)
+```
+
+### config.ServiceOption
+
+```go
+import "github.com/xraph/vault/config"
+
+configSvc := config.NewService(store,
+    config.WithAppID("myapp"),
+    config.WithResolver(resolver),
+)
+```
+
+### override.ResolverOption
+
+```go
+import "github.com/xraph/vault/override"
+
+resolver := override.NewResolver(configStore, overrideStore,
+    override.WithCacheTTL(30 * time.Second),
+    override.WithLogger(slog.Default()),
+)
+```
+
+### rotation.ManagerOption
+
+```go
+import "github.com/xraph/vault/rotation"
+
+mgr := rotation.NewManager(store, secretSvc,
+    rotation.WithAppID("myapp"),
+    rotation.WithCheckInterval(1 * time.Minute),
+    rotation.WithLogger(slog.Default()),
+)
+```
+
+### audit.LoggerOption
+
+```go
+import "github.com/xraph/vault/audit"
+
+logger := audit.NewLogger(store,
+    audit.WithHook(auditHookExtension),
+    audit.WithLogger(slog.Default()),
+)
+```

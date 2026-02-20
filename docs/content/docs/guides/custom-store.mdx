@@ -1,0 +1,377 @@
+---
+title: Custom Store
+description: Implementing a custom Vault store backend.
+---
+
+All Vault store backends implement a single composite interface: `store.Store`. This guide breaks down the interface, explains each sub-store, and walks through building a custom implementation from scratch.
+
+## The composite store interface
+
+The `store.Store` interface in `github.com/xraph/vault/store` embeds six subsystem interfaces plus three lifecycle methods:
+
+```go
+package store
+
+type Store interface {
+    secret.Store
+    flag.Store
+    config.Store
+    override.Store
+    rotation.Store
+    audit.Store
+
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```
+
+## Sub-store interfaces
+
+### secret.Store (6 methods)
+
+```go
+package secret
+
+type Store interface {
+    GetSecret(ctx context.Context, key, appID string) (*Secret, error)
+    SetSecret(ctx context.Context, s *Secret) error
+    DeleteSecret(ctx context.Context, key, appID string) error
+    ListSecrets(ctx context.Context, appID string, opts ListOpts) ([]*Meta, error)
+    GetSecretVersion(ctx context.Context, key, appID string, version int64) (*Secret, error)
+    ListSecretVersions(ctx context.Context, key, appID string) ([]*Version, error)
+}
+```
+
+Key behaviours:
+- `SetSecret` must auto-increment the `Version` field when the key already exists.
+- `SetSecret` must create a `Version` record alongside the secret update.
+- `ListSecrets` returns `[]*Meta` (never includes the secret value).
+- `DeleteSecret` removes the secret and all its versions.
+- Return `vault.ErrSecretNotFound` when a secret does not exist.
+
+### flag.Store (10 methods)
+
+```go
+package flag
+
+type Store interface {
+    DefineFlag(ctx context.Context, f *Definition) error
+    GetFlagDefinition(ctx context.Context, key, appID string) (*Definition, error)
+    ListFlagDefinitions(ctx context.Context, appID string, opts ListOpts) ([]*Definition, error)
+    DeleteFlagDefinition(ctx context.Context, key, appID string) error
+    SetFlagRules(ctx context.Context, key, appID string, rules []*Rule) error
+    GetFlagRules(ctx context.Context, key, appID string) ([]*Rule, error)
+    SetFlagTenantOverride(ctx context.Context, key, appID, tenantID string, value any) error
+    GetFlagTenantOverride(ctx context.Context, key, appID, tenantID string) (any, error)
+    DeleteFlagTenantOverride(ctx context.Context, key, appID, tenantID string) error
+    ListFlagTenantOverrides(ctx context.Context, key, appID string) ([]*TenantOverride, error)
+}
+```
+
+Key behaviours:
+- `SetFlagRules` replaces all rules for a flag (delete-and-insert pattern).
+- `GetFlagRules` returns rules sorted by `Priority` ascending (lower = higher priority).
+- `DeleteFlagDefinition` must also delete associated rules and tenant overrides.
+- Return `vault.ErrFlagNotFound` when a flag does not exist.
+- Return `vault.ErrOverrideNotFound` when a tenant override does not exist.
+
+### config.Store (6 methods)
+
+```go
+package config
+
+type Store interface {
+    GetConfig(ctx context.Context, key, appID string) (*Entry, error)
+    SetConfig(ctx context.Context, e *Entry) error
+    DeleteConfig(ctx context.Context, key, appID string) error
+    ListConfig(ctx context.Context, appID string, opts ListOpts) ([]*Entry, error)
+    GetConfigVersion(ctx context.Context, key, appID string, version int64) (*Entry, error)
+    ListConfigVersions(ctx context.Context, key, appID string) ([]*EntryVersion, error)
+}
+```
+
+Key behaviours:
+- `SetConfig` must auto-increment the `Version` field when the key already exists.
+- `SetConfig` must create an `EntryVersion` record alongside the entry update.
+- `DeleteConfig` removes the entry and all its versions.
+- Return `vault.ErrConfigNotFound` when a config entry does not exist.
+
+### override.Store (5 methods)
+
+```go
+package override
+
+type Store interface {
+    GetOverride(ctx context.Context, key, appID, tenantID string) (*Override, error)
+    SetOverride(ctx context.Context, o *Override) error
+    DeleteOverride(ctx context.Context, key, appID, tenantID string) error
+    ListOverridesByTenant(ctx context.Context, appID, tenantID string) ([]*Override, error)
+    ListOverridesByKey(ctx context.Context, key, appID string) ([]*Override, error)
+}
+```
+
+Key behaviours:
+- Overrides are scoped by the triple `(key, appID, tenantID)`.
+- `ListOverridesByTenant` returns all overrides for a specific tenant across all keys.
+- `ListOverridesByKey` returns all tenant overrides for a specific config key.
+- Return `vault.ErrOverrideNotFound` when an override does not exist.
+
+### rotation.Store (6 methods)
+
+```go
+package rotation
+
+type Store interface {
+    SaveRotationPolicy(ctx context.Context, p *Policy) error
+    GetRotationPolicy(ctx context.Context, key, appID string) (*Policy, error)
+    ListRotationPolicies(ctx context.Context, appID string) ([]*Policy, error)
+    DeleteRotationPolicy(ctx context.Context, key, appID string) error
+    RecordRotation(ctx context.Context, r *Record) error
+    ListRotationRecords(ctx context.Context, key, appID string, opts ListOpts) ([]*Record, error)
+}
+```
+
+Key behaviours:
+- `SaveRotationPolicy` is an upsert: creates or updates the policy for `(secretKey, appID)`.
+- `ListRotationRecords` returns records sorted by `RotatedAt` descending (newest first).
+- Return `vault.ErrRotationNotFound` when a rotation policy does not exist.
+
+### audit.Store (3 methods)
+
+```go
+package audit
+
+type Store interface {
+    RecordAudit(ctx context.Context, e *Entry) error
+    ListAudit(ctx context.Context, appID string, opts ListOpts) ([]*Entry, error)
+    ListAuditByKey(ctx context.Context, key, appID string, opts ListOpts) ([]*Entry, error)
+}
+```
+
+Key behaviours:
+- The audit store is append-only. There is no `DeleteAudit` method.
+- `ListAudit` returns entries sorted by `CreatedAt` descending (newest first).
+- `ListAuditByKey` filters by a specific key within an app.
+- Both list methods support `Offset` and `Limit` for pagination.
+
+## Total method count
+
+| Sub-store | Methods |
+|-----------|---------|
+| `secret.Store` | 6 |
+| `flag.Store` | 10 |
+| `config.Store` | 6 |
+| `override.Store` | 5 |
+| `rotation.Store` | 6 |
+| `audit.Store` | 3 |
+| Lifecycle (`Migrate`, `Ping`, `Close`) | 3 |
+| **Total** | **39** |
+
+## Compile-time interface check
+
+Always add a compile-time assertion at the top of your store file. This ensures your implementation satisfies the interface at build time rather than at runtime:
+
+```go
+var _ store.Store = (*MyStore)(nil)
+```
+
+Or verify each sub-interface individually:
+
+```go
+var (
+    _ secret.Store   = (*MyStore)(nil)
+    _ flag.Store     = (*MyStore)(nil)
+    _ config.Store   = (*MyStore)(nil)
+    _ override.Store = (*MyStore)(nil)
+    _ rotation.Store = (*MyStore)(nil)
+    _ audit.Store    = (*MyStore)(nil)
+)
+```
+
+## Step-by-step implementation guide
+
+### Step 1: Define the struct
+
+```go
+package redisstore
+
+import (
+    "context"
+    "log/slog"
+
+    "github.com/redis/go-redis/v9"
+
+    "github.com/xraph/vault/audit"
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/override"
+    "github.com/xraph/vault/rotation"
+    "github.com/xraph/vault/secret"
+    "github.com/xraph/vault/store"
+)
+
+// Compile-time interface check.
+var _ store.Store = (*Store)(nil)
+
+type Store struct {
+    client *redis.Client
+    logger *slog.Logger
+}
+
+func New(client *redis.Client) *Store {
+    return &Store{
+        client: client,
+        logger: slog.Default(),
+    }
+}
+```
+
+### Step 2: Implement lifecycle methods
+
+```go
+func (s *Store) Migrate(_ context.Context) error {
+    // Redis is schema-less -- nothing to migrate.
+    return nil
+}
+
+func (s *Store) Ping(ctx context.Context) error {
+    return s.client.Ping(ctx).Err()
+}
+
+func (s *Store) Close() error {
+    return s.client.Close()
+}
+```
+
+### Step 3: Implement secret.Store
+
+Design a key scheme for Redis. A common pattern:
+
+| Entity | Redis key pattern | Value |
+|--------|------------------|-------|
+| Secret | `vault:secret:{appID}:{key}` | JSON-serialized `secret.Secret` |
+| Secret versions | `vault:secret_versions:{appID}:{key}` | Redis list of JSON `secret.Version` |
+
+```go
+import (
+    "encoding/json"
+
+    "github.com/xraph/vault"
+    "github.com/xraph/vault/id"
+    "github.com/xraph/vault/secret"
+)
+
+func secretKey(key, appID string) string {
+    return "vault:secret:" + appID + ":" + key
+}
+
+func (s *Store) GetSecret(ctx context.Context, key, appID string) (*secret.Secret, error) {
+    data, err := s.client.Get(ctx, secretKey(key, appID)).Bytes()
+    if err != nil {
+        if err == redis.Nil {
+            return nil, vault.ErrSecretNotFound
+        }
+        return nil, err
+    }
+    var sec secret.Secret
+    if err := json.Unmarshal(data, &sec); err != nil {
+        return nil, err
+    }
+    return &sec, nil
+}
+
+func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
+    k := secretKey(sec.Key, sec.AppID)
+
+    // Auto-version: check if secret exists.
+    existing, err := s.GetSecret(ctx, sec.Key, sec.AppID)
+    if err == nil {
+        sec.Version = existing.Version + 1
+    } else {
+        sec.Version = 1
+    }
+
+    // Store the secret.
+    data, _ := json.Marshal(sec)
+    if err := s.client.Set(ctx, k, data, 0).Err(); err != nil {
+        return err
+    }
+
+    // Store the version record.
+    ver := &secret.Version{
+        ID:             id.NewVersionID(),
+        SecretKey:      sec.Key,
+        AppID:          sec.AppID,
+        Version:        sec.Version,
+        EncryptedValue: sec.EncryptedValue,
+    }
+    verData, _ := json.Marshal(ver)
+    return s.client.RPush(ctx, k+":versions", verData).Err()
+}
+
+// ... implement DeleteSecret, ListSecrets, GetSecretVersion, ListSecretVersions
+```
+
+### Step 4: Implement remaining sub-stores
+
+Follow the same pattern for each sub-store:
+
+1. Define a Redis key scheme for the entity.
+2. Use JSON serialization for complex types.
+3. Return the appropriate sentinel error (e.g. `vault.ErrFlagNotFound`) when an entity is not found.
+4. Implement pagination using `Offset` and `Limit` from the `ListOpts` structs.
+5. Ensure atomicity where needed (e.g. version auto-increment).
+
+### Step 5: Test with the store test suite
+
+Write tests that exercise the full `store.Store` interface. A common approach is to define a shared test function:
+
+```go
+func TestRedisStore(t *testing.T) {
+    client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+    store := redisstore.New(client)
+
+    ctx := context.Background()
+    _ = store.Migrate(ctx)
+
+    // Test secret CRUD.
+    t.Run("secrets", func(t *testing.T) {
+        sec := &secret.Secret{
+            Key:            "test-key",
+            AppID:          "testapp",
+            EncryptedValue: []byte("encrypted"),
+        }
+        err := store.SetSecret(ctx, sec)
+        require.NoError(t, err)
+        require.Equal(t, int64(1), sec.Version)
+
+        got, err := store.GetSecret(ctx, "test-key", "testapp")
+        require.NoError(t, err)
+        require.Equal(t, "test-key", got.Key)
+    })
+
+    // ... test all other sub-stores
+}
+```
+
+## Error handling
+
+Your custom store must return Vault's sentinel errors for "not found" cases:
+
+| Sentinel error | When to return |
+|---------------|----------------|
+| `vault.ErrSecretNotFound` | `GetSecret`, `DeleteSecret`, `GetSecretVersion` when key does not exist |
+| `vault.ErrFlagNotFound` | `GetFlagDefinition`, `DeleteFlagDefinition`, `SetFlagRules`, `GetFlagRules` when flag does not exist |
+| `vault.ErrConfigNotFound` | `GetConfig`, `DeleteConfig`, `GetConfigVersion` when config entry does not exist |
+| `vault.ErrOverrideNotFound` | `GetOverride`, `DeleteOverride`, `GetFlagTenantOverride`, `DeleteFlagTenantOverride` when override does not exist |
+| `vault.ErrRotationNotFound` | `GetRotationPolicy`, `DeleteRotationPolicy` when policy does not exist |
+
+The flag engine, override resolver, and service layers depend on these exact errors for control flow. Using `errors.Is` checks will fail if you return different errors.
+
+## Tips
+
+- **Deep-copy returned values** -- The memory store deep-copies all returned data to prevent callers from mutating internal state. Your store should do the same if you cache data in-process.
+- **Pagination** -- All list methods accept `Offset` and `Limit` via their respective `ListOpts`. Apply these consistently.
+- **Sorting** -- `ListSecrets` sorts by key ascending. `ListAudit` and `ListRotationRecords` sort by timestamp descending. Check the memory store implementation for the expected sort order of each method.
+- **Idempotent writes** -- `SetSecret`, `SetConfig`, `DefineFlag`, `SetOverride`, and `SaveRotationPolicy` should all be upserts (create or update).

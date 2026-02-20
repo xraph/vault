@@ -1,0 +1,371 @@
+---
+title: Multi-Tenant Patterns
+description: Patterns for tenant isolation, data scoping, and crypto-shredding.
+---
+
+Vault is designed for multi-tenant applications from the ground up. Every entity (secrets, flags, config, overrides, audit entries) is scoped by `appID`, and many are further scoped by `tenantID`. This guide covers the key patterns for tenant isolation.
+
+## Scope propagation through HTTP middleware
+
+The `scope` package provides context-injection helpers. In an HTTP application, set the scope in middleware so that all downstream Vault operations are automatically scoped to the correct tenant:
+
+```go
+package middleware
+
+import (
+    "net/http"
+    "strings"
+
+    "github.com/xraph/vault/scope"
+)
+
+// TenantScope extracts tenant information from the request and
+// injects it into the context for all downstream Vault operations.
+func TenantScope(appID string) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            ctx := r.Context()
+
+            // Always set the application ID.
+            ctx = scope.WithAppID(ctx, appID)
+
+            // Extract tenant ID from header (or JWT, subdomain, API key, etc.).
+            tenantID := r.Header.Get("X-Tenant-ID")
+            if tenantID == "" {
+                // Fallback: extract from JWT claims, subdomain, or path.
+                tenantID = extractTenantFromJWT(r)
+            }
+            if tenantID != "" {
+                ctx = scope.WithTenantID(ctx, tenantID)
+            }
+
+            // Extract user identity.
+            if userID := r.Header.Get("X-User-ID"); userID != "" {
+                ctx = scope.WithUserID(ctx, userID)
+            }
+
+            // Capture IP for audit.
+            ip := r.Header.Get("X-Forwarded-For")
+            if ip == "" {
+                ip = strings.Split(r.RemoteAddr, ":")[0]
+            }
+            ctx = scope.WithIP(ctx, ip)
+
+            next.ServeHTTP(w, r.WithContext(ctx))
+        })
+    }
+}
+```
+
+### Extracting scope values
+
+Anywhere in your application, you can read back the full scope:
+
+```go
+appID, tenantID, userID, ip := scope.FromContext(ctx)
+```
+
+The `scope` package context keys are the same constants used by `flag.ContextKeyTenantID` and `override.ContextKeyTenantID`, so values injected via `scope.WithTenantID` are automatically visible to the flag engine and override resolver without any extra wiring.
+
+| Context key | scope constant | flag constant | override constant |
+|-------------|---------------|---------------|-------------------|
+| `"vault.tenant_id"` | `scope.KeyTenantID` | `flag.ContextKeyTenantID` | `override.ContextKeyTenantID` |
+| `"vault.user_id"` | `scope.KeyUserID` | `flag.ContextKeyUserID` | -- |
+| `"vault.app_id"` | `scope.KeyAppID` | -- | -- |
+| `"vault.ip"` | `scope.KeyIP` | -- | -- |
+
+## Per-tenant feature flag overrides
+
+The flag system supports two levels of tenant customization: targeting rules and direct overrides.
+
+### Targeting rules with WhenTenant
+
+Targeting rules match specific tenant IDs and return a custom value when matched:
+
+```go
+import "github.com/xraph/vault/flag"
+
+// Enable the feature for specific tenants.
+rule := flag.WhenTenant("tenant-alpha", "tenant-beta").Return(true)
+rule.Priority = 1
+rule.FlagKey = "new_feature"
+rule.AppID = "myapp"
+
+err := store.SetFlagRules(ctx, "new_feature", "myapp", []*flag.Rule{rule})
+```
+
+Other rule types for tenant targeting:
+
+```go
+// Tag-based targeting (match tenants with a specific tag).
+tagRule := flag.WhenTenantTag("plan", "enterprise").Return(true)
+
+// Percentage rollout (deterministic hash of tenantID + flagKey).
+rolloutRule := flag.Rollout(25).Return(true) // 25% of tenants
+
+// Scheduled activation.
+scheduleRule := flag.Schedule(startTime, endTime).Return(true)
+```
+
+### Direct tenant overrides
+
+For immediate, unconditional overrides, use `SetFlagTenantOverride`:
+
+```go
+// Force-enable a flag for a specific tenant regardless of rules.
+err := store.SetFlagTenantOverride(ctx, "new_feature", "myapp", "tenant-vip", true)
+```
+
+Direct overrides take precedence over all targeting rules during evaluation. The evaluation order is:
+
+1. If the flag is disabled, return the default value.
+2. If a tenant override exists for the current tenant, return its value.
+3. Evaluate targeting rules by priority (lowest number first).
+4. If no rule matches, return the default value.
+
+### Listing and managing overrides
+
+```go
+// List all tenant overrides for a flag.
+overrides, err := store.ListFlagTenantOverrides(ctx, "new_feature", "myapp")
+for _, o := range overrides {
+    fmt.Printf("tenant=%s value=%v\n", o.TenantID, o.Value)
+}
+
+// Remove a tenant override.
+err = store.DeleteFlagTenantOverride(ctx, "new_feature", "myapp", "tenant-vip")
+```
+
+## Per-tenant config overrides
+
+The `override` package provides a separate override layer for runtime configuration. This allows you to customize config values on a per-tenant basis without changing the base config.
+
+### Setting overrides
+
+```go
+import (
+    "github.com/xraph/vault/id"
+    "github.com/xraph/vault/override"
+)
+
+err := store.SetOverride(ctx, &override.Override{
+    ID:       id.NewOverrideID(),
+    Key:      "rate_limit",
+    Value:    500,
+    AppID:    "myapp",
+    TenantID: "tenant-enterprise",
+    Metadata: map[string]string{"reason": "enterprise plan"},
+})
+```
+
+### Resolving with the override.Resolver
+
+The `override.Resolver` automatically checks for tenant overrides when resolving config values:
+
+```go
+import "github.com/xraph/vault/override"
+
+resolver := override.NewResolver(store, store,
+    override.WithCacheTTL(30 * time.Second),
+)
+
+// Without tenant context -- returns base config value.
+val, err := resolver.Resolve(ctx, "rate_limit", "myapp")
+// val = 100 (the base config value)
+
+// With tenant context -- returns the tenant override.
+tenantCtx := scope.WithTenantID(ctx, "tenant-enterprise")
+val, err = resolver.Resolve(tenantCtx, "rate_limit", "myapp")
+// val = 500 (the tenant override)
+```
+
+### Integrating with the config service
+
+Wire the resolver into the config service for automatic override resolution in type-safe accessors:
+
+```go
+import "github.com/xraph/vault/config"
+
+cfgSvc := config.NewService(store,
+    config.WithAppID("myapp"),
+    config.WithResolver(resolver),
+)
+
+// Type-safe accessors now automatically resolve tenant overrides.
+limit := cfgSvc.Int(tenantCtx, "rate_limit", 100)
+// Returns 500 for tenant-enterprise, 100 for other tenants.
+```
+
+### Override precedence
+
+| Tenant context | Override exists | Value returned |
+|---------------|----------------|----------------|
+| Not present | -- | Base config value |
+| Present | No | Base config value |
+| Present | Yes | Tenant override value |
+
+### Listing overrides
+
+```go
+// All overrides for a specific tenant.
+overrides, _ := store.ListOverridesByTenant(ctx, "myapp", "tenant-enterprise")
+
+// All tenant overrides for a specific config key.
+overrides, _ := store.ListOverridesByKey(ctx, "rate_limit", "myapp")
+```
+
+## Crypto-shredding via crypto.KeyStore
+
+Crypto-shredding is a GDPR compliance technique where each tenant's data is encrypted with a unique key. Deleting the key renders all that tenant's data permanently unrecoverable without actually deleting the rows.
+
+### The KeyStore interface
+
+```go
+package crypto
+
+type KeyStore interface {
+    // GetOrCreate retrieves the key for the given ID, creating one if needed.
+    GetOrCreate(ctx context.Context, id string) ([]byte, error)
+
+    // Get retrieves the key for the given ID.
+    Get(ctx context.Context, id string) ([]byte, error)
+
+    // Delete removes the key for the given ID (crypto-shredding).
+    Delete(ctx context.Context, id string) error
+}
+```
+
+### Per-tenant encryption workflow
+
+```go
+// During secret storage: get or create a per-tenant key.
+tenantKey, err := keyStore.GetOrCreate(ctx, tenantID)
+if err != nil {
+    return err
+}
+
+// Create a per-tenant encryptor.
+tenantEnc, err := crypto.NewEncryptor(tenantKey)
+if err != nil {
+    return err
+}
+
+// Encrypt with the tenant's key.
+ciphertext, err := tenantEnc.Encrypt(plaintext)
+```
+
+### Right-to-erasure (GDPR Article 17)
+
+When a tenant exercises their right to erasure:
+
+```go
+// Delete the tenant's encryption key.
+// All secrets encrypted with this key become permanently unrecoverable.
+err := keyStore.Delete(ctx, tenantID)
+if err != nil {
+    return fmt.Errorf("crypto-shred tenant %s: %w", tenantID, err)
+}
+```
+
+The encrypted data remains in the database but is cryptographically inaccessible. This satisfies the right to erasure without requiring deletion of every individual row.
+
+### Implementing a KeyStore
+
+A basic database-backed `KeyStore` implementation:
+
+```go
+type DBKeyStore struct {
+    db *sql.DB
+}
+
+func (ks *DBKeyStore) GetOrCreate(ctx context.Context, tenantID string) ([]byte, error) {
+    // Try to retrieve existing key.
+    key, err := ks.Get(ctx, tenantID)
+    if err == nil {
+        return key, nil
+    }
+
+    // Generate a new 32-byte key.
+    newKey := make([]byte, 32)
+    if _, err := rand.Read(newKey); err != nil {
+        return nil, err
+    }
+
+    // Store it (use UPSERT to handle races).
+    _, err = ks.db.ExecContext(ctx,
+        `INSERT INTO tenant_keys (tenant_id, encryption_key)
+         VALUES ($1, $2)
+         ON CONFLICT (tenant_id) DO NOTHING`,
+        tenantID, newKey,
+    )
+    if err != nil {
+        return nil, err
+    }
+
+    // Re-read to handle the race condition.
+    return ks.Get(ctx, tenantID)
+}
+
+func (ks *DBKeyStore) Get(ctx context.Context, tenantID string) ([]byte, error) {
+    var key []byte
+    err := ks.db.QueryRowContext(ctx,
+        `SELECT encryption_key FROM tenant_keys WHERE tenant_id = $1`,
+        tenantID,
+    ).Scan(&key)
+    return key, err
+}
+
+func (ks *DBKeyStore) Delete(ctx context.Context, tenantID string) error {
+    _, err := ks.db.ExecContext(ctx,
+        `DELETE FROM tenant_keys WHERE tenant_id = $1`,
+        tenantID,
+    )
+    return err
+}
+```
+
+## HTTP middleware example
+
+A complete middleware that combines scope injection with per-tenant key resolution:
+
+```go
+func TenantVaultMiddleware(appID string, keyStore crypto.KeyStore) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            ctx := r.Context()
+
+            tenantID := r.Header.Get("X-Tenant-ID")
+            if tenantID == "" {
+                http.Error(w, "X-Tenant-ID header required", http.StatusBadRequest)
+                return
+            }
+
+            // Inject scope.
+            ctx = scope.WithScope(ctx, appID, tenantID,
+                r.Header.Get("X-User-ID"),
+                r.RemoteAddr,
+            )
+
+            // Verify the tenant's key exists (ensures tenant is active).
+            _, err := keyStore.Get(ctx, tenantID)
+            if err != nil {
+                http.Error(w, "tenant not found or shredded", http.StatusForbidden)
+                return
+            }
+
+            next.ServeHTTP(w, r.WithContext(ctx))
+        })
+    }
+}
+```
+
+## Pattern summary
+
+| Pattern | Package | Key function | Purpose |
+|---------|---------|-------------|---------|
+| Scope propagation | `scope` | `WithTenantID`, `WithScope` | Inject tenant context for all Vault operations |
+| Flag tenant overrides | `flag` | `SetFlagTenantOverride` | Direct per-tenant flag values |
+| Flag targeting rules | `flag` | `WhenTenant`, `Rollout` | Rule-based tenant targeting |
+| Config overrides | `override` | `override.Resolver.Resolve` | Per-tenant config customization |
+| Crypto-shredding | `crypto` | `KeyStore.Delete` | GDPR right-to-erasure compliance |
+| Audit context | `audit` | `Logger.LogAccess` | Automatic tenant/user/IP capture |

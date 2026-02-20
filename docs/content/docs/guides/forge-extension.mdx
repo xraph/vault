@@ -1,0 +1,305 @@
+---
+title: Forge Integration
+description: Using Vault with the Forge framework.
+---
+
+This guide covers patterns for integrating Vault into a [Forge](https://github.com/xraph/forge)-style application. While Vault does not ship a pre-built Forge extension, the patterns below show how to wire stores, services, middleware, and lifecycle management into Forge's architecture.
+
+## HTTP middleware for scope injection
+
+Vault uses context-based scoping via the `scope` package. In an HTTP application, extract the tenant ID, user ID, and other identifiers from the request (JWT claims, headers, API keys) and inject them into the context before handlers execute.
+
+```go
+package middleware
+
+import (
+    "net/http"
+
+    "github.com/xraph/vault/scope"
+)
+
+// VaultScope extracts tenant and user information from the request
+// and injects it into the context for Vault operations.
+func VaultScope(appID string) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            ctx := r.Context()
+
+            // Set the application ID.
+            ctx = scope.WithAppID(ctx, appID)
+
+            // Extract tenant ID from header or JWT claims.
+            if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
+                ctx = scope.WithTenantID(ctx, tenantID)
+            }
+
+            // Extract user ID from JWT claims or auth header.
+            if userID := r.Header.Get("X-User-ID"); userID != "" {
+                ctx = scope.WithUserID(ctx, userID)
+            }
+
+            // Capture client IP for audit logging.
+            ctx = scope.WithIP(ctx, r.RemoteAddr)
+
+            next.ServeHTTP(w, r.WithContext(ctx))
+        })
+    }
+}
+```
+
+This middleware ensures that every downstream Vault operation (secret access, flag evaluation, config reads, audit logging) has the correct scope context. The `scope` package keys intentionally match the context keys used by `flag.Engine` and `override.Resolver`, so values are automatically visible across all subsystems.
+
+## Dependency registration pattern
+
+In a Forge-style application with a dependency injection container, register the store and all services at startup:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "log/slog"
+
+    "github.com/xraph/vault/audit"
+    audithook "github.com/xraph/vault/audit_hook"
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/crypto"
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/override"
+    "github.com/xraph/vault/rotation"
+    "github.com/xraph/vault/secret"
+    "github.com/xraph/vault/store/postgres"
+)
+
+// VaultServices holds all Vault service instances.
+type VaultServices struct {
+    Store      *postgres.Store
+    Secrets    *secret.Service
+    Flags      *flag.Service
+    FlagEngine *flag.Engine
+    Config     *config.Service
+    Resolver   *override.Resolver
+    Rotation   *rotation.Manager
+    Audit      *audit.Logger
+}
+
+// NewVaultServices wires up all Vault services.
+func NewVaultServices(ctx context.Context, connString string, encKey []byte, appID string) (*VaultServices, error) {
+    // Create the store.
+    store, err := postgres.New(ctx, connString,
+        postgres.WithLogger(slog.Default()),
+    )
+    if err != nil {
+        return nil, err
+    }
+
+    // Run migrations.
+    if err := store.Migrate(ctx); err != nil {
+        return nil, err
+    }
+
+    // Create the encryptor.
+    enc, err := crypto.NewEncryptor(encKey)
+    if err != nil {
+        return nil, err
+    }
+
+    // Wire up services.
+    secretSvc := secret.NewService(store, enc, secret.WithAppID(appID))
+    resolver := override.NewResolver(store, store)
+    cfgSvc := config.NewService(store,
+        config.WithAppID(appID),
+        config.WithResolver(resolver),
+    )
+    flagEngine := flag.NewEngine(store)
+    flagSvc := flag.NewService(flagEngine, flag.WithAppID(appID))
+    rotMgr := rotation.NewManager(store, secretSvc,
+        rotation.WithAppID(appID),
+    )
+
+    // Create audit logger with an optional hook.
+    hook := audithook.New(audithook.RecorderFunc(
+        func(ctx context.Context, event *audithook.AuditEvent) error {
+            slog.Info("audit",
+                "action", event.Action,
+                "resource", event.Resource,
+                "key", event.Key,
+                "outcome", event.Outcome,
+            )
+            return nil
+        },
+    ))
+    auditLogger := audit.NewLogger(store, audit.WithHook(hook))
+
+    return &VaultServices{
+        Store:      store,
+        Secrets:    secretSvc,
+        Flags:      flagSvc,
+        FlagEngine: flagEngine,
+        Config:     cfgSvc,
+        Resolver:   resolver,
+        Rotation:   rotMgr,
+        Audit:      auditLogger,
+    }, nil
+}
+```
+
+In a Forge DI container, you would register each service as a singleton:
+
+```go
+func RegisterVault(container *di.Container) {
+    // Register the store.
+    di.Singleton(container, func() (*postgres.Store, error) {
+        return postgres.New(ctx, os.Getenv("DATABASE_URL"))
+    })
+
+    // Register the secret service.
+    di.Singleton(container, func(store *postgres.Store, enc *crypto.Encryptor) *secret.Service {
+        return secret.NewService(store, enc, secret.WithAppID("myapp"))
+    })
+
+    // Register the flag engine and service.
+    di.Singleton(container, func(store *postgres.Store) *flag.Engine {
+        return flag.NewEngine(store)
+    })
+    di.Singleton(container, func(engine *flag.Engine) *flag.Service {
+        return flag.NewService(engine, flag.WithAppID("myapp"))
+    })
+
+    // Register the config service with override resolver.
+    di.Singleton(container, func(store *postgres.Store) *override.Resolver {
+        return override.NewResolver(store, store)
+    })
+    di.Singleton(container, func(store *postgres.Store, resolver *override.Resolver) *config.Service {
+        return config.NewService(store,
+            config.WithAppID("myapp"),
+            config.WithResolver(resolver),
+        )
+    })
+}
+```
+
+## Lifecycle management
+
+The rotation manager runs a background loop that checks for due rotations. Start it during application boot and stop it during graceful shutdown.
+
+```go
+func main() {
+    ctx := context.Background()
+
+    svc, err := NewVaultServices(ctx, connString, encKey, "myapp")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Register rotator functions.
+    svc.Rotation.RegisterRotator("database_url", func(ctx context.Context, current []byte) ([]byte, error) {
+        // Call your password rotation API here.
+        newPass := generatePassword()
+        return []byte(fmt.Sprintf("postgres://app:%s@db.internal:5432/prod", newPass)), nil
+    })
+
+    // Start the rotation manager background loop.
+    if err := svc.Rotation.Start(ctx); err != nil {
+        log.Fatal("start rotation manager:", err)
+    }
+
+    // Start your HTTP server...
+    server := &http.Server{Addr: ":8080", Handler: router}
+    go server.ListenAndServe()
+
+    // Wait for shutdown signal.
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    <-quit
+
+    // Graceful shutdown.
+    shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+    defer cancel()
+
+    // Stop the rotation manager first.
+    if err := svc.Rotation.Stop(shutdownCtx); err != nil {
+        log.Printf("rotation stop: %v", err)
+    }
+
+    // Shut down HTTP server.
+    server.Shutdown(shutdownCtx)
+
+    // Close the store last.
+    svc.Store.Close()
+}
+```
+
+## Using Vault in HTTP handlers
+
+With the scope middleware and DI-registered services, HTTP handlers can use Vault naturally:
+
+```go
+func GetSecretHandler(secretSvc *secret.Service, auditLog *audit.Logger) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        ctx := r.Context()
+        key := r.URL.Query().Get("key")
+
+        sec, err := secretSvc.Get(ctx, key, "")
+        if err != nil {
+            auditLog.LogFailure(ctx, key, "secret.accessed", "secret", err)
+            http.Error(w, "secret not found", http.StatusNotFound)
+            return
+        }
+
+        auditLog.LogAccess(ctx, key, "secret.accessed", "secret")
+        w.Write(sec.Value)
+    }
+}
+
+func GetConfigHandler(cfgSvc *config.Service) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        ctx := r.Context()
+        // The resolver automatically checks for tenant overrides
+        // because the scope middleware injected the tenant ID.
+        limit := cfgSvc.Int(ctx, "rate_limit", 100)
+        fmt.Fprintf(w, `{"rate_limit": %d}`, limit)
+    }
+}
+
+func FeatureFlagHandler(flagSvc *flag.Service) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        ctx := r.Context()
+        // Flag evaluation uses the tenant ID from context
+        // for tenant overrides and targeting rules.
+        enabled := flagSvc.Bool(ctx, "new_dashboard", false)
+        fmt.Fprintf(w, `{"new_dashboard": %v}`, enabled)
+    }
+}
+```
+
+## Wiring the router
+
+```go
+func setupRouter(svc *VaultServices) http.Handler {
+    mux := http.NewServeMux()
+
+    mux.HandleFunc("GET /api/secrets", GetSecretHandler(svc.Secrets, svc.Audit))
+    mux.HandleFunc("GET /api/config", GetConfigHandler(svc.Config))
+    mux.HandleFunc("GET /api/flags", FeatureFlagHandler(svc.Flags))
+
+    // Wrap with scope middleware.
+    return middleware.VaultScope("myapp")(mux)
+}
+```
+
+## Config change watchers
+
+The config service supports watchers that fire when a config entry is updated. Use this to react to configuration changes at runtime:
+
+```go
+cfgSvc.Watch("rate_limit", func(ctx context.Context, key string, oldValue, newValue any) {
+    slog.Info("config changed",
+        "key", key,
+        "old", oldValue,
+        "new", newValue,
+    )
+    // Update your rate limiter, reconfigure a connection pool, etc.
+})
+```

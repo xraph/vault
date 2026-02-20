@@ -1,0 +1,210 @@
+---
+title: Bun ORM Store
+description: PostgreSQL backend using Bun ORM query builder.
+---
+
+The Bun store provides an alternative PostgreSQL backend that uses the [Bun ORM](https://bun.uptrace.dev/) query builder instead of raw SQL. It maps Vault entities to 11 Bun model structs and uses `CreateTable` with `IfNotExists` for migrations.
+
+## Installation
+
+```bash
+go get github.com/xraph/vault
+go get github.com/uptrace/bun
+go get github.com/uptrace/bun/dialect/pgdialect
+go get github.com/uptrace/bun/driver/pgdriver
+```
+
+## Creating a store
+
+```go
+import (
+    "database/sql"
+
+    "github.com/uptrace/bun"
+    "github.com/uptrace/bun/dialect/pgdialect"
+    "github.com/uptrace/bun/driver/pgdriver"
+
+    bunstore "github.com/xraph/vault/store/bun"
+)
+
+// Open a PostgreSQL connection via Bun's pgdriver.
+sqldb := sql.OpenDB(pgdriver.NewConnector(
+    pgdriver.WithDSN("postgres://user:pass@localhost:5432/vault?sslmode=disable"),
+))
+db := bun.NewDB(sqldb, pgdialect.New())
+
+// Create the Vault store.
+store := bunstore.New(db)
+```
+
+`bunstore.New` accepts a `*bun.DB` instance and returns a `*bunstore.Store` that implements the full `store.Store` composite interface.
+
+## Options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger. Defaults to `slog.Default()`. |
+
+```go
+store := bunstore.New(db, bunstore.WithLogger(slog.Default()))
+```
+
+## Bun model structs
+
+The Bun store defines 11 model structs that map directly to database tables:
+
+| Model | Table | Entity |
+|-------|-------|--------|
+| `SecretModel` | `vault_secrets` | `secret.Secret` |
+| `SecretVersionModel` | `vault_secret_versions` | `secret.Version` |
+| `FlagModel` | `vault_flags` | `flag.Definition` |
+| `FlagRuleModel` | `vault_flag_rules` | `flag.Rule` |
+| `FlagOverrideModel` | `vault_flag_overrides` | `flag.TenantOverride` |
+| `ConfigModel` | `vault_config` | `config.Entry` |
+| `ConfigVersionModel` | `vault_config_versions` | `config.EntryVersion` |
+| `OverrideModel` | `vault_overrides` | `override.Override` |
+| `RotationPolicyModel` | `vault_rotation_policies` | `rotation.Policy` |
+| `RotationRecordModel` | `vault_rotation_records` | `rotation.Record` |
+| `AuditModel` | `vault_audit` | `audit.Entry` |
+
+Each model includes `toEntity()` and (where applicable) `fromEntity()` conversion methods. JSONB columns (metadata, config values, flag defaults) are stored as `json.RawMessage` and marshaled/unmarshaled during conversion.
+
+## Migrations
+
+The Bun store uses `bun.NewCreateTable().IfNotExists()` for each model:
+
+```go
+if err := store.Migrate(ctx); err != nil {
+    log.Fatal("migrate:", err)
+}
+```
+
+This creates all 11 tables if they do not already exist. The migration is idempotent and safe to call on every application startup. On success, it logs a confirmation message.
+
+Unlike the PostgreSQL store (which uses ordered SQL migration files with a tracking table), the Bun store relies on Bun's `IfNotExists` directive. This means it cannot perform incremental schema changes -- if you need to alter columns or add indexes after initial creation, you should manage those migrations separately.
+
+## Implemented interfaces
+
+The Bun store satisfies the same six subsystem interfaces as all other backends:
+
+```go
+var (
+    _ secret.Store   = (*Store)(nil)
+    _ flag.Store     = (*Store)(nil)
+    _ config.Store   = (*Store)(nil)
+    _ override.Store = (*Store)(nil)
+    _ rotation.Store = (*Store)(nil)
+    _ audit.Store    = (*Store)(nil)
+)
+```
+
+## Lifecycle methods
+
+| Method | Behaviour |
+|--------|-----------|
+| `Migrate(ctx)` | Creates all 11 tables using `bun.CreateTable` with `IfNotExists` |
+| `Ping(ctx)` | Calls `db.PingContext(ctx)` to verify connectivity |
+| `Close()` | Calls `db.Close()` to release the database connection |
+
+## Bun vs raw pgx -- when to choose which
+
+| Criteria | Bun store (`store/bun`) | PostgreSQL store (`store/postgres`) |
+|----------|-------------------------|-------------------------------------|
+| **Driver** | `database/sql` via `pgdriver` | `pgxpool` (native pgx) |
+| **Query style** | Bun query builder (type-safe, composable) | Raw SQL strings |
+| **Migrations** | `CreateTable` with `IfNotExists` | Embedded, ordered SQL files with tracking table |
+| **Schema evolution** | Manual for column changes | File-based, versioned migrations |
+| **Performance** | Slightly higher overhead from ORM layer | Direct pgx with zero ORM overhead |
+| **Best for** | Teams already using Bun in their stack | Maximum performance, full migration control |
+
+Both stores produce identical table schemas and are fully interchangeable at the `store.Store` interface level. You can use the Bun store in development and switch to the raw pgx store in production, or vice versa.
+
+## Complete example
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "fmt"
+    "log"
+    "log/slog"
+
+    "github.com/uptrace/bun"
+    "github.com/uptrace/bun/dialect/pgdialect"
+    "github.com/uptrace/bun/driver/pgdriver"
+
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/crypto"
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/secret"
+    bunstore "github.com/xraph/vault/store/bun"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Open a PostgreSQL connection using Bun.
+    sqldb := sql.OpenDB(pgdriver.NewConnector(
+        pgdriver.WithDSN("postgres://localhost:5432/vault?sslmode=disable"),
+    ))
+    db := bun.NewDB(sqldb, pgdialect.New())
+    defer db.Close()
+
+    // Create the Bun store with a logger.
+    store := bunstore.New(db, bunstore.WithLogger(slog.Default()))
+
+    // Run migrations (creates tables if not exist).
+    if err := store.Migrate(ctx); err != nil {
+        log.Fatal("migrate:", err)
+    }
+
+    // Create an encryptor.
+    key := make([]byte, 32)
+    copy(key, "my-secret-encryption-key-32byte")
+    enc, _ := crypto.NewEncryptor(key)
+
+    // Wire up services.
+    secretSvc := secret.NewService(store, enc, secret.WithAppID("myapp"))
+    cfgSvc := config.NewService(store, config.WithAppID("myapp"))
+
+    // Store a secret.
+    meta, err := secretSvc.Set(ctx, "stripe_key", []byte("sk_live_abc123"), "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Stored secret: key=%s version=%d\n", meta.Key, meta.Version)
+
+    // Retrieve and decrypt.
+    sec, _ := secretSvc.Get(ctx, "stripe_key", "")
+    fmt.Printf("Decrypted: %s\n", string(sec.Value))
+
+    // Store config.
+    _ = cfgSvc.Set(ctx, "page_size", 25, "")
+    fmt.Printf("Page size: %d\n", cfgSvc.Int(ctx, "page_size", 10))
+
+    // Define a flag.
+    _ = store.DefineFlag(ctx, &flag.Definition{
+        Key:          "beta_features",
+        Type:         flag.TypeBool,
+        DefaultValue: false,
+        Enabled:      true,
+        AppID:        "myapp",
+    })
+
+    engine := flag.NewEngine(store)
+    val, _ := engine.Evaluate(ctx, "beta_features", "myapp")
+    fmt.Printf("beta_features = %v\n", val)
+}
+```
+
+## Connection pool configuration
+
+Since the Bun store uses `database/sql` under the hood, configure the pool on the `*sql.DB`:
+
+```go
+sqldb.SetMaxOpenConns(25)
+sqldb.SetMaxIdleConns(5)
+sqldb.SetConnMaxLifetime(5 * time.Minute)
+```

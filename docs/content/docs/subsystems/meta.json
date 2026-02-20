@@ -1,0 +1,15 @@
+{
+  "title": "Subsystems",
+  "pages": [
+    "secrets",
+    "feature-flags",
+    "runtime-config",
+    "overrides",
+    "rotation",
+    "audit",
+    "encryption",
+    "sources",
+    "plugins",
+    "observability"
+  ]
+}

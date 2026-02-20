@@ -1,0 +1,315 @@
+---
+title: Encryption
+description: AES-256-GCM encryption with pluggable key providers.
+---
+
+The `crypto` package provides AES-256-GCM authenticated encryption for Vault secrets, along with pluggable key provider and key store interfaces for key management, rotation, and per-tenant key isolation (crypto-shredding).
+
+## Architecture
+
+```
+crypto.Encryptor          (AES-256-GCM encrypt/decrypt)
+  └── cipher.AEAD         (Go standard library)
+
+crypto.EncryptionKeyProvider  (key retrieval + rotation)
+  └── crypto.EnvKeyProvider   (reads key from env var)
+
+crypto.KeyStore              (per-entity key management)
+```
+
+The `Encryptor` is the core encryption primitive used by `secret.Service`. Key providers and key stores are abstractions for key management that can be implemented by plugins or external KMS systems.
+
+## Installation
+
+```go
+import "github.com/xraph/vault/crypto"
+```
+
+## Encryptor
+
+The `Encryptor` provides AES-256-GCM authenticated encryption and decryption.
+
+### Creating an Encryptor
+
+```go
+func NewEncryptor(key []byte) (*Encryptor, error)
+```
+
+The key must be exactly 32 bytes (256 bits). Returns `ErrInvalidKeySize` if the key length is wrong.
+
+```go
+key := make([]byte, 32) // load from secure source
+enc, err := crypto.NewEncryptor(key)
+if err != nil {
+    log.Fatal(err) // crypto: key must be exactly 32 bytes for AES-256
+}
+```
+
+### Encrypt
+
+```go
+func (e *Encryptor) Encrypt(plaintext []byte) ([]byte, error)
+```
+
+Encrypts plaintext using AES-256-GCM. The returned ciphertext has the format:
+
+```
+| nonce (12 bytes) | ciphertext + GCM tag |
+```
+
+A random 12-byte nonce is generated for each encryption call using `crypto/rand`.
+
+```go
+ciphertext, err := enc.Encrypt([]byte("my secret value"))
+if err != nil {
+    log.Fatal(err)
+}
+// ciphertext is: nonce || encrypted_data || gcm_tag
+```
+
+### Decrypt
+
+```go
+func (e *Encryptor) Decrypt(ciphertext []byte) ([]byte, error)
+```
+
+Decrypts ciphertext produced by `Encrypt`. Expects the nonce prepended to the ciphertext.
+
+```go
+plaintext, err := enc.Decrypt(ciphertext)
+if err != nil {
+    log.Fatal(err) // crypto: decrypt: message authentication failed
+}
+fmt.Println(string(plaintext)) // "my secret value"
+```
+
+Returns an error if:
+- The ciphertext is shorter than the nonce size (12 bytes).
+- The GCM authentication tag does not match (tampered data).
+
+### ErrInvalidKeySize
+
+```go
+var ErrInvalidKeySize = errors.New("crypto: key must be exactly 32 bytes for AES-256")
+```
+
+## EncryptionKeyProvider
+
+The `EncryptionKeyProvider` interface abstracts encryption key retrieval and rotation. Implement this interface to integrate with external KMS systems (AWS KMS, HashiCorp Vault, GCP KMS, etc.) or to provide custom key management.
+
+```go
+type EncryptionKeyProvider interface {
+    GetKey(ctx context.Context) ([]byte, error)
+    RotateKey(ctx context.Context) ([]byte, error)
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `GetKey` | Returns the current active encryption key (32 bytes) |
+| `RotateKey` | Generates and stores a new key, returning the new key |
+
+### Using with secret.Service
+
+```go
+keyProvider := myKMSProvider() // implements EncryptionKeyProvider
+
+key, err := keyProvider.GetKey(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+enc, err := crypto.NewEncryptor(key)
+if err != nil {
+    log.Fatal(err)
+}
+
+svc := secret.NewService(store, enc)
+```
+
+## EnvKeyProvider
+
+The `EnvKeyProvider` reads the encryption key from an environment variable. The key can be hex-encoded (64 hex chars) or base64-encoded (auto-detected).
+
+### Creating an EnvKeyProvider
+
+```go
+func NewEnvKeyProvider(envVar string) *EnvKeyProvider
+```
+
+```go
+provider := crypto.NewEnvKeyProvider("VAULT_ENCRYPTION_KEY")
+```
+
+### GetKey
+
+Reads and decodes the encryption key from the environment variable. Auto-detects the encoding format:
+
+1. **Hex** -- If the value is exactly 64 hex characters, decode as hex.
+2. **Base64 standard** -- Try `base64.StdEncoding` decoding.
+3. **Base64 URL-safe** -- Try `base64.URLEncoding` decoding.
+4. **Base64 raw (no padding)** -- Try `base64.RawStdEncoding` decoding.
+
+All paths must produce exactly 32 bytes.
+
+```go
+key, err := provider.GetKey(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### RotateKey
+
+Not supported by the environment provider. Returns an error.
+
+```go
+_, err := provider.RotateKey(ctx)
+// crypto: env provider does not support key rotation
+```
+
+### Setting the environment variable
+
+```bash
+# Hex-encoded (64 characters)
+export VAULT_ENCRYPTION_KEY="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+# Base64-encoded (44 characters with padding)
+export VAULT_ENCRYPTION_KEY="ASNFZ4mrze8BI0VniavN7wEjRWeJq83vASNFZ4mrze8="
+```
+
+## KeyStore
+
+The `KeyStore` interface manages per-entity encryption keys, enabling GDPR-style per-tenant key isolation and crypto-shredding (deleting a key to render all data encrypted with it unrecoverable).
+
+```go
+type KeyStore interface {
+    GetOrCreate(ctx context.Context, id string) ([]byte, error)
+    Get(ctx context.Context, id string) ([]byte, error)
+    Delete(ctx context.Context, id string) error
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `GetOrCreate` | Retrieves the key for the given ID, creating one if it does not exist |
+| `Get` | Retrieves the key for the given ID; returns an error if not found |
+| `Delete` | Removes the key for the given ID (crypto-shredding) |
+
+### Crypto-shredding
+
+To permanently destroy all data for a tenant, delete their encryption key:
+
+```go
+// All secrets encrypted with this tenant's key become unrecoverable.
+err := keyStore.Delete(ctx, "tenant-123")
+```
+
+This is more efficient and reliable than locating and deleting every individual record. The encrypted data remains in storage but is cryptographically unrecoverable without the key.
+
+### Per-tenant encryption example
+
+```go
+// Get or create a key for the tenant.
+tenantKey, err := keyStore.GetOrCreate(ctx, tenantID)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Create a per-tenant encryptor.
+tenantEnc, err := crypto.NewEncryptor(tenantKey)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Create a tenant-scoped secret service.
+tenantSecrets := secret.NewService(store, tenantEnc,
+    secret.WithAppID("myapp"),
+)
+```
+
+## Integration with secret.Service
+
+The `secret.Service` uses the `Encryptor` transparently:
+
+```
+Set flow:
+  plaintext → Encryptor.Encrypt → store.SetSecret(EncryptedValue)
+  EncryptionAlg set to "AES-256-GCM"
+
+Get flow:
+  store.GetSecret → EncryptedValue → Encryptor.Decrypt → Secret.Value
+```
+
+When no encryptor is provided to `secret.NewService`, the raw value bytes are stored directly. This is suitable for development but not recommended for production.
+
+## Security properties
+
+| Property | Detail |
+|----------|--------|
+| Algorithm | AES-256-GCM (authenticated encryption with associated data) |
+| Key size | 256 bits (32 bytes) |
+| Nonce size | 96 bits (12 bytes), randomly generated per encryption |
+| Authentication | GCM tag provides integrity and authenticity |
+| Nonce reuse protection | Random nonce from `crypto/rand` for every `Encrypt` call |
+
+## Full example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/xraph/vault/crypto"
+    "github.com/xraph/vault/secret"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Load key from environment.
+    provider := crypto.NewEnvKeyProvider("VAULT_ENCRYPTION_KEY")
+    key, err := provider.GetKey(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Create encryptor.
+    enc, err := crypto.NewEncryptor(key)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Direct encryption/decryption.
+    ciphertext, err := enc.Encrypt([]byte("hello world"))
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("ciphertext length: %d bytes\n", len(ciphertext))
+
+    plaintext, err := enc.Decrypt(ciphertext)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("plaintext: %s\n", string(plaintext))
+
+    // Use with secret service.
+    svc := secret.NewService(secretStore, enc,
+        secret.WithAppID("myapp"),
+    )
+
+    _, err = svc.Set(ctx, "api-key", []byte("sk-live-abc123"), "")
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    sec, err := svc.Get(ctx, "api-key", "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("decrypted: %s\n", string(sec.Value))
+}
+```

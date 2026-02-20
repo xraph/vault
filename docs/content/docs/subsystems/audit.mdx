@@ -1,0 +1,374 @@
+---
+title: Audit Logging
+description: Append-only audit trail with extensible hook system.
+---
+
+The audit system spans two packages: `audit` provides the core append-only audit log with persistence, while `audit_hook` provides an extensible event recording system for broadcasting audit events to external systems. Together they give you a complete audit trail for every Vault operation.
+
+## Architecture
+
+```
+audit.Logger
+  ├── audit.Store          (append-only persistence)
+  ├── audit_hook.Extension (optional event broadcaster)
+  └── scope.FromContext    (extracts appID, tenantID, userID, IP)
+
+audit_hook.Extension
+  ├── audit_hook.Recorder  (external system adapter)
+  └── action filter        (optional allowlist)
+```
+
+## Installation
+
+```go
+import (
+    "github.com/xraph/vault/audit"
+    audithook "github.com/xraph/vault/audit_hook"
+)
+```
+
+## audit.Entry
+
+Each audit log entry captures the who, what, when, and outcome of an operation.
+
+```go
+type Entry struct {
+    ID        id.ID          `json:"id"`
+    Action    string         `json:"action"`
+    Resource  string         `json:"resource"`
+    Key       string         `json:"key"`
+    AppID     string         `json:"app_id"`
+    TenantID  string         `json:"tenant_id,omitempty"`
+    UserID    string         `json:"user_id,omitempty"`
+    IP        string         `json:"ip,omitempty"`
+    Outcome   string         `json:"outcome"`
+    Metadata  map[string]any `json:"metadata,omitempty"`
+    CreatedAt time.Time      `json:"created_at"`
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | Unique audit entry identifier (TypeID) |
+| `Action` | `string` | The action performed (see standard actions below) |
+| `Resource` | `string` | The resource type (`"secret"`, `"flag"`, `"config"`, `"override"`) |
+| `Key` | `string` | The key of the resource being acted upon |
+| `AppID` | `string` | Application scope identifier |
+| `TenantID` | `string` | Tenant identifier (from context) |
+| `UserID` | `string` | User identifier (from context) |
+| `IP` | `string` | Client IP address (from context) |
+| `Outcome` | `string` | `"success"` or `"failure"` |
+| `Metadata` | `map[string]any` | Additional context (e.g., error messages on failure) |
+| `CreatedAt` | `time.Time` | UTC timestamp of the event |
+
+### ListOpts
+
+```go
+type ListOpts struct {
+    Limit  int
+    Offset int
+}
+```
+
+## audit.Store
+
+The store provides append-only persistence for audit entries.
+
+```go
+type Store interface {
+    RecordAudit(ctx context.Context, e *Entry) error
+    ListAudit(ctx context.Context, appID string, opts ListOpts) ([]*Entry, error)
+    ListAuditByKey(ctx context.Context, key, appID string, opts ListOpts) ([]*Entry, error)
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `RecordAudit` | Persists a single audit log entry |
+| `ListAudit` | Returns audit entries for an app |
+| `ListAuditByKey` | Returns audit entries filtered by a specific key within an app |
+
+## audit.Logger
+
+The `Logger` records audit entries and optionally broadcasts them via an audit hook extension. It extracts scope information (appID, tenantID, userID, IP) from the context using the `scope` package.
+
+### Creating a Logger
+
+```go
+logger := audit.NewLogger(auditStore,
+    audit.WithHook(auditHookExtension),
+    audit.WithLogger(slogLogger),
+)
+```
+
+### LoggerOption
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithHook` | `WithHook(h *audithook.Extension) LoggerOption` | Attaches an audit hook extension for event broadcasting |
+| `WithLogger` | `WithLogger(sl *slog.Logger) LoggerOption` | Sets the slog logger for internal error reporting |
+
+### LogAccess
+
+Records a successful access event. Extracts scope from context and records both to the store and (if configured) to the hook.
+
+```go
+func (l *Logger) LogAccess(ctx context.Context, key, action, resource string)
+```
+
+```go
+auditLogger.LogAccess(ctx, "db-password", audithook.ActionSecretAccessed, audithook.ResourceSecret)
+```
+
+The logger automatically:
+1. Extracts `appID`, `tenantID`, `userID`, and `IP` from the context via `scope.FromContext`.
+2. Creates an `Entry` with outcome `"success"`.
+3. Persists it to the store.
+4. If a hook is attached, broadcasts an `AuditEvent` with severity `"info"` and outcome `"success"`.
+
+### LogFailure
+
+Records a failed access event. Same flow as `LogAccess` but with outcome `"failure"` and the error message captured in metadata.
+
+```go
+func (l *Logger) LogFailure(ctx context.Context, key, action, resource string, err error)
+```
+
+```go
+auditLogger.LogFailure(ctx, "db-password", audithook.ActionSecretAccessed, audithook.ResourceSecret, err)
+```
+
+The error message is stored in `Metadata["error"]`. The hook event is broadcast with severity `"warning"` and outcome `"failure"`.
+
+## audit_hook package
+
+The `audit_hook` package provides the event types, constants, and the `Extension` that forwards audit events to external recording systems.
+
+### Standard actions
+
+13 standard action constants cover all Vault operations:
+
+| Constant | Value | Category |
+|----------|-------|----------|
+| `ActionSecretAccessed` | `"secret.accessed"` | Secret |
+| `ActionSecretSet` | `"secret.set"` | Secret |
+| `ActionSecretDeleted` | `"secret.deleted"` | Secret |
+| `ActionSecretRotated` | `"secret.rotated"` | Secret |
+| `ActionFlagEvaluated` | `"flag.evaluated"` | Flag |
+| `ActionFlagCreated` | `"flag.created"` | Flag |
+| `ActionFlagUpdated` | `"flag.updated"` | Flag |
+| `ActionFlagDeleted` | `"flag.deleted"` | Flag |
+| `ActionFlagToggled` | `"flag.toggled"` | Flag |
+| `ActionConfigSet` | `"config.set"` | Config |
+| `ActionConfigDeleted` | `"config.deleted"` | Config |
+| `ActionOverrideSet` | `"override.set"` | Override |
+| `ActionOverrideDeleted` | `"override.deleted"` | Override |
+
+Use `audithook.AllActions()` to get all action strings as a slice.
+
+### Categories
+
+| Constant | Value |
+|----------|-------|
+| `CategorySecret` | `"vault.secret"` |
+| `CategoryFlag` | `"vault.flag"` |
+| `CategoryConfig` | `"vault.config"` |
+| `CategoryOverride` | `"vault.override"` |
+
+### Resources
+
+| Constant | Value |
+|----------|-------|
+| `ResourceSecret` | `"secret"` |
+| `ResourceFlag` | `"flag"` |
+| `ResourceConfig` | `"config"` |
+| `ResourceOverride` | `"override"` |
+
+### Severity
+
+| Constant | Value | Used for |
+|----------|-------|----------|
+| `SeverityInfo` | `"info"` | Successful operations |
+| `SeverityWarning` | `"warning"` | Failed operations |
+| `SeverityCritical` | `"critical"` | Critical security events |
+
+### Outcome
+
+| Constant | Value |
+|----------|-------|
+| `OutcomeSuccess` | `"success"` |
+| `OutcomeFailure` | `"failure"` |
+
+### AuditEvent
+
+The event struct emitted by the extension to the recorder:
+
+```go
+type AuditEvent struct {
+    Action     string         `json:"action"`
+    Resource   string         `json:"resource"`
+    Category   string         `json:"category"`
+    ResourceID string         `json:"resource_id"`
+    Key        string         `json:"key"`
+    Metadata   map[string]any `json:"metadata,omitempty"`
+    Outcome    string         `json:"outcome"`
+    Severity   string         `json:"severity"`
+    Reason     string         `json:"reason,omitempty"`
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Action` | `string` | One of the 13 standard action constants |
+| `Resource` | `string` | Resource type string |
+| `Category` | `string` | Audit category string |
+| `ResourceID` | `string` | The ID of the specific resource instance |
+| `Key` | `string` | The key of the resource |
+| `Metadata` | `map[string]any` | Additional key-value context |
+| `Outcome` | `string` | `"success"` or `"failure"` |
+| `Severity` | `string` | `"info"`, `"warning"`, or `"critical"` |
+| `Reason` | `string` | Error message on failure |
+
+### Recorder interface
+
+Implement `Recorder` to forward events to your external audit system (e.g., a SIEM, logging service, or message queue).
+
+```go
+type Recorder interface {
+    Record(ctx context.Context, event *AuditEvent) error
+}
+```
+
+### RecorderFunc adapter
+
+A convenience adapter for using plain functions as recorders:
+
+```go
+type RecorderFunc func(ctx context.Context, event *AuditEvent) error
+```
+
+```go
+recorder := audithook.RecorderFunc(func(ctx context.Context, event *audithook.AuditEvent) error {
+    log.Printf("[AUDIT] %s %s key=%s outcome=%s",
+        event.Action, event.Resource, event.Key, event.Outcome)
+    return nil
+})
+```
+
+### Extension
+
+The `Extension` forwards audit events to a `Recorder`, with optional action filtering.
+
+```go
+ext := audithook.New(recorder,
+    audithook.WithActions(
+        audithook.ActionSecretAccessed,
+        audithook.ActionSecretSet,
+        audithook.ActionSecretDeleted,
+    ),
+    audithook.WithLogger(logger),
+)
+```
+
+### Extension options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithActions` | `WithActions(actions ...string) Option` | Limits recording to only the specified actions. If not set, all actions are recorded. |
+| `WithLogger` | `WithLogger(l *slog.Logger) Option` | Sets the logger for internal error reporting |
+
+### Extension.Record
+
+The `Record` method is called by the `audit.Logger`. It checks the action filter, builds an `AuditEvent`, and forwards it to the recorder.
+
+```go
+func (e *Extension) Record(
+    ctx context.Context,
+    action, severity, outcome, resource, resourceID, category, key string,
+    err error,
+    kvPairs ...any,
+)
+```
+
+The `kvPairs` parameter accepts alternating string key / any value pairs that are added to the event metadata.
+
+## Scope integration
+
+The audit logger uses the `scope` package to extract request context:
+
+```go
+import "github.com/xraph/vault/scope"
+
+// Set up scope in middleware or request handler.
+ctx = scope.WithScope(ctx, "myapp", "tenant-abc", "user-123", "192.168.1.1")
+```
+
+The logger then automatically extracts these values:
+
+```go
+appID, tenantID, userID, ip := scope.FromContext(ctx)
+```
+
+## Full example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log/slog"
+
+    "github.com/xraph/vault/audit"
+    audithook "github.com/xraph/vault/audit_hook"
+    "github.com/xraph/vault/scope"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Set request scope.
+    ctx = scope.WithScope(ctx, "myapp", "tenant-abc", "user-42", "10.0.0.1")
+
+    // Create a recorder (sends to stdout for this example).
+    recorder := audithook.RecorderFunc(func(ctx context.Context, event *audithook.AuditEvent) error {
+        fmt.Printf("[%s] %s %s key=%s outcome=%s severity=%s\n",
+            event.Category, event.Action, event.Resource,
+            event.Key, event.Outcome, event.Severity)
+        return nil
+    })
+
+    // Create the extension with action filter.
+    ext := audithook.New(recorder,
+        audithook.WithActions(
+            audithook.ActionSecretAccessed,
+            audithook.ActionSecretSet,
+            audithook.ActionSecretDeleted,
+            audithook.ActionSecretRotated,
+        ),
+        audithook.WithLogger(slog.Default()),
+    )
+
+    // Create the audit logger.
+    logger := audit.NewLogger(auditStore,
+        audit.WithHook(ext),
+        audit.WithLogger(slog.Default()),
+    )
+
+    // Log a successful access.
+    logger.LogAccess(ctx, "db-password", audithook.ActionSecretAccessed, audithook.ResourceSecret)
+    // Output: [vault.secret] secret.accessed secret key=db-password outcome=success severity=info
+
+    // Log a failure.
+    logger.LogFailure(ctx, "db-password", audithook.ActionSecretAccessed, audithook.ResourceSecret,
+        fmt.Errorf("decryption failed"))
+    // Output: [vault.secret] secret.accessed secret key=db-password outcome=failure severity=warning
+
+    // Query audit history.
+    entries, _ := auditStore.ListAuditByKey(ctx, "db-password", "myapp", audit.ListOpts{Limit: 50})
+    for _, e := range entries {
+        fmt.Printf("  %s %s outcome=%s user=%s at=%s\n",
+            e.Action, e.Key, e.Outcome, e.UserID, e.CreatedAt)
+    }
+}
+```

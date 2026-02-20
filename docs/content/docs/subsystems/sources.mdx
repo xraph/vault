@@ -1,0 +1,402 @@
+---
+title: Configuration Sources
+description: Composable configuration source system with priority chain.
+---
+
+The `source` package provides a composable configuration source system where multiple backends (environment variables, in-memory, database) are checked in priority order. The first source to contain a requested key wins.
+
+## Architecture
+
+```
+source.Chain (priority-ordered)
+  ├── source.Memory   (in-memory, supports Watch)
+  ├── source.Env      (environment variables)
+  └── source.Database (reads from config.Store)
+```
+
+Sources are stacked in a `Chain`. When a key is requested, the chain queries each source in order and returns the first hit. This allows environment variables to override database values, or in-memory overrides to take precedence over everything.
+
+## Installation
+
+```go
+import "github.com/xraph/vault/source"
+```
+
+## Source interface
+
+Every source implements this interface:
+
+```go
+type Source interface {
+    Name() string
+    Get(ctx context.Context, key string) (*Value, error)
+    List(ctx context.Context, prefix string) ([]*Value, error)
+    Watch(ctx context.Context, key string, fn WatchFunc) error
+    Close() error
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `Name` | Returns a human-readable name for the source (e.g., `"memory"`, `"env"`, `"database"`) |
+| `Get` | Retrieves a value by key. Returns `ErrKeyNotFound` if not present. |
+| `List` | Returns all values matching a prefix. Empty prefix returns all values. |
+| `Watch` | Registers a callback for changes to a key. Sources that do not support watching return `nil` immediately. |
+| `Close` | Releases any resources held by the source. |
+
+### Value
+
+```go
+type Value struct {
+    Key       string            `json:"key"`
+    Raw       string            `json:"raw"`
+    Source    string            `json:"source"`
+    Version   int64             `json:"version,omitempty"`
+    ExpiresAt *time.Time        `json:"expires_at,omitempty"`
+    Metadata  map[string]string `json:"metadata,omitempty"`
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Key` | `string` | The configuration key |
+| `Raw` | `string` | The raw string value |
+| `Source` | `string` | Name of the source that provided this value |
+| `Version` | `int64` | Version number (from database source) |
+| `ExpiresAt` | `*time.Time` | Optional expiration timestamp |
+| `Metadata` | `map[string]string` | Optional metadata from the source |
+
+### WatchFunc
+
+```go
+type WatchFunc func(ctx context.Context, key string, val *Value)
+```
+
+### ErrKeyNotFound
+
+```go
+var ErrKeyNotFound = errors.New("source: key not found")
+```
+
+## Memory source
+
+An in-memory source useful for testing, dynamic overrides, and programmatic configuration. Supports `Watch` -- watchers are notified synchronously when `Set` is called.
+
+### Creating a Memory source
+
+```go
+func NewMemory() *Memory
+```
+
+```go
+mem := source.NewMemory()
+```
+
+### Set
+
+Sets a value and immediately notifies all watchers registered for that key.
+
+```go
+func (m *Memory) Set(ctx context.Context, key, raw string)
+```
+
+```go
+mem.Set(ctx, "feature.enabled", "true")
+```
+
+### Get
+
+Retrieves a value by key. Returns a copy (safe for concurrent use).
+
+```go
+val, err := mem.Get(ctx, "feature.enabled")
+if err != nil {
+    // source: key not found
+}
+fmt.Println(val.Raw) // "true"
+```
+
+### List
+
+Returns all values whose keys have the given prefix.
+
+```go
+vals, err := mem.List(ctx, "feature.")
+for _, v := range vals {
+    fmt.Printf("%s = %s\n", v.Key, v.Raw)
+}
+```
+
+### Watch
+
+Registers a callback for a specific key. Non-blocking -- returns immediately. The callback fires when `Set` is called for the key.
+
+```go
+mem.Watch(ctx, "feature.enabled", func(ctx context.Context, key string, val *source.Value) {
+    fmt.Printf("changed: %s = %s\n", key, val.Raw)
+})
+```
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| `Name()` | `"memory"` |
+| Supports `Watch` | Yes |
+| Supports `List` | Yes |
+| Thread-safe | Yes (`sync.RWMutex`) |
+| `Close()` | No-op |
+
+## Env source
+
+Reads configuration from environment variables with optional prefix stripping and automatic key normalization.
+
+### Creating an Env source
+
+```go
+func NewEnv(prefix string) *Env
+```
+
+```go
+// Without prefix: looks up "DB_HOST" for key "db-host"
+env := source.NewEnv("")
+
+// With prefix: looks up "MYAPP_DB_HOST" for key "db-host"
+env := source.NewEnv("MYAPP")
+```
+
+### Key normalization
+
+Keys are transformed before looking up the environment variable:
+
+1. Convert to uppercase.
+2. Replace dashes (`-`) with underscores (`_`).
+3. If a prefix is set, prepend `PREFIX_`.
+
+| Key | Prefix | Environment variable |
+|-----|--------|---------------------|
+| `db-host` | `""` | `DB_HOST` |
+| `db-host` | `"MYAPP"` | `MYAPP_DB_HOST` |
+| `cache_ttl` | `""` | `CACHE_TTL` |
+| `cache_ttl` | `"app"` | `APP_CACHE_TTL` |
+
+### Get
+
+```go
+val, err := env.Get(ctx, "db-host")
+if err != nil {
+    // source: key not found (env var not set or empty)
+}
+fmt.Println(val.Raw) // value of DB_HOST
+```
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| `Name()` | `"env"` |
+| Supports `Watch` | No (returns `nil`) |
+| Supports `List` | No (returns `nil, nil`) |
+| Thread-safe | Yes (reads from `os.Getenv`) |
+| `Close()` | No-op |
+
+## Database source
+
+Reads configuration from a `config.Store` backend, converting config entries to source `Value` structs.
+
+### Creating a Database source
+
+```go
+func NewDatabase(store config.Store, appID string) *Database
+```
+
+```go
+db := source.NewDatabase(configStore, "myapp")
+```
+
+### Get
+
+Retrieves a config entry from the store and wraps it as a `Value`. The entry's value is converted to a string representation.
+
+```go
+val, err := db.Get(ctx, "max-connections")
+if err != nil {
+    // source: key not found
+}
+fmt.Println(val.Raw)     // "25"
+fmt.Println(val.Version) // 3
+```
+
+Value type conversion:
+
+| Go type | String representation |
+|---------|----------------------|
+| `string` | As-is |
+| `int` | `strconv.Itoa` |
+| `int64` | `strconv.FormatInt` |
+| `float64` | `strconv.FormatFloat` |
+| `bool` | `strconv.FormatBool` |
+| Other | Empty string |
+
+### List
+
+Returns all config entries for the app, optionally filtered by prefix.
+
+```go
+vals, err := db.List(ctx, "db.")
+```
+
+### Error mapping
+
+The database source maps `vault.ErrConfigNotFound` to `source.ErrKeyNotFound` for consistent error handling across sources.
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| `Name()` | `"database"` |
+| Supports `Watch` | Not yet (returns `nil`) |
+| Supports `List` | Yes |
+| Thread-safe | Depends on store implementation |
+| `Close()` | No-op |
+
+## Chain
+
+The `Chain` composes multiple sources in priority order. The first source listed has the highest priority.
+
+### Creating a Chain
+
+```go
+func NewChain(sources ...Source) *Chain
+```
+
+```go
+chain := source.NewChain(
+    source.NewMemory(),                        // highest priority
+    source.NewEnv("MYAPP"),                    // middle priority
+    source.NewDatabase(configStore, "myapp"),   // lowest priority
+)
+```
+
+### Get (first-hit-wins)
+
+Queries sources in order. Returns the value from the first source that contains the key. If all sources return `ErrKeyNotFound`, the chain returns `ErrKeyNotFound`. Non-`ErrKeyNotFound` errors are propagated immediately.
+
+```go
+func (c *Chain) Get(ctx context.Context, key string) (*Value, error)
+```
+
+```go
+val, err := chain.Get(ctx, "db-host")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("value=%s source=%s\n", val.Raw, val.Source)
+// e.g., "value=localhost source=env"
+```
+
+### List (merged)
+
+Merges values from all sources. Higher-priority sources override lower ones for the same key. Insertion order is preserved.
+
+```go
+func (c *Chain) List(ctx context.Context, prefix string) ([]*Value, error)
+```
+
+```go
+vals, err := chain.List(ctx, "")
+for _, v := range vals {
+    fmt.Printf("%-20s = %-20s (from %s)\n", v.Key, v.Raw, v.Source)
+}
+```
+
+### Watch (all sources)
+
+Registers the watcher on every source in the chain. Any source that supports watching will fire the callback.
+
+```go
+func (c *Chain) Watch(ctx context.Context, key string, fn WatchFunc) error
+```
+
+```go
+chain.Watch(ctx, "feature.enabled", func(ctx context.Context, key string, val *source.Value) {
+    fmt.Printf("changed: %s = %s (from %s)\n", key, val.Raw, val.Source)
+})
+```
+
+### Close
+
+Closes all sources, collecting any errors.
+
+```go
+func (c *Chain) Close() error
+```
+
+Returns a joined error if any source's `Close()` fails.
+
+## Full example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/xraph/vault/source"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create sources.
+    mem := source.NewMemory()
+    env := source.NewEnv("MYAPP")
+    db := source.NewDatabase(configStore, "myapp")
+
+    // Build a priority chain.
+    chain := source.NewChain(mem, env, db)
+    defer chain.Close()
+
+    // Set a value in memory (highest priority).
+    mem.Set(ctx, "feature.enabled", "true")
+
+    // Environment variable MYAPP_DB_HOST=prod-db.example.com is set.
+    // Database has db-host=localhost.
+
+    // Memory wins for this key.
+    val, err := chain.Get(ctx, "feature.enabled")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("%s = %s (from %s)\n", val.Key, val.Raw, val.Source)
+    // feature.enabled = true (from memory)
+
+    // Env wins over database for this key.
+    val, err = chain.Get(ctx, "db-host")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("%s = %s (from %s)\n", val.Key, val.Raw, val.Source)
+    // db-host = prod-db.example.com (from env)
+
+    // Watch for changes (memory source supports this).
+    chain.Watch(ctx, "feature.enabled", func(ctx context.Context, key string, val *source.Value) {
+        fmt.Printf("CHANGED: %s = %s\n", key, val.Raw)
+    })
+
+    // Trigger the watcher.
+    mem.Set(ctx, "feature.enabled", "false")
+    // CHANGED: feature.enabled = false
+
+    // List all values (merged from all sources).
+    vals, err := chain.List(ctx, "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    for _, v := range vals {
+        fmt.Printf("  %-25s = %-20s (from %s)\n", v.Key, v.Raw, v.Source)
+    }
+}
+```

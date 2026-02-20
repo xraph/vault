@@ -1,0 +1,171 @@
+---
+title: Error Handling
+description: Sentinel errors for all Vault operations.
+---
+
+Vault defines sentinel errors in the root `vault` package. Use `errors.Is` to check for specific error conditions in your application code.
+
+## Using errors.Is
+
+```go
+import (
+    "errors"
+    "github.com/xraph/vault"
+)
+
+sec, err := secretSvc.Get(ctx, "my-key", "myapp")
+if errors.Is(err, vault.ErrSecretNotFound) {
+    // secret does not exist for this app
+}
+```
+
+All Vault services return these sentinel errors. Store backends wrap them appropriately so that `errors.Is` works regardless of which backend is in use.
+
+## Sentinel errors by category
+
+### Store errors
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrNoStore` | `"vault: no store configured"` | No store backend has been configured. |
+
+### Not-found errors
+
+These are returned when a requested entity does not exist for the given key and app ID.
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrKeyNotFound` | `"vault: key not found"` | Generic key not found (used by source package). |
+| `vault.ErrSecretNotFound` | `"vault: secret not found"` | No secret with the given key exists for this app. |
+| `vault.ErrFlagNotFound` | `"vault: flag not found"` | No flag definition with the given key exists for this app. |
+| `vault.ErrConfigNotFound` | `"vault: config entry not found"` | No config entry with the given key exists for this app. |
+| `vault.ErrOverrideNotFound` | `"vault: override not found"` | No tenant override exists for the given key, app, and tenant. |
+| `vault.ErrRotationNotFound` | `"vault: rotation policy not found"` | No rotation policy exists for the given secret key and app. |
+| `vault.ErrAuditNotFound` | `"vault: audit entry not found"` | No audit entry with the given ID exists. |
+| `vault.ErrRunNotFound` | `"vault: workflow run not found"` | No workflow run with the given ID exists. |
+| `vault.ErrDLQNotFound` | `"vault: DLQ entry not found"` | No dead-letter queue entry with the given ID exists. |
+| `vault.ErrCronNotFound` | `"vault: cron entry not found"` | No cron entry with the given ID exists. |
+| `vault.ErrEventNotFound` | `"vault: event not found"` | No event with the given ID exists. |
+| `vault.ErrWorkflowNotFound` | `"vault: workflow not found"` | No workflow with the given ID exists. |
+
+### Cryptography errors
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrDecryptionFailed` | `"vault: decryption failed"` | Decryption of a secret value failed (wrong key or corrupted ciphertext). |
+| `vault.ErrEncryptionFailed` | `"vault: encryption failed"` | Encryption of a secret value failed. |
+| `vault.ErrInvalidKey` | `"vault: invalid encryption key"` | The provided encryption key is invalid (e.g. wrong length). |
+
+The `crypto` package also defines its own error:
+
+```go
+crypto.ErrInvalidKeySize // "crypto: key must be exactly 32 bytes for AES-256"
+```
+
+### Feature flag errors
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrFlagDisabled` | `"vault: flag is disabled"` | The flag definition has `Enabled: false`. |
+| `vault.ErrFlagExists` | `"vault: flag already exists"` | A flag with this key already exists for this app. |
+| `vault.ErrInvalidFlagKey` | `"vault: invalid flag key"` | The flag key is empty or malformed. |
+
+### Secret errors
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrSecretExists` | `"vault: secret already exists"` | A secret with this key already exists for this app. |
+
+### Config errors
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrConfigExists` | `"vault: config entry already exists"` | A config entry with this key already exists for this app. |
+
+### Rotation errors
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrRotationFailed` | `"vault: rotation failed"` | A secret rotation operation failed. |
+
+### Authorization errors
+
+| Error | Value | Description |
+|-------|-------|-------------|
+| `vault.ErrUnauthorized` | `"vault: unauthorized"` | The caller is not authorized to perform this operation. |
+
+### Source package errors
+
+The `source` package defines its own not-found error:
+
+```go
+source.ErrKeyNotFound // "source: key not found"
+```
+
+This is returned when no source in a chain contains the requested key. The `source.Database` adapter converts `vault.ErrConfigNotFound` to `source.ErrKeyNotFound` automatically.
+
+## Error handling patterns
+
+### Check for specific errors
+
+```go
+sec, err := secretSvc.Get(ctx, "api-key", "myapp")
+switch {
+case errors.Is(err, vault.ErrSecretNotFound):
+    // key does not exist -- create it
+case err != nil:
+    // unexpected error
+default:
+    // success
+}
+```
+
+### Flag evaluation with defaults
+
+The type-safe `flag.Service` methods (`Bool`, `String`, `Int`, `Float`) return the default value on any error, including `ErrFlagNotFound`. This is intentional -- flag evaluation should never crash your application.
+
+```go
+// Returns false (the default) if the flag does not exist, is disabled,
+// or evaluation encounters any error.
+enabled := flagSvc.Bool(ctx, "new-dashboard", false)
+```
+
+If you need to distinguish between "flag not found" and "flag exists but evaluates to default", use the `Engine.Evaluate` method directly:
+
+```go
+val, err := engine.Evaluate(ctx, "new-dashboard", "myapp")
+if errors.Is(err, vault.ErrFlagNotFound) {
+    // flag definition does not exist
+}
+```
+
+### Config with fallback
+
+Similarly, `config.Service` type-safe accessors return the default value on error:
+
+```go
+// Returns 50 if "rate-limit" is not found or has a type mismatch.
+limit := configSvc.Int(ctx, "rate-limit", 50)
+```
+
+### Override resolution
+
+The `override.Resolver` silently falls through when `ErrOverrideNotFound` is returned -- it returns the app-level config value instead. Only unexpected errors are propagated.
+
+```go
+val, err := resolver.Resolve(ctx, "rate-limit", "myapp")
+if errors.Is(err, vault.ErrConfigNotFound) {
+    // neither override nor app config exists
+}
+```
+
+## Wrapped errors
+
+Service methods may wrap sentinel errors with additional context using `fmt.Errorf` and `%w`. Always use `errors.Is` rather than string comparison:
+
+```go
+// Works correctly even if the error is wrapped.
+if errors.Is(err, vault.ErrSecretNotFound) {
+    // ...
+}
+```

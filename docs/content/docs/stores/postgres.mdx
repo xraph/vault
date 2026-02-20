@@ -1,0 +1,271 @@
+---
+title: PostgreSQL Store
+description: Production PostgreSQL backend using pgx/v5.
+---
+
+The PostgreSQL store is the recommended backend for production deployments. It uses `pgxpool` from the [pgx/v5](https://github.com/jackc/pgx) driver for high-performance, pooled connections and ships with embedded SQL migrations that create all required tables automatically.
+
+## Installation
+
+```bash
+go get github.com/xraph/vault
+go get github.com/jackc/pgx/v5
+```
+
+## Creating a store
+
+### From a connection string
+
+```go
+import "github.com/xraph/vault/store/postgres"
+
+store, err := postgres.New(ctx, "postgres://user:pass@localhost:5432/vault?sslmode=disable")
+if err != nil {
+    log.Fatal(err)
+}
+defer store.Close()
+```
+
+`postgres.New` creates a `*pgxpool.Pool` internally, connects to the database, and returns a ready-to-use store.
+
+### From an existing pool
+
+If you already have a `*pgxpool.Pool` (for example, shared with other parts of your application), use `NewFromPool`:
+
+```go
+import (
+    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/vault/store/postgres"
+)
+
+pool, err := pgxpool.New(ctx, connString)
+if err != nil {
+    log.Fatal(err)
+}
+
+store := postgres.NewFromPool(pool)
+```
+
+`NewFromPool` does not take ownership of the pool -- it does not close the pool when `store.Close()` is called. You are responsible for closing the pool separately if you created it yourself.
+
+## Options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger for migration progress and internal errors. Defaults to `slog.Default()`. |
+
+```go
+store, err := postgres.New(ctx, connString,
+    postgres.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))),
+)
+```
+
+## Migrations
+
+The store ships with five embedded SQL migration files (`//go:embed migrations/*.sql`) that are applied in order by `Migrate`:
+
+| File | Tables created |
+|------|----------------|
+| `001_secrets.sql` | `vault_secrets`, `vault_secret_versions` |
+| `002_flags.sql` | `vault_flags`, `vault_flag_rules`, `vault_flag_overrides` |
+| `003_config.sql` | `vault_config`, `vault_config_versions`, `vault_overrides` |
+| `004_rotation.sql` | `vault_rotation_policies`, `vault_rotation_records` |
+| `005_audit.sql` | `vault_audit` |
+
+**Total: 11 tables** created across the five migration files.
+
+Call `Migrate` once at application startup:
+
+```go
+if err := store.Migrate(ctx); err != nil {
+    log.Fatal("migration failed:", err)
+}
+```
+
+### Migration tracking
+
+Migrations are tracked in a `vault_migrations` table that is created automatically. Each migration file name is recorded with an `applied_at` timestamp. On subsequent calls to `Migrate`, already-applied migrations are skipped. Applied migrations are logged at the `Info` level through the configured logger.
+
+## Table schemas
+
+### vault_secrets
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `TEXT PRIMARY KEY` | TypeID (e.g. `sec_01h...`) |
+| `key` | `TEXT NOT NULL` | Secret key name |
+| `app_id` | `TEXT NOT NULL` | Application scope |
+| `encrypted_value` | `BYTEA NOT NULL` | AES-256-GCM ciphertext |
+| `encryption_alg` | `TEXT` | Algorithm identifier (e.g. `AES-256-GCM`) |
+| `encryption_key_id` | `TEXT` | Key identifier for rotation tracking |
+| `version` | `BIGINT NOT NULL` | Auto-incremented version number |
+| `metadata` | `JSONB` | User-defined key-value metadata |
+| `expires_at` | `TIMESTAMPTZ` | Optional expiration timestamp |
+| `created_at` | `TIMESTAMPTZ NOT NULL` | Creation timestamp |
+| `updated_at` | `TIMESTAMPTZ NOT NULL` | Last update timestamp |
+
+**Unique constraint:** `(key, app_id)`
+
+### vault_secret_versions
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `TEXT PRIMARY KEY` | TypeID (e.g. `ver_01h...`) |
+| `secret_key` | `TEXT NOT NULL` | References the secret key |
+| `app_id` | `TEXT NOT NULL` | Application scope |
+| `version` | `BIGINT NOT NULL` | Version number |
+| `encrypted_value` | `BYTEA NOT NULL` | Ciphertext at this version |
+| `created_by` | `TEXT` | Who created this version |
+| `created_at` | `TIMESTAMPTZ NOT NULL` | Version creation timestamp |
+
+**Unique constraint:** `(secret_key, app_id, version)`. Indexed on `(secret_key, app_id)`.
+
+### vault_flags
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `TEXT PRIMARY KEY` | TypeID (e.g. `flag_01h...`) |
+| `key` | `TEXT NOT NULL` | Flag key |
+| `type` | `TEXT NOT NULL` | Value type: `bool`, `string`, `int`, `float`, `json` |
+| `default_value` | `JSONB NOT NULL` | Default when no rule matches |
+| `description` | `TEXT` | Human-readable description |
+| `tags` | `JSONB` | Tag array for categorization |
+| `variants` | `JSONB` | Named variant definitions |
+| `enabled` | `BOOLEAN NOT NULL` | Kill switch (disabled = always return default) |
+| `app_id` | `TEXT NOT NULL` | Application scope |
+| `metadata` | `JSONB` | User-defined metadata |
+| `created_at` | `TIMESTAMPTZ NOT NULL` | Creation timestamp |
+| `updated_at` | `TIMESTAMPTZ NOT NULL` | Last update timestamp |
+
+**Unique constraint:** `(key, app_id)`
+
+### vault_flag_rules
+
+Stores targeting rules ordered by priority. Indexed on `(flag_key, app_id, priority)`. Each rule has a `type` (e.g. `when_tenant`, `rollout`, `schedule`), a `config` JSONB column with rule parameters, and a `return_value` JSONB column.
+
+### vault_flag_overrides
+
+Per-tenant flag value overrides. **Unique constraint:** `(flag_key, app_id, tenant_id)`.
+
+### vault_config and vault_config_versions
+
+Mirror the secrets pattern with versioned config entries. `vault_config` has a **unique constraint** on `(key, app_id)`. `vault_config_versions` has a **unique constraint** on `(config_key, app_id, version)` and an index on `(config_key, app_id)`.
+
+### vault_overrides
+
+Per-tenant config overrides. **Unique constraint:** `(key, app_id, tenant_id)`.
+
+### vault_rotation_policies
+
+Rotation schedules with `interval_ns` (stored as `BIGINT` nanoseconds), `enabled` flag, and `last_rotated_at` / `next_rotation_at` timestamps. **Unique constraint:** `(secret_key, app_id)`.
+
+### vault_rotation_records
+
+Append-only rotation history. Indexed on `(secret_key, app_id, rotated_at DESC)`.
+
+### vault_audit
+
+Append-only audit log. Indexed on `(app_id, created_at DESC)` and `(key, app_id, created_at DESC)` for efficient time-range queries.
+
+## Lifecycle methods
+
+| Method | Behaviour |
+|--------|-----------|
+| `Migrate(ctx)` | Runs all pending embedded SQL migrations in lexicographic order |
+| `Ping(ctx)` | Calls `pool.Ping(ctx)` to verify database connectivity |
+| `Close()` | Calls `pool.Close()` to release all pooled connections |
+
+## UPSERT patterns
+
+The PostgreSQL store uses `INSERT ... ON CONFLICT DO UPDATE` (UPSERT) patterns for write operations. This ensures idempotent writes -- calling `SetSecret` or `SetConfig` with the same key either creates or updates the entry atomically.
+
+## When to use
+
+- **Production deployments** -- Durable, ACID-compliant storage with connection pooling.
+- **Staging environments** -- Mirror production behaviour exactly.
+- **Multi-instance deployments** -- All application instances share the same database.
+- **Compliance requirements** -- Audit trail persisted in PostgreSQL with indexed queries.
+
+## Complete example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "log/slog"
+    "os"
+
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/crypto"
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/secret"
+    "github.com/xraph/vault/store/postgres"
+)
+
+func main() {
+    ctx := context.Background()
+
+    connString := os.Getenv("DATABASE_URL")
+    if connString == "" {
+        connString = "postgres://localhost:5432/vault?sslmode=disable"
+    }
+
+    // Create the PostgreSQL store with a logger.
+    store, err := postgres.New(ctx, connString,
+        postgres.WithLogger(slog.Default()),
+    )
+    if err != nil {
+        log.Fatal("connect:", err)
+    }
+    defer store.Close()
+
+    // Run migrations (idempotent -- safe to call on every startup).
+    if err := store.Migrate(ctx); err != nil {
+        log.Fatal("migrate:", err)
+    }
+
+    // Verify connectivity.
+    if err := store.Ping(ctx); err != nil {
+        log.Fatal("ping:", err)
+    }
+
+    // Create an encryptor with a 32-byte key.
+    key := make([]byte, 32)
+    copy(key, "my-secret-encryption-key-32byte")
+    enc, _ := crypto.NewEncryptor(key)
+
+    // Wire up services using the shared store.
+    secretSvc := secret.NewService(store, enc, secret.WithAppID("myapp"))
+    cfgSvc := config.NewService(store, config.WithAppID("myapp"))
+
+    // Store and retrieve a secret.
+    meta, err := secretSvc.Set(ctx, "api_key", []byte("sk-live-abc123"), "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Secret stored: key=%s version=%d\n", meta.Key, meta.Version)
+
+    sec, _ := secretSvc.Get(ctx, "api_key", "")
+    fmt.Printf("Decrypted: %s\n", string(sec.Value))
+
+    // Store and read config.
+    _ = cfgSvc.Set(ctx, "max_retries", 3, "")
+    fmt.Printf("Max retries: %d\n", cfgSvc.Int(ctx, "max_retries", 1))
+
+    // Define and evaluate a feature flag.
+    _ = store.DefineFlag(ctx, &flag.Definition{
+        Key:          "dark_mode",
+        Type:         flag.TypeBool,
+        DefaultValue: false,
+        Enabled:      true,
+        AppID:        "myapp",
+    })
+
+    engine := flag.NewEngine(store)
+    val, _ := engine.Evaluate(ctx, "dark_mode", "myapp")
+    fmt.Printf("dark_mode = %v\n", val)
+}
+```

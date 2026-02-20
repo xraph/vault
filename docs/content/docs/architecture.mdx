@@ -1,0 +1,194 @@
+---
+title: Architecture
+description: How Vault's packages fit together.
+---
+
+Vault is organized as a set of focused Go packages. The root `vault` package defines shared types (entities, config, errors). Six service packages implement the domain logic. Supporting packages provide encryption, identity, scoping, configuration sources, plugins, audit hooks, and metrics. Three store backends implement the same composite interface.
+
+## Package diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          Service packages                               │
+│                                                                         │
+│  secret.Service   flag.Engine + flag.Service   config.Service           │
+│  override.Resolver            rotation.Manager            audit.Logger  │
+├──────────────────────────┬──────────────────────────────────────────────┤
+│   Supporting packages    │   Plugin system                              │
+│                          │                                              │
+│  crypto (AES-256-GCM)   │  plugin.Plugin (base)                       │
+│  id     (TypeID)         │  plugin.Registry                            │
+│  scope  (context keys)   │    OnInit / OnShutdown                      │
+│  source (config sources) │    SourceProvider                            │
+│  audit_hook (events)     │    EncryptionProvider                       │
+│  metrics (counters)      │    FlagEvaluator                            │
+│                          │    OnSecretAccess / OnConfigChange           │
+│                          │    RotationStrategy                          │
+├──────────────────────────┴──────────────────────────────────────────────┤
+│                           store.Store                                   │
+│  (composite: secret.Store + flag.Store + config.Store +                │
+│   override.Store + rotation.Store + audit.Store +                      │
+│   Migrate / Ping / Close)                                              │
+├───────────────┬─────────────────┬───────────────────────────────────────┤
+│ store/memory  │ store/postgres  │ store/bun                            │
+│ (in-process)  │ (pgx pool)      │ (Bun ORM)                           │
+└───────────────┴─────────────────┴───────────────────────────────────────┘
+```
+
+## Service construction
+
+Each service is constructed independently. You choose which services to use and wire them together in your application.
+
+```go
+import (
+    "github.com/xraph/vault/crypto"
+    "github.com/xraph/vault/secret"
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/override"
+    "github.com/xraph/vault/rotation"
+    "github.com/xraph/vault/audit"
+    "github.com/xraph/vault/store/memory"
+)
+
+store := memory.New()
+
+// Encryption
+enc, _ := crypto.NewEncryptor(key)
+
+// Secrets
+secretSvc := secret.NewService(store, enc, secret.WithAppID("myapp"))
+
+// Feature flags
+engine := flag.NewEngine(store, flag.WithCacheTTL(30*time.Second))
+flagSvc := flag.NewService(engine, flag.WithAppID("myapp"))
+
+// Runtime config with tenant override resolution
+resolver := override.NewResolver(store, store, override.WithCacheTTL(30*time.Second))
+configSvc := config.NewService(store, config.WithAppID("myapp"), config.WithResolver(resolver))
+
+// Secret rotation
+rotMgr := rotation.NewManager(store, secretSvc, rotation.WithAppID("myapp"))
+
+// Audit logging
+logger := audit.NewLogger(store)
+```
+
+## Request flow
+
+Every Vault operation follows the same three-phase flow: **scope**, **resolve**, **respond**.
+
+### 1. Scope
+
+The `scope` package injects context values that identify the caller.
+
+```go
+ctx = scope.WithScope(ctx, "myapp", "tenant-1", "user-42", "10.0.0.1")
+```
+
+These values are propagated automatically to every service, engine, and resolver.
+
+### 2. Resolve
+
+Each service resolves the requested resource using scope values from context:
+
+- **secret.Service.Get** -- looks up by key + appID, decrypts
+- **flag.Engine.Evaluate** -- reads tenant ID and user ID from context, evaluates rules in priority order (disabled check, tenant override, rules, default)
+- **config.Service.String** -- if a `ValueResolver` (override.Resolver) is configured, checks for a tenant override first, falls back to app-level config
+- **override.Resolver.Resolve** -- tenant override (if tenantID in context), then app config
+
+### 3. Respond
+
+The resolved value is returned to the caller. For type-safe services (`flag.Service`, `config.Service`), the value is coerced to the requested type. On error or type mismatch, the default value is returned.
+
+## Tenant isolation
+
+Vault enforces tenant isolation at multiple layers:
+
+| Layer | Mechanism |
+|-------|-----------|
+| **Context** | `scope.WithTenantID` injects tenant ID into `context.Context` |
+| **Flag engine** | Reads `vault.tenant_id` from context for rule evaluation and tenant overrides |
+| **Override resolver** | Reads `vault.tenant_id` from context to look up per-tenant config overrides |
+| **Store** | All queries include `appID` as a scoping parameter; composite keys are `key:appID` |
+| **Audit logger** | Extracts all four scope values (appID, tenantID, userID, IP) from context |
+
+The context keys used by `scope`, `flag`, and `override` are intentionally identical (`vault.tenant_id`, `vault.user_id`), so a single `scope.WithTenantID` call propagates to all subsystems.
+
+## Plugin system
+
+The `plugin.Registry` uses type-switch discovery. When a plugin is registered, the registry checks which capability interfaces it implements and categorizes it accordingly.
+
+```go
+import "github.com/xraph/vault/plugin"
+
+registry := plugin.NewRegistry()
+registry.Register(myPlugin)
+
+// Discovery
+hooks := registry.InitHooks()          // []plugin.OnInit
+sources := registry.SourceProviders()   // []plugin.SourceProvider
+evaluator := registry.FlagEvaluatorByName("geo") // plugin.FlagEvaluator
+```
+
+A single plugin can implement multiple capabilities. For example, a plugin could implement both `EncryptionProvider` and `OnSecretAccess` to provide key management and audit logging in one type.
+
+### Capability interfaces
+
+| Interface | Method(s) | Purpose |
+|-----------|-----------|---------|
+| `Plugin` | `Name() string` | Base interface -- all plugins must implement |
+| `OnInit` | `OnInit(ctx) error` | Called during initialization |
+| `OnShutdown` | `OnShutdown(ctx) error` | Called during shutdown |
+| `SourceProvider` | `Source() source.Source`, `Priority() int` | Provides a configuration source |
+| `EncryptionProvider` | `EncryptionKeyProvider() crypto.EncryptionKeyProvider` | Provides encryption keys |
+| `FlagEvaluator` | `EvaluatorName() string`, `Evaluate(ctx, rule, tenantID, userID) (bool, error)` | Custom flag rule evaluator |
+| `OnSecretAccess` | `OnSecretAccess(ctx, key, action) error` | Hook for secret access events |
+| `OnConfigChange` | `OnConfigChange(ctx, key, oldValue, newValue) error` | Hook for config change events |
+| `RotationStrategy` | `RotationName() string`, `Rotate(ctx, key, current) ([]byte, error)` | Custom secret rotation logic |
+
+## Configuration sources
+
+The `source` package provides a composable configuration source system. Sources are checked in priority order; the first hit wins.
+
+| Source | Import | Description |
+|--------|--------|-------------|
+| `Memory` | `github.com/xraph/vault/source` | In-memory key-value map with watch support |
+| `Env` | `github.com/xraph/vault/source` | Reads from environment variables with optional prefix |
+| `Database` | `github.com/xraph/vault/source` | Reads from a `config.Store` backend |
+| `Chain` | `github.com/xraph/vault/source` | Priority-ordered list of sources (first hit wins) |
+
+```go
+import "github.com/xraph/vault/source"
+
+chain := source.NewChain(
+    source.NewEnv("MYAPP"),         // highest priority
+    source.NewMemory(),             // dynamic overrides
+    source.NewDatabase(store, "myapp"), // database fallback
+)
+
+val, err := chain.Get(ctx, "feature-x")
+```
+
+## Package index
+
+| Package | Import path | Purpose |
+|---------|-------------|---------|
+| `vault` | `github.com/xraph/vault` | Root -- `Entity`, `Config`, `Option`, sentinel errors |
+| `id` | `github.com/xraph/vault/id` | TypeID-based entity identifiers with 8 prefixes |
+| `scope` | `github.com/xraph/vault/scope` | Context-based tenant/app/user/IP scoping |
+| `crypto` | `github.com/xraph/vault/crypto` | AES-256-GCM encryption, key providers, key store |
+| `secret` | `github.com/xraph/vault/secret` | Secret entity, store interface, encrypted CRUD service |
+| `flag` | `github.com/xraph/vault/flag` | Flag definitions, rules, engine, type-safe service |
+| `config` | `github.com/xraph/vault/config` | Config entries, store interface, typed accessor service |
+| `override` | `github.com/xraph/vault/override` | Per-tenant config overrides and cached resolver |
+| `rotation` | `github.com/xraph/vault/rotation` | Rotation policies, records, background manager |
+| `audit` | `github.com/xraph/vault/audit` | Audit log entries, store interface, logger |
+| `audit_hook` | `github.com/xraph/vault/audit_hook` | Audit event extension for external systems |
+| `source` | `github.com/xraph/vault/source` | Composable config sources (memory, env, database, chain) |
+| `plugin` | `github.com/xraph/vault/plugin` | Plugin interfaces (8 capabilities) and registry |
+| `metrics` | `github.com/xraph/vault/metrics` | Counter/Histogram interfaces and collector |
+| `store` | `github.com/xraph/vault/store` | Composite `Store` interface definition |
+| `store/memory` | `github.com/xraph/vault/store/memory` | In-memory store (testing and development) |
+| `store/postgres` | `github.com/xraph/vault/store/postgres` | PostgreSQL store (pgx connection pool) |
+| `store/bun` | `github.com/xraph/vault/store/bun` | Bun ORM store (PostgreSQL via Bun) |

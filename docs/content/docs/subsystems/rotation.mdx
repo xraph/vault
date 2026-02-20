@@ -1,0 +1,310 @@
+---
+title: Secret Rotation
+description: Scheduled secret rotation with custom strategies.
+---
+
+The `rotation` package provides scheduled secret rotation with custom rotation strategies, a background check loop, and a full rotation history. It integrates directly with the `secret.Service` for reading and writing secret values.
+
+## Architecture
+
+```
+rotation.Manager
+  ├── rotation.Store       (policies + rotation records)
+  ├── secret.Service       (get current / set new value)
+  ├── map[string]Rotator   (registered rotator functions)
+  └── background loop      (periodic policy check)
+```
+
+The `Manager` periodically checks rotation policies. When a policy is due, it retrieves the current secret, invokes the registered `Rotator` function to produce a new value, writes the new value (creating a new version), records the rotation event, and updates the policy timestamps.
+
+## Installation
+
+```go
+import "github.com/xraph/vault/rotation"
+```
+
+## Rotator function
+
+A `Rotator` is a function that takes the current secret value and produces a new one. This is where you implement your rotation logic (e.g., generating a new API key, rotating a database password).
+
+```go
+type Rotator func(ctx context.Context, currentValue []byte) ([]byte, error)
+```
+
+```go
+// Example: generate a random 32-byte API key.
+apiKeyRotator := func(ctx context.Context, current []byte) ([]byte, error) {
+    newKey := make([]byte, 32)
+    if _, err := rand.Read(newKey); err != nil {
+        return nil, err
+    }
+    return []byte(hex.EncodeToString(newKey)), nil
+}
+```
+
+## Manager
+
+The `Manager` handles the rotation lifecycle: scheduling, execution, recording, and policy updates.
+
+### Creating a Manager
+
+```go
+mgr := rotation.NewManager(rotationStore, secretService,
+    rotation.WithAppID("myapp"),
+    rotation.WithCheckInterval(5*time.Minute),
+    rotation.WithLogger(logger),
+)
+```
+
+### ManagerOption
+
+| Option | Signature | Default | Description |
+|--------|-----------|---------|-------------|
+| `WithCheckInterval` | `WithCheckInterval(d time.Duration) ManagerOption` | `1 * time.Minute` | How often the manager checks for due rotations |
+| `WithLogger` | `WithLogger(l *slog.Logger) ManagerOption` | `slog.Default()` | Logger for rotation events and errors |
+| `WithAppID` | `WithAppID(appID string) ManagerOption` | `""` | Default app ID for policy lookups |
+
+### RegisterRotator
+
+Registers a rotator function for a specific secret key. Each secret key can have at most one rotator.
+
+```go
+func (m *Manager) RegisterRotator(secretKey string, r Rotator)
+```
+
+```go
+mgr.RegisterRotator("db-password", func(ctx context.Context, current []byte) ([]byte, error) {
+    // Call your database to change the password.
+    newPass := generatePassword()
+    if err := updateDatabasePassword(ctx, newPass); err != nil {
+        return nil, err
+    }
+    return []byte(newPass), nil
+})
+
+mgr.RegisterRotator("api-key", apiKeyRotator)
+```
+
+### Start
+
+Begins the background rotation check loop. The loop runs on a ticker at the configured `CheckInterval` and checks all enabled policies.
+
+```go
+func (m *Manager) Start(ctx context.Context) error
+```
+
+```go
+if err := mgr.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Stop
+
+Cancels the background loop and waits for it to finish.
+
+```go
+func (m *Manager) Stop(ctx context.Context) error
+```
+
+```go
+if err := mgr.Stop(ctx); err != nil {
+    log.Printf("rotation manager stop: %v", err)
+}
+```
+
+### RotateNow
+
+Performs an immediate rotation for a specific secret, bypassing the schedule.
+
+```go
+func (m *Manager) RotateNow(ctx context.Context, secretKey, appID string) error
+```
+
+```go
+if err := mgr.RotateNow(ctx, "db-password", "myapp"); err != nil {
+    log.Printf("manual rotation failed: %v", err)
+}
+```
+
+### RotateNow flow
+
+When `RotateNow` is called (either manually or from the background loop), the following steps execute:
+
+1. **Look up rotator** -- Find the registered `Rotator` function for the secret key. Returns an error if none is registered.
+2. **Get current secret** -- Call `secret.Service.Get` to retrieve and decrypt the current value.
+3. **Invoke rotator** -- Call the `Rotator` function with the current value to produce a new value.
+4. **Set new secret** -- Call `secret.Service.Set` with the new value. This auto-creates a new version.
+5. **Record rotation** -- Persist a `Record` entry with old and new version numbers.
+6. **Update policy** -- Set `LastRotatedAt` to now and calculate `NextRotationAt` as `now + policy.Interval`.
+
+If any step fails, the error is returned (for manual rotations) or logged (for scheduled rotations).
+
+## Policy
+
+A `Policy` defines the rotation schedule for a secret.
+
+```go
+type Policy struct {
+    vault.Entity
+    ID             id.ID         `json:"id"`
+    SecretKey      string        `json:"secret_key"`
+    AppID          string        `json:"app_id"`
+    Interval       time.Duration `json:"interval"`
+    Enabled        bool          `json:"enabled"`
+    LastRotatedAt  *time.Time    `json:"last_rotated_at,omitempty"`
+    NextRotationAt *time.Time    `json:"next_rotation_at,omitempty"`
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `SecretKey` | `string` | The secret key this policy applies to |
+| `AppID` | `string` | Application scope identifier |
+| `Interval` | `time.Duration` | Time between rotations |
+| `Enabled` | `bool` | Whether the policy is active |
+| `LastRotatedAt` | `*time.Time` | When the last rotation completed |
+| `NextRotationAt` | `*time.Time` | When the next rotation is due |
+
+The background loop skips policies where `Enabled` is `false` or `NextRotationAt` is in the future.
+
+## Record
+
+A `Record` captures the details of a completed rotation event.
+
+```go
+type Record struct {
+    ID         id.ID     `json:"id"`
+    SecretKey  string    `json:"secret_key"`
+    AppID      string    `json:"app_id"`
+    OldVersion int64     `json:"old_version"`
+    NewVersion int64     `json:"new_version"`
+    RotatedBy  string    `json:"rotated_by"`
+    RotatedAt  time.Time `json:"rotated_at"`
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `OldVersion` | `int64` | Secret version before rotation |
+| `NewVersion` | `int64` | Secret version after rotation |
+| `RotatedBy` | `string` | Identifies who/what triggered the rotation (set to `"rotation-manager"`) |
+| `RotatedAt` | `time.Time` | UTC timestamp of the rotation |
+
+### ListOpts
+
+```go
+type ListOpts struct {
+    Limit  int
+    Offset int
+}
+```
+
+## Store interface
+
+```go
+type Store interface {
+    SaveRotationPolicy(ctx context.Context, p *Policy) error
+    GetRotationPolicy(ctx context.Context, key, appID string) (*Policy, error)
+    ListRotationPolicies(ctx context.Context, appID string) ([]*Policy, error)
+    DeleteRotationPolicy(ctx context.Context, key, appID string) error
+    RecordRotation(ctx context.Context, r *Record) error
+    ListRotationRecords(ctx context.Context, key, appID string, opts ListOpts) ([]*Record, error)
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `SaveRotationPolicy` | Creates or updates a rotation policy |
+| `GetRotationPolicy` | Retrieves a policy by secret key and app ID |
+| `ListRotationPolicies` | Returns all policies for an app (used by the background loop) |
+| `DeleteRotationPolicy` | Removes a rotation policy |
+| `RecordRotation` | Persists a rotation record |
+| `ListRotationRecords` | Returns rotation history for a secret |
+
+## Full example
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "fmt"
+    "log"
+    "log/slog"
+    "os"
+    "os/signal"
+    "time"
+
+    "github.com/xraph/vault/rotation"
+    "github.com/xraph/vault/secret"
+    "github.com/xraph/vault/crypto"
+)
+
+func main() {
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+    defer stop()
+
+    // Set up secret service (assumes store and encryptor are ready).
+    enc, _ := crypto.NewEncryptor(encryptionKey)
+    secretSvc := secret.NewService(secretStore, enc,
+        secret.WithAppID("myapp"),
+    )
+
+    // Create rotation manager.
+    mgr := rotation.NewManager(rotationStore, secretSvc,
+        rotation.WithAppID("myapp"),
+        rotation.WithCheckInterval(1*time.Minute),
+        rotation.WithLogger(slog.Default()),
+    )
+
+    // Register a rotator for API keys.
+    mgr.RegisterRotator("stripe-api-key", func(ctx context.Context, current []byte) ([]byte, error) {
+        newKey := make([]byte, 32)
+        if _, err := rand.Read(newKey); err != nil {
+            return nil, err
+        }
+        return []byte("sk_live_" + hex.EncodeToString(newKey)), nil
+    })
+
+    // Create a rotation policy (every 30 days).
+    now := time.Now().UTC()
+    next := now.Add(30 * 24 * time.Hour)
+    _ = rotationStore.SaveRotationPolicy(ctx, &rotation.Policy{
+        SecretKey:      "stripe-api-key",
+        AppID:          "myapp",
+        Interval:       30 * 24 * time.Hour,
+        Enabled:        true,
+        NextRotationAt: &next,
+    })
+
+    // Start the background loop.
+    if err := mgr.Start(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Rotation manager running. Press Ctrl+C to stop.")
+
+    // Trigger an immediate rotation.
+    if err := mgr.RotateNow(ctx, "stripe-api-key", "myapp"); err != nil {
+        log.Printf("manual rotation failed: %v", err)
+    }
+
+    // Wait for shutdown signal.
+    <-ctx.Done()
+
+    if err := mgr.Stop(context.Background()); err != nil {
+        log.Printf("shutdown: %v", err)
+    }
+
+    // List rotation history.
+    records, _ := rotationStore.ListRotationRecords(context.Background(),
+        "stripe-api-key", "myapp", rotation.ListOpts{Limit: 10})
+    for _, r := range records {
+        fmt.Printf("  v%d -> v%d at %s by %s\n",
+            r.OldVersion, r.NewVersion, r.RotatedAt, r.RotatedBy)
+    }
+}
+```

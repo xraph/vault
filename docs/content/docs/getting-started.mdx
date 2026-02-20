@@ -1,0 +1,241 @@
+---
+title: Getting Started
+description: Install Vault and manage your first secret in under five minutes.
+---
+
+This guide walks you through installing Vault, storing an encrypted secret, evaluating a feature flag, and reading runtime configuration. By the end you will have a working program that exercises all three subsystems.
+
+## Prerequisites
+
+- **Go 1.24+** (the module uses `go 1.25.7` but any recent version works)
+- A Go module (`go mod init`)
+
+## Install
+
+```bash
+go get github.com/xraph/vault
+```
+
+This pulls in the root module and all sub-packages (`secret`, `flag`, `config`, `crypto`, `scope`, `store/memory`, etc.).
+
+## Step 1 -- Create a store
+
+Every Vault operation needs a store backend. Start with the in-memory store for development and testing.
+
+```go
+import "github.com/xraph/vault/store/memory"
+
+store := memory.New()
+```
+
+The `memory.Store` implements the full `store.Store` composite interface -- secrets, flags, config, overrides, rotation, and audit -- all in-process with no external dependencies.
+
+## Step 2 -- Set up encryption
+
+Vault encrypts secrets using AES-256-GCM. Create an `Encryptor` with a 32-byte key.
+
+```go
+import "github.com/xraph/vault/crypto"
+
+key := []byte("my-32-byte-secret-key-for-vault!") // exactly 32 bytes
+enc, err := crypto.NewEncryptor(key)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+In production, load the key from an environment variable using the `crypto.EnvKeyProvider`:
+
+```go
+provider := crypto.NewEnvKeyProvider("VAULT_ENCRYPTION_KEY")
+keyBytes, err := provider.GetKey(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+enc, err := crypto.NewEncryptor(keyBytes)
+```
+
+The environment variable can be hex-encoded (64 chars) or base64-encoded (44 chars). The provider auto-detects the encoding.
+
+## Step 3 -- Create the secret service
+
+The `secret.Service` combines a store and an encryptor to provide encrypted CRUD with auto-versioning.
+
+```go
+import "github.com/xraph/vault/secret"
+
+secretSvc := secret.NewService(store, enc, secret.WithAppID("myapp"))
+```
+
+The `WithAppID` option sets a default app ID so you do not have to pass it on every call.
+
+## Step 4 -- Scope the context
+
+Vault uses `context.Context` to carry scope values (app ID, tenant ID, user ID, IP) across all subsystems. Use the `scope` package to inject them.
+
+```go
+import "github.com/xraph/vault/scope"
+
+ctx := context.Background()
+ctx = scope.WithTenantID(ctx, "tenant-1")
+ctx = scope.WithAppID(ctx, "myapp")
+```
+
+Or set all values at once:
+
+```go
+ctx = scope.WithScope(ctx, "myapp", "tenant-1", "user-42", "10.0.0.1")
+```
+
+## Step 5 -- Store and retrieve a secret
+
+```go
+// Store a secret. The value is encrypted and auto-versioned.
+meta, err := secretSvc.Set(ctx, "openai-api-key", []byte("sk-abc123"), "myapp")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("stored: id=%s version=%d\n", meta.ID, meta.Version)
+// Output: stored: id=sec_01h... version=1
+
+// Retrieve and decrypt the secret.
+sec, err := secretSvc.Get(ctx, "openai-api-key", "myapp")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("value: %s\n", sec.Value)
+// Output: value: sk-abc123
+
+// Update the same key -- version auto-increments.
+meta2, _ := secretSvc.Set(ctx, "openai-api-key", []byte("sk-xyz789"), "myapp")
+fmt.Printf("updated: version=%d\n", meta2.Version)
+// Output: updated: version=2
+```
+
+## Step 6 -- Evaluate a feature flag
+
+Create a flag definition in the store, then evaluate it through the type-safe `flag.Service`.
+
+```go
+import (
+    "github.com/xraph/vault"
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/id"
+)
+
+// Define a boolean flag.
+err = store.DefineFlag(ctx, &flag.Definition{
+    Entity:       vault.NewEntity(),
+    ID:           id.NewFlagID(),
+    Key:          "new-dashboard",
+    Type:         flag.TypeBool,
+    DefaultValue: false,
+    Description:  "Enable the redesigned dashboard",
+    Enabled:      true,
+    AppID:        "myapp",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Create the engine and service.
+engine := flag.NewEngine(store)
+flagSvc := flag.NewService(engine, flag.WithAppID("myapp"))
+
+// Evaluate -- returns the default (false) since no rules match.
+enabled := flagSvc.Bool(ctx, "new-dashboard", false)
+fmt.Printf("new-dashboard: %v\n", enabled)
+// Output: new-dashboard: false
+
+// Add a targeting rule for tenant-1.
+rule := flag.WhenTenant("tenant-1").Return(true)
+rule.FlagKey = "new-dashboard"
+rule.AppID = "myapp"
+rule.Priority = 1
+_ = store.SetFlagRules(ctx, "new-dashboard", "myapp", []*flag.Rule{rule})
+
+// Evaluate again -- tenant-1 now gets true.
+enabled = flagSvc.Bool(ctx, "new-dashboard", false)
+fmt.Printf("new-dashboard (tenant-1): %v\n", enabled)
+// Output: new-dashboard (tenant-1): true
+```
+
+## Step 7 -- Read runtime config
+
+The `config.Service` provides type-safe accessors for runtime configuration entries.
+
+```go
+import (
+    "time"
+
+    "github.com/xraph/vault/config"
+)
+
+configSvc := config.NewService(store, config.WithAppID("myapp"))
+
+// Set a config entry.
+err = configSvc.Set(ctx, "rate-limit", 100, "myapp",
+    config.WithDescription("Max requests per minute"),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Read with type-safe accessors.
+limit := configSvc.Int(ctx, "rate-limit", 50)
+fmt.Printf("rate-limit: %d\n", limit)
+// Output: rate-limit: 100
+
+// Set and read a duration.
+_ = configSvc.Set(ctx, "request-timeout", "30s", "myapp")
+timeout := configSvc.Duration(ctx, "request-timeout", 10*time.Second)
+fmt.Printf("timeout: %s\n", timeout)
+// Output: timeout: 30s
+
+// Watch for changes.
+configSvc.Watch("rate-limit", func(ctx context.Context, key string, oldVal, newVal any) {
+    fmt.Printf("config changed: %s %v -> %v\n", key, oldVal, newVal)
+})
+```
+
+## Step 8 -- Switch to PostgreSQL
+
+When you are ready for production, swap the memory store for PostgreSQL. The API does not change.
+
+```go
+import "github.com/xraph/vault/store/postgres"
+
+pgStore, err := postgres.New(ctx, "postgres://user:pass@localhost:5432/mydb")
+if err != nil {
+    log.Fatal(err)
+}
+defer pgStore.Close()
+
+// Run embedded migrations to create all Vault tables.
+if err := pgStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+
+// Use pgStore everywhere you previously used memory.New().
+secretSvc := secret.NewService(pgStore, enc, secret.WithAppID("myapp"))
+engine := flag.NewEngine(pgStore)
+configSvc := config.NewService(pgStore, config.WithAppID("myapp"))
+```
+
+Alternatively, use the Bun ORM backend if your application already uses Bun:
+
+```go
+import bunstore "github.com/xraph/vault/store/bun"
+
+bunStore := bunstore.New(db) // db is a *bun.DB
+if err := bunStore.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Next steps
+
+- [Architecture](/docs/architecture) -- Understand the package dependency graph and request flow.
+- [Entities](/docs/concepts/entities) -- Learn about the core data types (Secret, Definition, Entry, Override, Policy).
+- [Multi-tenancy](/docs/concepts/multi-tenancy) -- How context-based tenant isolation works across all subsystems.
+- [Plugins](/docs/subsystems/plugins) -- Extend Vault with custom encryption providers, flag evaluators, and rotation strategies.

@@ -1,0 +1,390 @@
+---
+title: Feature Flags
+description: Rule-based evaluation with tenant overrides and type-safe access.
+---
+
+The `flag` package provides a complete feature flag system with three layers: **Definition** (what the flag is), **Engine** (how it evaluates), and **Service** (type-safe access for application code). It supports boolean, string, integer, float, and JSON flag types, with targeting rules, per-tenant overrides, and an in-memory evaluation cache.
+
+## Architecture
+
+```
+flag.Service  (type-safe accessors: Bool, String, Int, Float, JSON)
+  └── flag.Engine  (evaluation logic: disabled -> override -> rules -> default)
+        ├── flag.Store  (definitions, rules, overrides)
+        └── evaluationCache  (optional TTL cache)
+```
+
+The three layers separate concerns:
+
+1. **Definition** -- The data model for flags, rules, variants, and overrides.
+2. **Engine** -- The evaluation engine that resolves a flag key to a concrete value.
+3. **Service** -- A thin wrapper providing type-safe accessors with built-in fallback defaults.
+
+## Installation
+
+```go
+import "github.com/xraph/vault/flag"
+```
+
+## Flag types
+
+| Type | Constant | Go type | Description |
+|------|----------|---------|-------------|
+| Boolean | `flag.TypeBool` | `bool` | On/off toggles |
+| String | `flag.TypeString` | `string` | Feature variants, experiment names |
+| Integer | `flag.TypeInt` | `int` | Numeric limits, counts |
+| Float | `flag.TypeFloat` | `float64` | Percentages, thresholds |
+| JSON | `flag.TypeJSON` | `any` | Complex configuration objects |
+
+## Definition
+
+A `Definition` represents the static configuration of a feature flag.
+
+```go
+type Definition struct {
+    vault.Entity
+    ID           id.ID             `json:"id"`
+    Key          string            `json:"key"`
+    Type         Type              `json:"type"`
+    DefaultValue any               `json:"default_value"`
+    Description  string            `json:"description"`
+    Tags         []string          `json:"tags,omitempty"`
+    Variants     []Variant         `json:"variants,omitempty"`
+    Enabled      bool              `json:"enabled"`
+    AppID        string            `json:"app_id"`
+    Metadata     map[string]string `json:"metadata,omitempty"`
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Key` | `string` | Unique flag identifier within an app |
+| `Type` | `Type` | One of `TypeBool`, `TypeString`, `TypeInt`, `TypeFloat`, `TypeJSON` |
+| `DefaultValue` | `any` | Value returned when no rules or overrides match |
+| `Enabled` | `bool` | When `false`, the engine always returns `DefaultValue` |
+| `Tags` | `[]string` | Organizational tags for filtering |
+| `Variants` | `[]Variant` | Named value variants with descriptions |
+
+### Variant
+
+```go
+type Variant struct {
+    Value       any    `json:"value"`
+    Description string `json:"description"`
+}
+```
+
+## Targeting rules
+
+Rules are evaluated in **priority order** (lower number = higher priority). The first matching rule determines the return value. If no rule matches, the `DefaultValue` is used.
+
+### Rule types
+
+| RuleType | Constant | Description |
+|----------|----------|-------------|
+| `when_tenant` | `RuleWhenTenant` | Matches specific tenant IDs |
+| `when_tenant_tag` | `RuleWhenTenantTag` | Matches tenants with a specific tag key/value |
+| `when_user` | `RuleWhenUser` | Matches specific user IDs |
+| `rollout` | `RuleRollout` | Percentage-based rollout (0--100) |
+| `schedule` | `RuleSchedule` | Time-window activation |
+| `custom` | `RuleCustom` | Delegates to a named plugin evaluator |
+
+### Rule struct
+
+```go
+type Rule struct {
+    vault.Entity
+    ID          id.ID      `json:"id"`
+    FlagKey     string     `json:"flag_key"`
+    AppID       string     `json:"app_id"`
+    Priority    int        `json:"priority"` // lower = higher priority
+    Type        RuleType   `json:"type"`
+    Config      RuleConfig `json:"config"`
+    ReturnValue any        `json:"return_value"`
+}
+```
+
+### RuleConfig
+
+Each rule type uses specific fields within `RuleConfig`:
+
+```go
+type RuleConfig struct {
+    TenantIDs  []string       `json:"tenant_ids,omitempty"`   // when_tenant
+    TagKey     string         `json:"tag_key,omitempty"`      // when_tenant_tag
+    TagValue   string         `json:"tag_value,omitempty"`    // when_tenant_tag
+    UserIDs    []string       `json:"user_ids,omitempty"`     // when_user
+    Percentage int            `json:"percentage,omitempty"`   // rollout (0-100)
+    StartAt    *time.Time     `json:"start_at,omitempty"`     // schedule
+    EndAt      *time.Time     `json:"end_at,omitempty"`       // schedule
+    Evaluator  string         `json:"evaluator,omitempty"`    // custom (plugin name)
+    Params     map[string]any `json:"params,omitempty"`       // custom
+}
+```
+
+### Rule constructors
+
+The package provides convenience constructors for each rule type. Chain `.Return(value)` to set the return value.
+
+```go
+// Match specific tenants.
+rule := flag.WhenTenant("tenant-a", "tenant-b").Return(true)
+
+// Match tenants with a specific tag.
+rule := flag.WhenTenantTag("plan", "enterprise").Return("advanced")
+
+// Match specific users.
+rule := flag.WhenUser("user-123", "user-456").Return(true)
+
+// Percentage rollout (deterministic hash-based).
+rule := flag.Rollout(25).Return(true) // 25% of tenants
+
+// Time-window schedule.
+rule := flag.Schedule(startTime, endTime).Return(true)
+```
+
+The `Return` method is chainable and sets the value returned when the rule matches:
+
+```go
+func (r *Rule) Return(value any) *Rule
+```
+
+### TenantOverride
+
+A `TenantOverride` bypasses all rules and returns a specific value for a given tenant.
+
+```go
+type TenantOverride struct {
+    vault.Entity
+    ID       id.ID  `json:"id"`
+    FlagKey  string `json:"flag_key"`
+    AppID    string `json:"app_id"`
+    TenantID string `json:"tenant_id"`
+    Value    any    `json:"value"`
+}
+```
+
+## Engine
+
+The `Engine` evaluates flags using definitions, rules, and overrides from the store.
+
+### Creating an engine
+
+```go
+engine := flag.NewEngine(store,
+    flag.WithCacheTTL(30*time.Second),
+)
+```
+
+| EngineOption | Description |
+|--------------|-------------|
+| `WithCacheTTL(ttl time.Duration)` | Enables an in-memory TTL cache for evaluation results |
+
+### Evaluate
+
+```go
+func (e *Engine) Evaluate(ctx context.Context, key, appID string) (any, error)
+```
+
+### Evaluation order
+
+The engine follows a strict evaluation order:
+
+1. **Disabled check** -- If `Definition.Enabled` is `false`, return `DefaultValue` immediately.
+2. **Tenant override** -- If a tenant ID is in the context and a `TenantOverride` exists for that tenant, return the override value.
+3. **Rules** -- Evaluate targeting rules in priority order (ascending). Return the `ReturnValue` of the first matching rule.
+4. **Default** -- If no rule matches, return `Definition.DefaultValue`.
+
+### Context keys
+
+The engine reads tenant and user identifiers from the context:
+
+```go
+const (
+    ContextKeyTenantID ContextKey = "vault.tenant_id"
+    ContextKeyUserID   ContextKey = "vault.user_id"
+)
+```
+
+Set these using the `scope` package helpers:
+
+```go
+import "github.com/xraph/vault/scope"
+
+ctx = scope.WithTenantID(ctx, "tenant-abc")
+ctx = scope.WithUserID(ctx, "user-123")
+```
+
+### Rollout hashing
+
+The `rollout` rule type uses deterministic hashing to ensure consistent assignment:
+
+```
+hash = SHA-256(tenantID + ":" + flagKey)
+bucket = first 4 bytes of hash (big-endian uint32) mod 100
+match = bucket < percentage
+```
+
+This means the same tenant always gets the same result for a given flag, and changing the percentage only adds new tenants (never removes existing ones below the threshold).
+
+## Service
+
+The `Service` wraps the engine with type-safe accessors. On error or type mismatch, each accessor returns its `defaultVal` argument.
+
+### Creating a service
+
+```go
+svc := flag.NewService(engine,
+    flag.WithAppID("myapp"),
+)
+```
+
+### Type-safe accessors
+
+#### Bool
+
+```go
+func (s *Service) Bool(ctx context.Context, key string, defaultVal bool) bool
+```
+
+```go
+if svc.Bool(ctx, "dark-mode", false) {
+    enableDarkMode()
+}
+```
+
+#### String
+
+```go
+func (s *Service) String(ctx context.Context, key, defaultVal string) string
+```
+
+```go
+variant := svc.String(ctx, "checkout-flow", "standard")
+```
+
+#### Int
+
+```go
+func (s *Service) Int(ctx context.Context, key string, defaultVal int) int
+```
+
+Handles `int`, `float64` (from JSON), and `int64` values.
+
+```go
+maxItems := svc.Int(ctx, "cart-max-items", 100)
+```
+
+#### Float
+
+```go
+func (s *Service) Float(ctx context.Context, key string, defaultVal float64) float64
+```
+
+Handles `float64`, `int`, and `int64` values (promoted to `float64`).
+
+```go
+threshold := svc.Float(ctx, "score-threshold", 0.75)
+```
+
+#### JSON
+
+```go
+func (s *Service) JSON(ctx context.Context, key string, target any) error
+```
+
+Evaluates the flag and unmarshals the value into `target` (must be a pointer). Supports `[]byte`, `string`, and arbitrary values via marshal/unmarshal round-trip.
+
+```go
+type LayoutConfig struct {
+    Columns int    `json:"columns"`
+    Theme   string `json:"theme"`
+}
+
+var cfg LayoutConfig
+if err := svc.JSON(ctx, "layout-config", &cfg); err != nil {
+    cfg = LayoutConfig{Columns: 2, Theme: "default"}
+}
+```
+
+## Evaluation cache
+
+When `WithCacheTTL` is set on the engine, evaluation results are cached in memory keyed by `flagKey + tenantID`. The cache:
+
+- Uses a TTL-based expiration strategy.
+- Is thread-safe (protected by `sync.RWMutex`).
+- Supports invalidation by flag key (`invalidate`) or full flush (`invalidateAll`).
+- Reduces store reads for hot flags.
+
+## Store interface
+
+```go
+type Store interface {
+    DefineFlag(ctx context.Context, f *Definition) error
+    GetFlagDefinition(ctx context.Context, key, appID string) (*Definition, error)
+    ListFlagDefinitions(ctx context.Context, appID string, opts ListOpts) ([]*Definition, error)
+    DeleteFlagDefinition(ctx context.Context, key, appID string) error
+
+    SetFlagRules(ctx context.Context, key, appID string, rules []*Rule) error
+    GetFlagRules(ctx context.Context, key, appID string) ([]*Rule, error)
+
+    SetFlagTenantOverride(ctx context.Context, key, appID, tenantID string, value any) error
+    GetFlagTenantOverride(ctx context.Context, key, appID, tenantID string) (any, error)
+    DeleteFlagTenantOverride(ctx context.Context, key, appID, tenantID string) error
+    ListFlagTenantOverrides(ctx context.Context, key, appID string) ([]*TenantOverride, error)
+}
+```
+
+## Full example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "github.com/xraph/vault/flag"
+    "github.com/xraph/vault/scope"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create engine with caching.
+    engine := flag.NewEngine(store,
+        flag.WithCacheTTL(30*time.Second),
+    )
+
+    // Create type-safe service.
+    svc := flag.NewService(engine,
+        flag.WithAppID("myapp"),
+    )
+
+    // Define a flag (via store).
+    _ = store.DefineFlag(ctx, &flag.Definition{
+        Key:          "new-checkout",
+        Type:         flag.TypeBool,
+        DefaultValue: false,
+        Enabled:      true,
+        AppID:        "myapp",
+        Description:  "Enables the new checkout flow",
+    })
+
+    // Add targeting rules.
+    _ = store.SetFlagRules(ctx, "new-checkout", "myapp", []*flag.Rule{
+        flag.WhenTenant("tenant-beta").Return(true),
+        flag.Rollout(10).Return(true),
+    })
+
+    // Set a per-tenant override.
+    _ = store.SetFlagTenantOverride(ctx, "new-checkout", "myapp", "tenant-vip", true)
+
+    // Evaluate with tenant context.
+    ctx = scope.WithTenantID(ctx, "tenant-beta")
+    if svc.Bool(ctx, "new-checkout", false) {
+        fmt.Println("New checkout enabled!")
+    }
+}
+```

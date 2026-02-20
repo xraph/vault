@@ -1,0 +1,683 @@
+---
+title: Go Package Reference
+description: Complete Go package index for Vault.
+---
+
+All Vault packages are importable from the module `github.com/xraph/vault`. This page is a comprehensive index of every package, its key types, and its primary functions.
+
+## Package index
+
+| Package | Import Path | Key Types | Key Functions | Description |
+|---------|-------------|-----------|---------------|-------------|
+| `vault` | `github.com/xraph/vault` | `Entity`, `Config`, `Vault` | `NewEntity()`, `DefaultConfig()` | Root package with base types, sentinel errors, and configuration |
+| `secret` | `github.com/xraph/vault/secret` | `Secret`, `Meta`, `Version`, `Service`, `Store` | `NewService()`, `Service.Get()`, `Service.Set()`, `Service.Delete()`, `Service.List()` | Encrypted secret storage with versioning |
+| `flag` | `github.com/xraph/vault/flag` | `Definition`, `Rule`, `RuleConfig`, `TenantOverride`, `Engine`, `Service`, `Store`, `Type`, `RuleType`, `Variant` | `NewEngine()`, `NewService()`, `Engine.Evaluate()`, `WhenTenant()`, `WhenUser()`, `Rollout()`, `Schedule()` | Feature flag definitions, targeting rules, and evaluation |
+| `config` | `github.com/xraph/vault/config` | `Entry`, `EntryVersion`, `Service`, `Store`, `ValueResolver` | `NewService()`, `Service.String()`, `Service.Bool()`, `Service.Int()`, `Service.Float()`, `Service.Duration()`, `Service.JSON()`, `Service.Watch()` | Runtime configuration with type-safe accessors |
+| `override` | `github.com/xraph/vault/override` | `Override`, `Resolver`, `Store` | `NewResolver()`, `Resolver.Resolve()`, `Resolver.Invalidate()`, `Resolver.InvalidateAll()` | Per-tenant config overrides with caching resolver |
+| `rotation` | `github.com/xraph/vault/rotation` | `Policy`, `Record`, `Manager`, `Rotator`, `Store` | `NewManager()`, `Manager.RegisterRotator()`, `Manager.Start()`, `Manager.Stop()`, `Manager.RotateNow()` | Scheduled secret rotation with pluggable rotators |
+| `audit` | `github.com/xraph/vault/audit` | `Entry`, `Logger`, `Store` | `NewLogger()`, `Logger.LogAccess()`, `Logger.LogFailure()` | Audit logging with scope extraction |
+| `audit_hook` | `github.com/xraph/vault/audit_hook` | `Extension`, `AuditEvent`, `Recorder`, `RecorderFunc` | `New()`, `Extension.Record()`, `AllActions()` | Audit event broadcasting extension |
+| `crypto` | `github.com/xraph/vault/crypto` | `Encryptor`, `EncryptionKeyProvider`, `KeyStore`, `EnvKeyProvider` | `NewEncryptor()`, `Encryptor.Encrypt()`, `Encryptor.Decrypt()`, `NewEnvKeyProvider()` | AES-256-GCM encryption, key providers, and key stores |
+| `id` | `github.com/xraph/vault/id` | `ID`, `Prefix` | `New()`, `Parse()`, `NewSecretID()`, `NewFlagID()`, `NewRuleID()`, `NewConfigID()`, `NewOverrideID()`, `NewRotationID()`, `NewVersionID()`, `NewAuditID()` | Type-safe, K-sortable entity identifiers (TypeID) |
+| `scope` | `github.com/xraph/vault/scope` | `ContextKey` | `WithAppID()`, `WithTenantID()`, `WithUserID()`, `WithIP()`, `WithScope()`, `FromContext()` | Context-based request scoping |
+| `source` | `github.com/xraph/vault/source` | `Source`, `Value`, `WatchFunc` | (interface package) | Composable configuration source system |
+| `plugin` | `github.com/xraph/vault/plugin` | `Plugin`, `Registry`, `OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, `RotationStrategy` | `NewRegistry()`, `Registry.Register()` | Plugin system with capability discovery |
+| `metrics` | `github.com/xraph/vault/metrics` | `Collector`, `Counter`, `Histogram`, `MetricFactory`, `NoopFactory` | `NewCollector()`, `NewNoopCollector()` | Operational metrics interfaces and collector |
+| `store` | `github.com/xraph/vault/store` | `Store` | (interface package) | Composite store interface definition |
+| `store/memory` | `github.com/xraph/vault/store/memory` | `Store` | `New()` | In-memory store for development and testing |
+| `store/postgres` | `github.com/xraph/vault/store/postgres` | `Store`, `StoreOption` | `New()`, `NewFromPool()`, `WithLogger()` | Production PostgreSQL backend using pgx/v5 |
+| `store/bun` | `github.com/xraph/vault/store/bun` | `Store`, `StoreOption` | `New()`, `WithLogger()` | PostgreSQL backend using Bun ORM |
+
+## Root package: `github.com/xraph/vault`
+
+### Types
+
+**Entity** -- Base type embedded by all Vault entities. Provides standard timestamp fields.
+
+```go
+type Entity struct {
+    CreatedAt time.Time
+    UpdatedAt time.Time
+}
+
+func NewEntity() Entity      // Both timestamps set to now (UTC)
+func (e *Entity) Touch()     // Updates UpdatedAt to now (UTC)
+```
+
+**Config** -- Configuration for a Vault instance.
+
+```go
+type Config struct {
+    AppID              string
+    EncryptionKey      []byte
+    EncryptionKeyEnv   string
+    FlagCacheTTL       time.Duration  // default: 30s
+    SourcePollInterval time.Duration  // default: 30s
+}
+
+func DefaultConfig() Config
+```
+
+### Sentinel errors
+
+```go
+var (
+    ErrNoStore          = errors.New("vault: no store configured")
+    ErrSecretNotFound   = errors.New("vault: secret not found")
+    ErrFlagNotFound     = errors.New("vault: flag not found")
+    ErrConfigNotFound   = errors.New("vault: config entry not found")
+    ErrOverrideNotFound = errors.New("vault: override not found")
+    ErrRotationNotFound = errors.New("vault: rotation policy not found")
+    ErrAuditNotFound    = errors.New("vault: audit entry not found")
+    ErrDecryptionFailed = errors.New("vault: decryption failed")
+    ErrEncryptionFailed = errors.New("vault: encryption failed")
+    ErrInvalidKey       = errors.New("vault: invalid encryption key")
+    ErrFlagDisabled     = errors.New("vault: flag is disabled")
+    ErrFlagExists       = errors.New("vault: flag already exists")
+    ErrRotationFailed   = errors.New("vault: rotation failed")
+    ErrUnauthorized     = errors.New("vault: unauthorized")
+)
+```
+
+## secret
+
+### Types
+
+```go
+type Secret struct {
+    vault.Entity
+    ID              id.ID
+    Key             string
+    Value           []byte              // decrypted -- never serialized
+    EncryptedValue  []byte              // encrypted at rest
+    Version         int64
+    EncryptionAlg   string
+    EncryptionKeyID string
+    ExpiresAt       *time.Time
+    AppID           string
+    Metadata        map[string]string
+}
+
+type Meta struct {
+    ID        id.ID
+    Key       string
+    Version   int64
+    ExpiresAt *time.Time
+    AppID     string
+    Metadata  map[string]string
+    CreatedAt time.Time
+    UpdatedAt time.Time
+}
+
+type Version struct {
+    ID             id.ID
+    SecretKey      string
+    AppID          string
+    Version        int64
+    EncryptedValue []byte
+    CreatedBy      string
+    CreatedAt      time.Time
+}
+
+type ListOpts struct { Limit, Offset int; AppID string }
+```
+
+### Service
+
+```go
+func NewService(store Store, encryptor *crypto.Encryptor, opts ...ServiceOption) *Service
+func WithAppID(appID string) ServiceOption
+func WithOnAccess(fn OnAccessFunc) ServiceOption
+func WithOnMutate(fn OnMutateFunc) ServiceOption
+
+func (s *Service) Get(ctx, key, appID string) (*Secret, error)
+func (s *Service) GetMeta(ctx, key, appID string) (*Meta, error)
+func (s *Service) Set(ctx, key string, value []byte, appID string, opts ...SetOption) (*Meta, error)
+func (s *Service) Delete(ctx, key, appID string) error
+func (s *Service) List(ctx, appID string, opts ListOpts) ([]*Meta, error)
+func (s *Service) GetVersion(ctx, key, appID string, version int64) (*Secret, error)
+func (s *Service) ListVersions(ctx, key, appID string) ([]*Version, error)
+
+func WithMetadata(m map[string]string) SetOption
+func WithExpiresAt(t time.Time) SetOption
+```
+
+## flag
+
+### Types
+
+```go
+type Type string
+const (TypeBool, TypeString, TypeInt, TypeFloat, TypeJSON Type)
+
+type RuleType string
+const (RuleWhenTenant, RuleWhenTenantTag, RuleWhenUser, RuleRollout, RuleSchedule, RuleCustom RuleType)
+
+type Definition struct {
+    vault.Entity
+    ID           id.ID
+    Key          string
+    Type         Type
+    DefaultValue any
+    Description  string
+    Tags         []string
+    Variants     []Variant
+    Enabled      bool
+    AppID        string
+    Metadata     map[string]string
+}
+
+type Rule struct {
+    vault.Entity
+    ID          id.ID
+    FlagKey     string
+    AppID       string
+    Priority    int
+    Type        RuleType
+    Config      RuleConfig
+    ReturnValue any
+}
+
+type RuleConfig struct {
+    TenantIDs  []string
+    TagKey     string
+    TagValue   string
+    UserIDs    []string
+    Percentage int
+    StartAt    *time.Time
+    EndAt      *time.Time
+    Evaluator  string
+    Params     map[string]any
+}
+
+type TenantOverride struct {
+    vault.Entity
+    ID       id.ID
+    FlagKey  string
+    AppID    string
+    TenantID string
+    Value    any
+}
+```
+
+### Rule constructors
+
+```go
+func WhenTenant(tenantIDs ...string) *Rule
+func WhenTenantTag(key, value string) *Rule
+func WhenUser(userIDs ...string) *Rule
+func Rollout(percentage int) *Rule
+func Schedule(start, end time.Time) *Rule
+func (r *Rule) Return(value any) *Rule
+```
+
+### Engine
+
+```go
+func NewEngine(store Store, opts ...EngineOption) *Engine
+func WithCacheTTL(ttl time.Duration) EngineOption
+
+func (e *Engine) Evaluate(ctx, key, appID string) (any, error)
+```
+
+### Service
+
+```go
+func NewService(engine *Engine, opts ...ServiceOption) *Service
+func WithAppID(appID string) ServiceOption
+
+func (s *Service) Bool(ctx, key string, defaultVal bool) bool
+func (s *Service) String(ctx, key, defaultVal string) string
+func (s *Service) Int(ctx, key string, defaultVal int) int
+func (s *Service) Float(ctx, key string, defaultVal float64) float64
+func (s *Service) JSON(ctx, key string, target any) error
+```
+
+## config
+
+### Types
+
+```go
+type Entry struct {
+    vault.Entity
+    ID          id.ID
+    Key         string
+    Value       any
+    ValueType   string
+    Version     int64
+    Description string
+    AppID       string
+    Metadata    map[string]string
+}
+
+type EntryVersion struct {
+    ID        id.ID
+    ConfigKey string
+    AppID     string
+    Version   int64
+    Value     any
+    CreatedBy string
+    CreatedAt time.Time
+}
+
+type ListOpts struct { Limit, Offset int; AppID string }
+```
+
+### Service
+
+```go
+func NewService(store Store, opts ...ServiceOption) *Service
+func WithAppID(appID string) ServiceOption
+func WithResolver(r ValueResolver) ServiceOption
+
+func (s *Service) Get(ctx, key, appID string) (*Entry, error)
+func (s *Service) Set(ctx, key string, value any, appID string, opts ...SetOption) error
+func (s *Service) Delete(ctx, key, appID string) error
+func (s *Service) List(ctx, appID string, opts ListOpts) ([]*Entry, error)
+func (s *Service) Watch(key string, cb WatchCallback)
+
+// Type-safe accessors (use resolver if configured):
+func (s *Service) String(ctx, key, defaultVal string) string
+func (s *Service) Bool(ctx, key string, defaultVal bool) bool
+func (s *Service) Int(ctx, key string, defaultVal int) int
+func (s *Service) Float(ctx, key string, defaultVal float64) float64
+func (s *Service) Duration(ctx, key string, defaultVal time.Duration) time.Duration
+func (s *Service) JSON(ctx, key string, target any) error
+
+func WithDescription(desc string) SetOption
+func WithValueType(vt string) SetOption
+func WithMetadata(m map[string]string) SetOption
+```
+
+## override
+
+### Types
+
+```go
+type Override struct {
+    vault.Entity
+    ID       id.ID
+    Key      string
+    Value    any
+    AppID    string
+    TenantID string
+    Metadata map[string]string
+}
+```
+
+### Resolver
+
+```go
+func NewResolver(configStore config.Store, overrideStore Store, opts ...ResolverOption) *Resolver
+func WithLogger(l *slog.Logger) ResolverOption
+func WithCacheTTL(ttl time.Duration) ResolverOption
+
+func (r *Resolver) Resolve(ctx, key, appID string) (any, error)
+func (r *Resolver) Invalidate(key, appID string)
+func (r *Resolver) InvalidateAll()
+```
+
+Resolution order: tenant override (if tenant context present) -> app-level config value.
+
+## rotation
+
+### Types
+
+```go
+type Policy struct {
+    vault.Entity
+    ID             id.ID
+    SecretKey      string
+    AppID          string
+    Interval       time.Duration
+    Enabled        bool
+    LastRotatedAt  *time.Time
+    NextRotationAt *time.Time
+}
+
+type Record struct {
+    ID         id.ID
+    SecretKey  string
+    AppID      string
+    OldVersion int64
+    NewVersion int64
+    RotatedBy  string
+    RotatedAt  time.Time
+}
+
+type Rotator func(ctx context.Context, currentValue []byte) ([]byte, error)
+type ListOpts struct { Limit, Offset int }
+```
+
+### Manager
+
+```go
+func NewManager(store Store, secretSvc *secret.Service, opts ...ManagerOption) *Manager
+func WithCheckInterval(d time.Duration) ManagerOption   // default: 1 minute
+func WithLogger(l *slog.Logger) ManagerOption
+func WithAppID(appID string) ManagerOption
+
+func (m *Manager) RegisterRotator(secretKey string, r Rotator)
+func (m *Manager) Start(ctx context.Context) error
+func (m *Manager) Stop(ctx context.Context) error
+func (m *Manager) RotateNow(ctx, secretKey, appID string) error
+```
+
+## audit
+
+### Types
+
+```go
+type Entry struct {
+    ID        id.ID
+    Action    string
+    Resource  string
+    Key       string
+    AppID     string
+    TenantID  string
+    UserID    string
+    IP        string
+    Outcome   string
+    Metadata  map[string]any
+    CreatedAt time.Time
+}
+
+type ListOpts struct { Limit, Offset int }
+```
+
+### Logger
+
+```go
+func NewLogger(store Store, opts ...LoggerOption) *Logger
+func WithHook(h *audithook.Extension) LoggerOption
+func WithLogger(sl *slog.Logger) LoggerOption
+
+func (l *Logger) LogAccess(ctx, key, action, resource string)
+func (l *Logger) LogFailure(ctx, key, action, resource string, err error)
+```
+
+## audit_hook
+
+### Constants
+
+```go
+// Actions
+const (
+    ActionSecretAccessed, ActionSecretSet, ActionSecretDeleted, ActionSecretRotated string
+    ActionFlagEvaluated, ActionFlagCreated, ActionFlagUpdated, ActionFlagDeleted, ActionFlagToggled string
+    ActionConfigSet, ActionConfigDeleted string
+    ActionOverrideSet, ActionOverrideDeleted string
+)
+
+// Categories
+const (CategorySecret, CategoryFlag, CategoryConfig, CategoryOverride string)
+
+// Resources
+const (ResourceSecret, ResourceFlag, ResourceConfig, ResourceOverride string)
+
+// Severity
+const (SeverityInfo, SeverityWarning, SeverityCritical string)
+
+// Outcome
+const (OutcomeSuccess, OutcomeFailure string)
+```
+
+### Extension
+
+```go
+func New(recorder Recorder, opts ...Option) *Extension
+func WithActions(actions ...string) Option
+func WithLogger(l *slog.Logger) Option
+
+func (e *Extension) Name() string
+func (e *Extension) Record(ctx, action, severity, outcome, resource, resourceID, category, key string, err error, kvPairs ...any)
+func AllActions() []string
+```
+
+## crypto
+
+```go
+func NewEncryptor(key []byte) (*Encryptor, error)  // key must be exactly 32 bytes
+func (e *Encryptor) Encrypt(plaintext []byte) ([]byte, error)
+func (e *Encryptor) Decrypt(ciphertext []byte) ([]byte, error)
+
+var ErrInvalidKeySize = errors.New("crypto: key must be exactly 32 bytes for AES-256")
+
+type EncryptionKeyProvider interface {
+    GetKey(ctx context.Context) ([]byte, error)
+    RotateKey(ctx context.Context) ([]byte, error)
+}
+
+func NewEnvKeyProvider(envVar string) *EnvKeyProvider
+func (p *EnvKeyProvider) GetKey(ctx context.Context) ([]byte, error)
+func (p *EnvKeyProvider) RotateKey(ctx context.Context) ([]byte, error)  // returns error (not supported)
+
+type KeyStore interface {
+    GetOrCreate(ctx context.Context, id string) ([]byte, error)
+    Get(ctx context.Context, id string) ([]byte, error)
+    Delete(ctx context.Context, id string) error
+}
+```
+
+## id
+
+```go
+type Prefix string
+const (
+    PrefixSecret   Prefix = "sec"
+    PrefixFlag     Prefix = "flag"
+    PrefixRule     Prefix = "rule"
+    PrefixConfig   Prefix = "cfg"
+    PrefixOverride Prefix = "ovr"
+    PrefixRotation Prefix = "rot"
+    PrefixVersion  Prefix = "ver"
+    PrefixAudit    Prefix = "vaudit"
+)
+
+type ID struct { /* wraps typeid.AnyID */ }
+
+func New(prefix Prefix) ID
+func Parse(s string) (ID, error)
+func ParseWithPrefix(s string, expected Prefix) (ID, error)
+
+func (i ID) String() string
+func (i ID) IDPrefix() Prefix
+func (i ID) IsNil() bool
+// Implements: TextMarshaler, TextUnmarshaler, driver.Valuer, sql.Scanner, json.Marshaler, json.Unmarshaler
+
+// Convenience constructors
+func NewSecretID() ID
+func NewFlagID() ID
+func NewRuleID() ID
+func NewConfigID() ID
+func NewOverrideID() ID
+func NewRotationID() ID
+func NewVersionID() ID
+func NewAuditID() ID
+
+// Convenience parsers (type-safe: ParseSecretID("flag_01h...") fails)
+func ParseSecretID(s string) (ID, error)
+func ParseFlagID(s string) (ID, error)
+func ParseRuleID(s string) (ID, error)
+func ParseConfigID(s string) (ID, error)
+func ParseOverrideID(s string) (ID, error)
+func ParseRotationID(s string) (ID, error)
+func ParseVersionID(s string) (ID, error)
+func ParseAuditID(s string) (ID, error)
+func ParseAny(s string) (ID, error)
+```
+
+## scope
+
+```go
+type ContextKey string
+
+const (
+    KeyAppID    ContextKey = "vault.app_id"
+    KeyTenantID ContextKey = "vault.tenant_id"
+    KeyUserID   ContextKey = "vault.user_id"
+    KeyIP       ContextKey = "vault.ip"
+)
+
+func WithAppID(ctx context.Context, appID string) context.Context
+func WithTenantID(ctx context.Context, tenantID string) context.Context
+func WithUserID(ctx context.Context, userID string) context.Context
+func WithIP(ctx context.Context, ip string) context.Context
+func WithScope(ctx context.Context, appID, tenantID, userID, ip string) context.Context
+func FromContext(ctx context.Context) (appID, tenantID, userID, ip string)
+```
+
+## source
+
+```go
+var ErrKeyNotFound = errors.New("source: key not found")
+
+type Value struct {
+    Key       string
+    Raw       string
+    Source    string
+    Version   int64
+    ExpiresAt *time.Time
+    Metadata  map[string]string
+}
+
+type WatchFunc func(ctx context.Context, key string, val *Value)
+
+type Source interface {
+    Name() string
+    Get(ctx context.Context, key string) (*Value, error)
+    List(ctx context.Context, prefix string) ([]*Value, error)
+    Watch(ctx context.Context, key string, fn WatchFunc) error
+    Close() error
+}
+```
+
+## plugin
+
+```go
+type Plugin interface { Name() string }
+
+type OnInit interface { OnInit(ctx context.Context) error }
+type OnShutdown interface { OnShutdown(ctx context.Context) error }
+type SourceProvider interface {
+    Source() source.Source
+    Priority() int
+}
+type EncryptionProvider interface {
+    EncryptionKeyProvider() crypto.EncryptionKeyProvider
+}
+type FlagEvaluator interface {
+    EvaluatorName() string
+    Evaluate(ctx context.Context, rule *flag.Rule, tenantID, userID string) (bool, error)
+}
+type OnSecretAccess interface {
+    OnSecretAccess(ctx context.Context, key, action string) error
+}
+type OnConfigChange interface {
+    OnConfigChange(ctx context.Context, key string, oldValue, newValue any) error
+}
+type RotationStrategy interface {
+    RotationName() string
+    Rotate(ctx context.Context, key string, current []byte) ([]byte, error)
+}
+
+func NewRegistry(opts ...RegistryOption) *Registry
+func WithLogger(l *slog.Logger) RegistryOption
+func (r *Registry) Register(p Plugin)
+func (r *Registry) Plugins() []Plugin
+func (r *Registry) InitHooks() []OnInit
+func (r *Registry) ShutdownHooks() []OnShutdown
+func (r *Registry) SourceProviders() []SourceProvider
+func (r *Registry) EncryptionProviders() []EncryptionProvider
+func (r *Registry) FlagEvaluatorByName(name string) FlagEvaluator
+func (r *Registry) SecretAccessHooks() []OnSecretAccess
+func (r *Registry) ConfigChangeHooks() []OnConfigChange
+func (r *Registry) RotationStrategyByName(name string) RotationStrategy
+```
+
+## metrics
+
+```go
+type Counter interface {
+    Inc()
+    Add(float64)
+}
+
+type Histogram interface {
+    Observe(float64)
+}
+
+type MetricFactory interface {
+    Counter(name string) Counter
+    Histogram(name string) Histogram
+}
+
+type NoopFactory struct{}
+func (NoopFactory) Counter(string) Counter     // returns no-op counter
+func (NoopFactory) Histogram(string) Histogram // returns no-op histogram
+
+func NewCollector(f MetricFactory) *Collector
+func NewNoopCollector() *Collector
+
+type Collector struct {
+    SecretAccessed Counter    // vault_secret_accessed_total
+    SecretSet      Counter    // vault_secret_set_total
+    SecretDeleted  Counter    // vault_secret_deleted_total
+    SecretRotated  Counter    // vault_secret_rotated_total
+    FlagEvaluated  Counter    // vault_flag_evaluated_total
+    FlagEvalTime   Histogram  // vault_flag_eval_duration_seconds
+    ConfigRead     Counter    // vault_config_read_total
+    ConfigWritten  Counter    // vault_config_written_total
+    OverrideRead   Counter    // vault_override_read_total
+    AuditRecorded  Counter    // vault_audit_recorded_total
+    Encrypted      Counter    // vault_encrypted_total
+    Decrypted      Counter    // vault_decrypted_total
+    SourceLatency  Histogram  // vault_source_latency_seconds
+}
+```
+
+## store
+
+```go
+type Store interface {
+    secret.Store       // 6 methods
+    flag.Store         // 10 methods
+    config.Store       // 6 methods
+    override.Store     // 5 methods
+    rotation.Store     // 6 methods
+    audit.Store        // 3 methods
+
+    Migrate(ctx context.Context) error
+    Ping(ctx context.Context) error
+    Close() error
+}
+```
+
+## Store implementations
+
+### store/memory
+
+```go
+func New() *Store
+```
+
+In-memory, concurrent-safe (`sync.RWMutex`). All lifecycle methods are no-ops. See [Memory Store](/docs/stores/memory).
+
+### store/postgres
+
+```go
+func New(ctx context.Context, connString string, opts ...StoreOption) (*Store, error)
+func NewFromPool(pool *pgxpool.Pool, opts ...StoreOption) *Store
+func WithLogger(l *slog.Logger) StoreOption
+```
+
+PostgreSQL via `pgxpool`. Embeds 5 SQL migration files. See [PostgreSQL Store](/docs/stores/postgres).
+
+### store/bun
+
+```go
+func New(db *bun.DB, opts ...StoreOption) *Store
+func WithLogger(l *slog.Logger) StoreOption
+```
+
+PostgreSQL via Bun ORM. Uses 11 model structs and `CreateTable` migrations. See [Bun ORM Store](/docs/stores/bun).

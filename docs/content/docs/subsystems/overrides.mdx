@@ -1,0 +1,242 @@
+---
+title: Override System
+description: Per-tenant configuration overrides with resolution caching.
+---
+
+The `override` package provides per-tenant configuration overrides with a resolver that integrates with the `config.Service`. Overrides allow individual tenants to have custom values for configuration entries, while all other tenants receive the app-level default.
+
+## Architecture
+
+```
+override.Resolver (implements config.ValueResolver)
+  ├── override.Store  (per-tenant override persistence)
+  ├── config.Store    (app-level config fallback)
+  └── resolverCache   (optional TTL cache)
+```
+
+The `Resolver` sits between the config service and both stores. When a value is requested, it checks for a tenant override first, then falls back to the app-level config.
+
+## Installation
+
+```go
+import "github.com/xraph/vault/override"
+```
+
+## Override entity
+
+An `Override` represents a per-tenant value for a specific config key.
+
+```go
+type Override struct {
+    vault.Entity
+    ID       id.ID             `json:"id"`
+    Key      string            `json:"key"`
+    Value    any               `json:"value"`
+    AppID    string            `json:"app_id"`
+    TenantID string            `json:"tenant_id"`
+    Metadata map[string]string `json:"metadata,omitempty"`
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | `id.ID` | Unique override identifier (TypeID) |
+| `Key` | `string` | The config key being overridden |
+| `Value` | `any` | The tenant-specific value |
+| `AppID` | `string` | Application scope identifier |
+| `TenantID` | `string` | Tenant this override applies to |
+| `Metadata` | `map[string]string` | Arbitrary key-value metadata |
+| `CreatedAt` | `time.Time` | From embedded `vault.Entity` |
+| `UpdatedAt` | `time.Time` | From embedded `vault.Entity` |
+
+### ListOpts
+
+```go
+type ListOpts struct {
+    Limit  int
+    Offset int
+}
+```
+
+## Store interface
+
+The store persists per-tenant overrides. Vault ships with in-memory and PostgreSQL implementations.
+
+```go
+type Store interface {
+    GetOverride(ctx context.Context, key, appID, tenantID string) (*Override, error)
+    SetOverride(ctx context.Context, o *Override) error
+    DeleteOverride(ctx context.Context, key, appID, tenantID string) error
+    ListOverridesByTenant(ctx context.Context, appID, tenantID string) ([]*Override, error)
+    ListOverridesByKey(ctx context.Context, key, appID string) ([]*Override, error)
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `GetOverride` | Retrieves a single override for a key/app/tenant combination |
+| `SetOverride` | Creates or updates an override |
+| `DeleteOverride` | Removes a tenant override |
+| `ListOverridesByTenant` | Returns all overrides for a specific tenant within an app |
+| `ListOverridesByKey` | Returns all tenant overrides for a specific config key |
+
+## Resolver
+
+The `Resolver` implements the `config.ValueResolver` interface. It resolves config values by checking for a tenant override first, then falling back to the app-level config.
+
+### Creating a Resolver
+
+```go
+resolver := override.NewResolver(configStore, overrideStore,
+    override.WithLogger(logger),
+    override.WithCacheTTL(1*time.Minute),
+)
+```
+
+### ResolverOption
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithLogger` | `WithLogger(l *slog.Logger) ResolverOption` | Sets the logger for the resolver |
+| `WithCacheTTL` | `WithCacheTTL(ttl time.Duration) ResolverOption` | Enables result caching with the given TTL |
+
+### Resolution order
+
+When `Resolve` is called:
+
+1. **Cache check** -- If caching is enabled and a cached value exists (not expired), return it.
+2. **Tenant override** -- If the context contains a tenant ID (via `vault.tenant_id` context key), look up the tenant override in the override store. If found, cache and return it.
+3. **App-level fallback** -- Read the config entry from the config store. Cache and return it.
+
+```go
+func (r *Resolver) Resolve(ctx context.Context, key, appID string) (any, error)
+```
+
+The tenant ID is extracted from the context using the `vault.tenant_id` key, which matches the key used by the `scope` package and the flag engine:
+
+```go
+const ContextKeyTenantID contextKey = "vault.tenant_id"
+```
+
+### Invalidate
+
+Removes cached entries for a specific config key and app ID. Called automatically by `config.Service.Set` and `config.Service.Delete`.
+
+```go
+func (r *Resolver) Invalidate(key, appID string)
+```
+
+### InvalidateAll
+
+Removes all cached entries. Useful when performing bulk updates.
+
+```go
+func (r *Resolver) InvalidateAll()
+```
+
+## Resolution cache
+
+When `WithCacheTTL` is configured, the resolver caches resolution results in memory:
+
+- Cache keys are composite: `key + appID + tenantID`.
+- Each entry has an independent TTL expiration.
+- Cache is thread-safe (protected by `sync.RWMutex`).
+- `Invalidate(key, appID)` removes all tenant variants for that key/app combination.
+- `InvalidateAll()` flushes the entire cache.
+
+## Integration with config.Service
+
+The resolver is designed to plug into the config service via the `WithResolver` option:
+
+```go
+import (
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/override"
+)
+
+resolver := override.NewResolver(configStore, overrideStore,
+    override.WithCacheTTL(1*time.Minute),
+)
+
+svc := config.NewService(configStore,
+    config.WithAppID("myapp"),
+    config.WithResolver(resolver),
+)
+```
+
+Once connected:
+
+- All type-safe accessors (`String`, `Bool`, `Int`, `Float`, `Duration`, `JSON`) route through the resolver.
+- `config.Service.Set` and `config.Service.Delete` automatically call `Invalidate` on the resolver.
+- Tenant context is automatically extracted and used for override lookups.
+
+## Full example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault/override"
+    "github.com/xraph/vault/scope"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create the resolver.
+    resolver := override.NewResolver(configStore, overrideStore,
+        override.WithCacheTTL(1*time.Minute),
+    )
+
+    // Create the config service with resolver.
+    svc := config.NewService(configStore,
+        config.WithAppID("myapp"),
+        config.WithResolver(resolver),
+    )
+
+    // Set an app-level config.
+    _ = svc.Set(ctx, "max-users", 100, "myapp",
+        config.WithDescription("Maximum users per workspace"),
+    )
+
+    // Set a tenant override.
+    _ = overrideStore.SetOverride(ctx, &override.Override{
+        Key:      "max-users",
+        Value:    500,
+        AppID:    "myapp",
+        TenantID: "tenant-enterprise",
+    })
+
+    // Read without tenant context -- gets app default.
+    maxUsers := svc.Int(ctx, "max-users", 50)
+    fmt.Printf("Default max users: %d\n", maxUsers) // 100
+
+    // Read with tenant context -- gets override.
+    ctx = scope.WithTenantID(ctx, "tenant-enterprise")
+    maxUsers = svc.Int(ctx, "max-users", 50)
+    fmt.Printf("Enterprise max users: %d\n", maxUsers) // 500
+
+    // Read with a different tenant -- gets app default.
+    ctx = scope.WithTenantID(context.Background(), "tenant-starter")
+    maxUsers = svc.Int(ctx, "max-users", 50)
+    fmt.Printf("Starter max users: %d\n", maxUsers) // 100
+
+    // List all overrides for a key.
+    overrides, _ := overrideStore.ListOverridesByKey(ctx, "max-users", "myapp")
+    for _, o := range overrides {
+        fmt.Printf("  tenant=%s value=%v\n", o.TenantID, o.Value)
+    }
+
+    // List all overrides for a tenant.
+    tenantOverrides, _ := overrideStore.ListOverridesByTenant(ctx, "myapp", "tenant-enterprise")
+    for _, o := range tenantOverrides {
+        fmt.Printf("  key=%s value=%v\n", o.Key, o.Value)
+    }
+}
+```
