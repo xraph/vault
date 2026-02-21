@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -224,12 +225,5 @@ func (s *Store) ListSecretVersions(ctx context.Context, key, appID string) ([]*s
 }
 
 func pgPlaceholder(n int) string {
-	return "$" + intToStr(n)
-}
-
-func intToStr(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return intToStr(n/10) + string(rune('0'+n%10))
+	return "$" + strconv.Itoa(n)
 }
