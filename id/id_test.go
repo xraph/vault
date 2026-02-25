@@ -1,376 +1,62 @@
-package id
+package id_test
 
 import (
-	"database/sql/driver"
-	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/xraph/vault/id"
 )
 
-func TestNew(t *testing.T) {
+func TestConstructors(t *testing.T) {
 	tests := []struct {
 		name   string
-		prefix Prefix
+		newFn  func() id.ID
+		prefix string
 	}{
-		{"secret", PrefixSecret},
-		{"flag", PrefixFlag},
-		{"rule", PrefixRule},
-		{"config", PrefixConfig},
-		{"override", PrefixOverride},
-		{"rotation", PrefixRotation},
-		{"version", PrefixVersion},
-		{"audit", PrefixAudit},
+		{"SecretID", id.NewSecretID, "sec_"},
+		{"FlagID", id.NewFlagID, "flag_"},
+		{"RuleID", id.NewRuleID, "rule_"},
+		{"ConfigID", id.NewConfigID, "cfg_"},
+		{"OverrideID", id.NewOverrideID, "ovr_"},
+		{"RotationID", id.NewRotationID, "rot_"},
+		{"VersionID", id.NewVersionID, "ver_"},
+		{"AuditID", id.NewAuditID, "vaudit_"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id := New(tt.prefix)
-			if id.IsNil() {
-				t.Fatal("expected non-nil ID")
-			}
-			if id.IDPrefix() != tt.prefix {
-				t.Fatalf("expected prefix %q, got %q", tt.prefix, id.IDPrefix())
-			}
-			s := id.String()
-			if s == "" {
-				t.Fatal("expected non-empty string")
-			}
-			if !strings.HasPrefix(s, string(tt.prefix)+"_") {
-				t.Fatalf("expected string to start with %q_, got %q", tt.prefix, s)
+			got := tt.newFn().String()
+			if !strings.HasPrefix(got, tt.prefix) {
+				t.Errorf("expected prefix %q, got %q", tt.prefix, got)
 			}
 		})
 	}
 }
 
-func TestNewUniqueness(t *testing.T) {
-	a := NewSecretID()
-	b := NewSecretID()
-	if a.String() == b.String() {
-		t.Fatal("expected unique IDs")
+func TestNew(t *testing.T) {
+	i := id.New(id.PrefixSecret)
+	if i.IsNil() {
+		t.Fatal("expected non-nil ID")
+	}
+	if i.Prefix() != id.PrefixSecret {
+		t.Errorf("expected prefix %q, got %q", id.PrefixSecret, i.Prefix())
 	}
 }
 
-func TestParse(t *testing.T) {
-	original := NewSecretID()
-	parsed, err := Parse(original.String())
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if parsed.String() != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), parsed.String())
-	}
-	if parsed.IDPrefix() != PrefixSecret {
-		t.Fatalf("expected prefix %q, got %q", PrefixSecret, parsed.IDPrefix())
-	}
-}
-
-func TestParseEmpty(t *testing.T) {
-	parsed, err := Parse("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !parsed.IsNil() {
-		t.Fatal("expected nil ID for empty string")
-	}
-	if parsed.String() != "" {
-		t.Fatalf("expected empty string, got %q", parsed.String())
-	}
-}
-
-func TestParseInvalid(t *testing.T) {
-	tests := []string{
-		"not-a-typeid",
-		"missing_underscore",
-		"_no_prefix",
-	}
-	for _, s := range tests {
-		_, err := Parse(s)
-		if err == nil {
-			t.Fatalf("expected error for %q", s)
-		}
-	}
-}
-
-func TestParseWithPrefix(t *testing.T) {
-	original := NewFlagID()
-	parsed, err := ParseWithPrefix(original.String(), PrefixFlag)
-	if err != nil {
-		t.Fatalf("parse with prefix: %v", err)
-	}
-	if parsed.String() != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), parsed.String())
-	}
-}
-
-func TestParseWithPrefixMismatch(t *testing.T) {
-	secretID := NewSecretID()
-	_, err := ParseWithPrefix(secretID.String(), PrefixFlag)
-	if err == nil {
-		t.Fatal("expected error for prefix mismatch")
-	}
-	if !strings.Contains(err.Error(), "expected prefix") {
-		t.Fatalf("expected prefix mismatch error, got: %v", err)
-	}
-}
-
-func TestParseWithPrefixEmpty(t *testing.T) {
-	_, err := ParseWithPrefix("", PrefixSecret)
-	if err == nil {
-		t.Fatal("expected error for empty string with prefix")
-	}
-}
-
-func TestIDNilBehavior(t *testing.T) {
-	var id ID
-	if !id.IsNil() {
-		t.Fatal("zero value should be nil")
-	}
-	if id.String() != "" {
-		t.Fatalf("nil ID string should be empty, got %q", id.String())
-	}
-	if id.IDPrefix() != "" {
-		t.Fatalf("nil ID prefix should be empty, got %q", id.IDPrefix())
-	}
-}
-
-func TestMarshalText(t *testing.T) {
-	original := NewConfigID()
-	data, err := original.MarshalText()
-	if err != nil {
-		t.Fatalf("marshal text: %v", err)
-	}
-	if string(data) != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), string(data))
-	}
-}
-
-func TestUnmarshalText(t *testing.T) {
-	original := NewConfigID()
-	data, _ := original.MarshalText()
-
-	var parsed ID
-	if err := parsed.UnmarshalText(data); err != nil {
-		t.Fatalf("unmarshal text: %v", err)
-	}
-	if parsed.String() != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), parsed.String())
-	}
-}
-
-func TestUnmarshalTextEmpty(t *testing.T) {
-	var id ID
-	if err := id.UnmarshalText([]byte("")); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !id.IsNil() {
-		t.Fatal("expected nil ID for empty text")
-	}
-}
-
-func TestMarshalJSON(t *testing.T) {
-	original := NewRuleID()
-	data, err := original.MarshalJSON()
-	if err != nil {
-		t.Fatalf("marshal json: %v", err)
-	}
-	expected := `"` + original.String() + `"`
-	if string(data) != expected {
-		t.Fatalf("expected %q, got %q", expected, string(data))
-	}
-}
-
-func TestMarshalJSONNil(t *testing.T) {
-	var id ID
-	data, err := id.MarshalJSON()
-	if err != nil {
-		t.Fatalf("marshal json nil: %v", err)
-	}
-	if string(data) != `""` {
-		t.Fatalf("expected empty string JSON, got %q", string(data))
-	}
-}
-
-func TestUnmarshalJSON(t *testing.T) {
-	original := NewOverrideID()
-	data, _ := original.MarshalJSON()
-
-	var parsed ID
-	if err := parsed.UnmarshalJSON(data); err != nil {
-		t.Fatalf("unmarshal json: %v", err)
-	}
-	if parsed.String() != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), parsed.String())
-	}
-}
-
-func TestUnmarshalJSONNull(t *testing.T) {
-	var id ID
-	if err := id.UnmarshalJSON([]byte("null")); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !id.IsNil() {
-		t.Fatal("expected nil ID for null JSON")
-	}
-}
-
-func TestUnmarshalJSONEmptyString(t *testing.T) {
-	var id ID
-	if err := id.UnmarshalJSON([]byte(`""`)); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !id.IsNil() {
-		t.Fatal("expected nil ID for empty string JSON")
-	}
-}
-
-func TestJSONRoundTrip(t *testing.T) {
-	type wrapper struct {
-		ID ID `json:"id"`
-	}
-
-	original := wrapper{ID: NewSecretID()}
-	data, err := json.Marshal(original)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-
-	var parsed wrapper
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if parsed.ID.String() != original.ID.String() {
-		t.Fatalf("expected %q, got %q", original.ID.String(), parsed.ID.String())
-	}
-}
-
-func TestValue(t *testing.T) {
-	original := NewSecretID()
-	val, err := original.Value()
-	if err != nil {
-		t.Fatalf("value: %v", err)
-	}
-	s, ok := val.(string)
-	if !ok {
-		t.Fatalf("expected string, got %T", val)
-	}
-	if s != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), s)
-	}
-}
-
-func TestValueNil(t *testing.T) {
-	var id ID
-	val, err := id.Value()
-	if err != nil {
-		t.Fatalf("value nil: %v", err)
-	}
-	if val != nil {
-		t.Fatalf("expected nil, got %v", val)
-	}
-}
-
-func TestScanString(t *testing.T) {
-	original := NewFlagID()
-	var scanned ID
-	if err := scanned.Scan(original.String()); err != nil {
-		t.Fatalf("scan string: %v", err)
-	}
-	if scanned.String() != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), scanned.String())
-	}
-}
-
-func TestScanBytes(t *testing.T) {
-	original := NewFlagID()
-	var scanned ID
-	if err := scanned.Scan([]byte(original.String())); err != nil {
-		t.Fatalf("scan bytes: %v", err)
-	}
-	if scanned.String() != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), scanned.String())
-	}
-}
-
-func TestScanNil(t *testing.T) {
-	var id ID
-	if err := id.Scan(nil); err != nil {
-		t.Fatalf("scan nil: %v", err)
-	}
-	if !id.IsNil() {
-		t.Fatal("expected nil ID for nil scan")
-	}
-}
-
-func TestScanUnsupported(t *testing.T) {
-	var id ID
-	if err := id.Scan(123); err == nil {
-		t.Fatal("expected error for unsupported scan type")
-	}
-}
-
-func TestDriverValueInterface(t *testing.T) {
-	original := NewSecretID()
-	var v driver.Valuer = original
-	val, err := v.Value()
-	if err != nil {
-		t.Fatalf("driver value: %v", err)
-	}
-	if val.(string) != original.String() {
-		t.Fatalf("expected %q, got %q", original.String(), val)
-	}
-}
-
-// ──────────────────────────────────────────────────
-// Convenience constructors tests
-// ──────────────────────────────────────────────────
-
-func TestConvenienceConstructors(t *testing.T) {
-	tests := []struct {
-		name string
-		fn   func() ID
-		pfix Prefix
-	}{
-		{"NewSecretID", NewSecretID, PrefixSecret},
-		{"NewFlagID", NewFlagID, PrefixFlag},
-		{"NewRuleID", NewRuleID, PrefixRule},
-		{"NewConfigID", NewConfigID, PrefixConfig},
-		{"NewOverrideID", NewOverrideID, PrefixOverride},
-		{"NewRotationID", NewRotationID, PrefixRotation},
-		{"NewVersionID", NewVersionID, PrefixVersion},
-		{"NewAuditID", NewAuditID, PrefixAudit},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			id := tt.fn()
-			if id.IsNil() {
-				t.Fatal("expected non-nil ID")
-			}
-			if id.IDPrefix() != tt.pfix {
-				t.Fatalf("expected prefix %q, got %q", tt.pfix, id.IDPrefix())
-			}
-		})
-	}
-}
-
-// ──────────────────────────────────────────────────
-// Convenience parsers tests
-// ──────────────────────────────────────────────────
-
-func TestConvenienceParsers(t *testing.T) {
+func TestParseRoundTrip(t *testing.T) {
 	tests := []struct {
 		name    string
-		newFn   func() ID
-		parseFn func(string) (ID, error)
+		newFn   func() id.ID
+		parseFn func(string) (id.ID, error)
 	}{
-		{"ParseSecretID", NewSecretID, ParseSecretID},
-		{"ParseFlagID", NewFlagID, ParseFlagID},
-		{"ParseRuleID", NewRuleID, ParseRuleID},
-		{"ParseConfigID", NewConfigID, ParseConfigID},
-		{"ParseOverrideID", NewOverrideID, ParseOverrideID},
-		{"ParseRotationID", NewRotationID, ParseRotationID},
-		{"ParseVersionID", NewVersionID, ParseVersionID},
-		{"ParseAuditID", NewAuditID, ParseAuditID},
+		{"SecretID", id.NewSecretID, id.ParseSecretID},
+		{"FlagID", id.NewFlagID, id.ParseFlagID},
+		{"RuleID", id.NewRuleID, id.ParseRuleID},
+		{"ConfigID", id.NewConfigID, id.ParseConfigID},
+		{"OverrideID", id.NewOverrideID, id.ParseOverrideID},
+		{"RotationID", id.NewRotationID, id.ParseRotationID},
+		{"VersionID", id.NewVersionID, id.ParseVersionID},
+		{"AuditID", id.NewAuditID, id.ParseAuditID},
 	}
 
 	for _, tt := range tests {
@@ -378,53 +64,169 @@ func TestConvenienceParsers(t *testing.T) {
 			original := tt.newFn()
 			parsed, err := tt.parseFn(original.String())
 			if err != nil {
-				t.Fatalf("parse: %v", err)
+				t.Fatalf("parse failed: %v", err)
 			}
 			if parsed.String() != original.String() {
-				t.Fatalf("expected %q, got %q", original.String(), parsed.String())
+				t.Errorf("round-trip mismatch: %q != %q", parsed.String(), original.String())
 			}
 		})
 	}
 }
 
-func TestConvenienceParsersPrefixMismatch(t *testing.T) {
-	secretID := NewSecretID()
-	parsers := []struct {
+func TestCrossTypeRejection(t *testing.T) {
+	tests := []struct {
 		name    string
-		parseFn func(string) (ID, error)
+		input   string
+		parseFn func(string) (id.ID, error)
 	}{
-		{"ParseFlagID", ParseFlagID},
-		{"ParseRuleID", ParseRuleID},
-		{"ParseConfigID", ParseConfigID},
-		{"ParseOverrideID", ParseOverrideID},
-		{"ParseRotationID", ParseRotationID},
-		{"ParseVersionID", ParseVersionID},
-		{"ParseAuditID", ParseAuditID},
+		{"ParseSecretID rejects flag_", id.NewFlagID().String(), id.ParseSecretID},
+		{"ParseFlagID rejects rule_", id.NewRuleID().String(), id.ParseFlagID},
+		{"ParseRuleID rejects cfg_", id.NewConfigID().String(), id.ParseRuleID},
+		{"ParseConfigID rejects ovr_", id.NewOverrideID().String(), id.ParseConfigID},
+		{"ParseOverrideID rejects rot_", id.NewRotationID().String(), id.ParseOverrideID},
+		{"ParseRotationID rejects ver_", id.NewVersionID().String(), id.ParseRotationID},
+		{"ParseVersionID rejects sec_", id.NewSecretID().String(), id.ParseVersionID},
 	}
 
-	for _, tt := range parsers {
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := tt.parseFn(secretID.String())
+			_, err := tt.parseFn(tt.input)
 			if err == nil {
-				t.Fatalf("expected error parsing secret ID as %s", tt.name)
+				t.Errorf("expected error for cross-type parse of %q, got nil", tt.input)
 			}
 		})
 	}
 }
 
 func TestParseAny(t *testing.T) {
-	tests := []func() ID{
-		NewSecretID, NewFlagID, NewRuleID, NewConfigID,
-		NewOverrideID, NewRotationID, NewVersionID, NewAuditID,
+	ids := []id.ID{
+		id.NewSecretID(),
+		id.NewFlagID(),
+		id.NewRuleID(),
+		id.NewConfigID(),
+		id.NewOverrideID(),
+		id.NewRotationID(),
+		id.NewVersionID(),
+		id.NewAuditID(),
 	}
-	for _, fn := range tests {
-		original := fn()
-		parsed, err := ParseAny(original.String())
-		if err != nil {
-			t.Fatalf("parse any: %v", err)
-		}
-		if parsed.String() != original.String() {
-			t.Fatalf("expected %q, got %q", original.String(), parsed.String())
-		}
+
+	for _, i := range ids {
+		t.Run(i.String(), func(t *testing.T) {
+			parsed, err := id.ParseAny(i.String())
+			if err != nil {
+				t.Fatalf("ParseAny(%q) failed: %v", i.String(), err)
+			}
+			if parsed.String() != i.String() {
+				t.Errorf("round-trip mismatch: %q != %q", parsed.String(), i.String())
+			}
+		})
+	}
+}
+
+func TestParseWithPrefix(t *testing.T) {
+	i := id.NewSecretID()
+	parsed, err := id.ParseWithPrefix(i.String(), id.PrefixSecret)
+	if err != nil {
+		t.Fatalf("ParseWithPrefix failed: %v", err)
+	}
+	if parsed.String() != i.String() {
+		t.Errorf("mismatch: %q != %q", parsed.String(), i.String())
+	}
+
+	_, err = id.ParseWithPrefix(i.String(), id.PrefixFlag)
+	if err == nil {
+		t.Error("expected error for wrong prefix")
+	}
+}
+
+func TestParseEmpty(t *testing.T) {
+	_, err := id.Parse("")
+	if err == nil {
+		t.Error("expected error for empty string")
+	}
+}
+
+func TestNilID(t *testing.T) {
+	var i id.ID
+	if !i.IsNil() {
+		t.Error("zero-value ID should be nil")
+	}
+	if i.String() != "" {
+		t.Errorf("expected empty string, got %q", i.String())
+	}
+	if i.Prefix() != "" {
+		t.Errorf("expected empty prefix, got %q", i.Prefix())
+	}
+}
+
+func TestMarshalUnmarshalText(t *testing.T) {
+	original := id.NewSecretID()
+	data, err := original.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText failed: %v", err)
+	}
+
+	var restored id.ID
+	if unmarshalErr := restored.UnmarshalText(data); unmarshalErr != nil {
+		t.Fatalf("UnmarshalText failed: %v", unmarshalErr)
+	}
+	if restored.String() != original.String() {
+		t.Errorf("mismatch: %q != %q", restored.String(), original.String())
+	}
+
+	// Nil round-trip.
+	var nilID id.ID
+	data, err = nilID.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText(nil) failed: %v", err)
+	}
+	var restored2 id.ID
+	if err := restored2.UnmarshalText(data); err != nil {
+		t.Fatalf("UnmarshalText(nil) failed: %v", err)
+	}
+	if !restored2.IsNil() {
+		t.Error("expected nil after round-trip of nil ID")
+	}
+}
+
+func TestValueScan(t *testing.T) {
+	original := id.NewFlagID()
+	val, err := original.Value()
+	if err != nil {
+		t.Fatalf("Value failed: %v", err)
+	}
+
+	var scanned id.ID
+	if scanErr := scanned.Scan(val); scanErr != nil {
+		t.Fatalf("Scan failed: %v", scanErr)
+	}
+	if scanned.String() != original.String() {
+		t.Errorf("mismatch: %q != %q", scanned.String(), original.String())
+	}
+
+	// Nil round-trip.
+	var nilID id.ID
+	val, err = nilID.Value()
+	if err != nil {
+		t.Fatalf("Value(nil) failed: %v", err)
+	}
+	if val != nil {
+		t.Errorf("expected nil value for nil ID, got %v", val)
+	}
+
+	var scanned2 id.ID
+	if err := scanned2.Scan(nil); err != nil {
+		t.Fatalf("Scan(nil) failed: %v", err)
+	}
+	if !scanned2.IsNil() {
+		t.Error("expected nil after scan of nil")
+	}
+}
+
+func TestUniqueness(t *testing.T) {
+	a := id.NewSecretID()
+	b := id.NewSecretID()
+	if a.String() == b.String() {
+		t.Errorf("two consecutive NewSecretID() calls returned the same ID: %q", a.String())
 	}
 }

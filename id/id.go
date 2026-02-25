@@ -1,20 +1,21 @@
-// Package id defines type-safe, K-sortable entity IDs for Vault.
-// All IDs use TypeID (go.jetify.com/typeid) with entity-specific prefixes.
-// A single ID struct is used for all entity types with convenience constructors
-// and parsers per entity type.
+// Package id defines TypeID-based identity types for all Vault entities.
+//
+// Every entity in Vault uses a single ID struct with a prefix that identifies
+// the entity type. IDs are K-sortable (UUIDv7-based), globally unique,
+// and URL-safe in the format "prefix_suffix".
 package id
 
 import (
 	"database/sql/driver"
 	"fmt"
 
-	"go.jetify.com/typeid"
+	"go.jetify.com/typeid/v2"
 )
 
-// Prefix defines the entity type prefix for a TypeID.
+// Prefix identifies the entity type encoded in a TypeID.
 type Prefix string
 
-// Known prefixes for Vault entities.
+// Prefix constants for all Vault entity types.
 const (
 	PrefixSecret   Prefix = "sec"
 	PrefixFlag     Prefix = "flag"
@@ -26,201 +27,261 @@ const (
 	PrefixAudit    Prefix = "vaudit"
 )
 
-// ID is a type-safe, K-sortable identifier for any Vault entity.
-// It wraps a typeid.AnyID with a known prefix. The zero value is a nil/invalid ID.
+// ID is the primary identifier type for all Vault entities.
+// It wraps a TypeID providing a prefix-qualified, globally unique,
+// sortable, URL-safe identifier in the format "prefix_suffix".
+//
+//nolint:recvcheck // Value receivers for read-only methods, pointer receivers for UnmarshalText/Scan.
 type ID struct {
-	inner typeid.AnyID
+	inner typeid.TypeID
 	valid bool
 }
 
-// New creates a new unique ID with the given prefix.
+// Nil is the zero-value ID.
+var Nil ID
+
+// New generates a new globally unique ID with the given prefix.
+// It panics if prefix is not a valid TypeID prefix (programming error).
 func New(prefix Prefix) ID {
-	tid, err := typeid.WithPrefix(string(prefix))
+	tid, err := typeid.Generate(string(prefix))
 	if err != nil {
-		panic(fmt.Sprintf("id: failed to create TypeID with prefix %q: %v", prefix, err))
+		panic(fmt.Sprintf("id: invalid prefix %q: %v", prefix, err))
 	}
+
 	return ID{inner: tid, valid: true}
 }
 
-// Parse parses a TypeID string (e.g. "sec_01h2xcejqtf2nbrexx3vqjhp41") into an ID.
-// Returns an error if the string is not a valid TypeID.
+// Parse parses a TypeID string (e.g., "sec_01h2xcejqtf2nbrexx3vqjhp41")
+// into an ID. Returns an error if the string is not valid.
 func Parse(s string) (ID, error) {
 	if s == "" {
-		return ID{}, nil
+		return Nil, fmt.Errorf("id: parse %q: empty string", s)
 	}
-	tid, err := typeid.FromString(s)
+
+	tid, err := typeid.Parse(s)
 	if err != nil {
-		return ID{}, fmt.Errorf("id: parse %q: %w", s, err)
+		return Nil, fmt.Errorf("id: parse %q: %w", s, err)
 	}
+
 	return ID{inner: tid, valid: true}, nil
 }
 
-// ParseWithPrefix parses a TypeID string and validates that its prefix matches the expected prefix.
+// ParseWithPrefix parses a TypeID string and validates that its prefix
+// matches the expected value.
 func ParseWithPrefix(s string, expected Prefix) (ID, error) {
 	parsed, err := Parse(s)
 	if err != nil {
-		return ID{}, err
+		return Nil, err
 	}
-	if !parsed.valid {
-		return ID{}, fmt.Errorf("id: empty id for prefix %q", expected)
+
+	if parsed.Prefix() != expected {
+		return Nil, fmt.Errorf("id: expected prefix %q, got %q", expected, parsed.Prefix())
 	}
-	if Prefix(parsed.inner.Prefix()) != expected {
-		return ID{}, fmt.Errorf("id: expected prefix %q, got %q", expected, parsed.inner.Prefix())
-	}
+
 	return parsed, nil
 }
 
-// String returns the TypeID string representation (e.g. "sec_01h2xcejqtf2nbrexx3vqjhp41").
-// Returns an empty string for a nil/invalid ID.
+// MustParse is like Parse but panics on error. Use for hardcoded ID values.
+func MustParse(s string) ID {
+	parsed, err := Parse(s)
+	if err != nil {
+		panic(fmt.Sprintf("id: must parse %q: %v", s, err))
+	}
+
+	return parsed
+}
+
+// MustParseWithPrefix is like ParseWithPrefix but panics on error.
+func MustParseWithPrefix(s string, expected Prefix) ID {
+	parsed, err := ParseWithPrefix(s, expected)
+	if err != nil {
+		panic(fmt.Sprintf("id: must parse with prefix %q: %v", expected, err))
+	}
+
+	return parsed
+}
+
+// ──────────────────────────────────────────────────
+// Type aliases for backward compatibility
+// ──────────────────────────────────────────────────
+
+// SecretID is a type-safe identifier for secrets (prefix: "sec").
+type SecretID = ID
+
+// FlagID is a type-safe identifier for flags (prefix: "flag").
+type FlagID = ID
+
+// RuleID is a type-safe identifier for rules (prefix: "rule").
+type RuleID = ID
+
+// ConfigID is a type-safe identifier for configs (prefix: "cfg").
+type ConfigID = ID
+
+// OverrideID is a type-safe identifier for overrides (prefix: "ovr").
+type OverrideID = ID
+
+// RotationID is a type-safe identifier for rotations (prefix: "rot").
+type RotationID = ID
+
+// VersionID is a type-safe identifier for versions (prefix: "ver").
+type VersionID = ID
+
+// AuditID is a type-safe identifier for audit entries (prefix: "vaudit").
+type AuditID = ID
+
+// AnyID is a type alias that accepts any valid prefix.
+type AnyID = ID
+
+// ──────────────────────────────────────────────────
+// Convenience constructors
+// ──────────────────────────────────────────────────
+
+// NewSecretID generates a new unique secret ID.
+func NewSecretID() ID { return New(PrefixSecret) }
+
+// NewFlagID generates a new unique flag ID.
+func NewFlagID() ID { return New(PrefixFlag) }
+
+// NewRuleID generates a new unique rule ID.
+func NewRuleID() ID { return New(PrefixRule) }
+
+// NewConfigID generates a new unique config ID.
+func NewConfigID() ID { return New(PrefixConfig) }
+
+// NewOverrideID generates a new unique override ID.
+func NewOverrideID() ID { return New(PrefixOverride) }
+
+// NewRotationID generates a new unique rotation ID.
+func NewRotationID() ID { return New(PrefixRotation) }
+
+// NewVersionID generates a new unique version ID.
+func NewVersionID() ID { return New(PrefixVersion) }
+
+// NewAuditID generates a new unique audit ID.
+func NewAuditID() ID { return New(PrefixAudit) }
+
+// ──────────────────────────────────────────────────
+// Convenience parsers
+// ──────────────────────────────────────────────────
+
+// ParseSecretID parses a string and validates the "sec" prefix.
+func ParseSecretID(s string) (ID, error) { return ParseWithPrefix(s, PrefixSecret) }
+
+// ParseFlagID parses a string and validates the "flag" prefix.
+func ParseFlagID(s string) (ID, error) { return ParseWithPrefix(s, PrefixFlag) }
+
+// ParseRuleID parses a string and validates the "rule" prefix.
+func ParseRuleID(s string) (ID, error) { return ParseWithPrefix(s, PrefixRule) }
+
+// ParseConfigID parses a string and validates the "cfg" prefix.
+func ParseConfigID(s string) (ID, error) { return ParseWithPrefix(s, PrefixConfig) }
+
+// ParseOverrideID parses a string and validates the "ovr" prefix.
+func ParseOverrideID(s string) (ID, error) { return ParseWithPrefix(s, PrefixOverride) }
+
+// ParseRotationID parses a string and validates the "rot" prefix.
+func ParseRotationID(s string) (ID, error) { return ParseWithPrefix(s, PrefixRotation) }
+
+// ParseVersionID parses a string and validates the "ver" prefix.
+func ParseVersionID(s string) (ID, error) { return ParseWithPrefix(s, PrefixVersion) }
+
+// ParseAuditID parses a string and validates the "vaudit" prefix.
+func ParseAuditID(s string) (ID, error) { return ParseWithPrefix(s, PrefixAudit) }
+
+// ParseAny parses a string into an ID without type checking the prefix.
+func ParseAny(s string) (ID, error) { return Parse(s) }
+
+// ──────────────────────────────────────────────────
+// ID methods
+// ──────────────────────────────────────────────────
+
+// String returns the full TypeID string representation (prefix_suffix).
+// Returns an empty string for the Nil ID.
 func (i ID) String() string {
 	if !i.valid {
 		return ""
 	}
+
 	return i.inner.String()
 }
 
-// IDPrefix returns the entity type prefix of this ID.
-func (i ID) IDPrefix() Prefix {
+// Prefix returns the prefix component of this ID.
+func (i ID) Prefix() Prefix {
 	if !i.valid {
 		return ""
 	}
+
 	return Prefix(i.inner.Prefix())
 }
 
-// IsNil returns true if this ID is the zero value (not set).
+// IsNil reports whether this ID is the zero value.
 func (i ID) IsNil() bool {
 	return !i.valid
 }
 
 // MarshalText implements encoding.TextMarshaler.
 func (i ID) MarshalText() ([]byte, error) {
-	return []byte(i.String()), nil
+	if !i.valid {
+		return []byte{}, nil
+	}
+
+	return []byte(i.inner.String()), nil
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler.
 func (i *ID) UnmarshalText(data []byte) error {
-	s := string(data)
-	if s == "" {
-		*i = ID{}
+	if len(data) == 0 {
+		*i = Nil
+
 		return nil
 	}
-	parsed, err := Parse(s)
+
+	parsed, err := Parse(string(data))
 	if err != nil {
 		return err
 	}
+
 	*i = parsed
+
 	return nil
 }
 
 // Value implements driver.Valuer for database storage.
+// Returns nil for the Nil ID so that optional foreign key columns store NULL.
 func (i ID) Value() (driver.Value, error) {
 	if !i.valid {
-		return nil, nil
+		return nil, nil //nolint:nilnil // nil is the canonical NULL for driver.Valuer
 	}
-	return i.String(), nil
+
+	return i.inner.String(), nil
 }
 
 // Scan implements sql.Scanner for database retrieval.
 func (i *ID) Scan(src any) error {
 	if src == nil {
-		*i = ID{}
+		*i = Nil
+
 		return nil
 	}
+
 	switch v := src.(type) {
 	case string:
-		parsed, err := Parse(v)
-		if err != nil {
-			return err
+		if v == "" {
+			*i = Nil
+
+			return nil
 		}
-		*i = parsed
+
+		return i.UnmarshalText([]byte(v))
 	case []byte:
-		parsed, err := Parse(string(v))
-		if err != nil {
-			return err
+		if len(v) == 0 {
+			*i = Nil
+
+			return nil
 		}
-		*i = parsed
+
+		return i.UnmarshalText(v)
 	default:
-		return fmt.Errorf("id: unsupported scan source type %T", src)
+		return fmt.Errorf("id: cannot scan %T into ID", src)
 	}
-	return nil
 }
-
-// MarshalJSON implements json.Marshaler.
-func (i ID) MarshalJSON() ([]byte, error) {
-	if !i.valid {
-		return []byte(`""`), nil
-	}
-	return []byte(`"` + i.String() + `"`), nil
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (i *ID) UnmarshalJSON(data []byte) error {
-	s := string(data)
-	if s == "null" || s == `""` {
-		*i = ID{}
-		return nil
-	}
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		s = s[1 : len(s)-1]
-	}
-	return i.UnmarshalText([]byte(s))
-}
-
-// ──────────────────────────────────────────────────
-// Convenience constructors
-// ──────────────────────────────────────────────────
-
-// NewSecretID creates a new unique secret ID.
-func NewSecretID() ID { return New(PrefixSecret) }
-
-// NewFlagID creates a new unique flag ID.
-func NewFlagID() ID { return New(PrefixFlag) }
-
-// NewRuleID creates a new unique rule ID.
-func NewRuleID() ID { return New(PrefixRule) }
-
-// NewConfigID creates a new unique config ID.
-func NewConfigID() ID { return New(PrefixConfig) }
-
-// NewOverrideID creates a new unique override ID.
-func NewOverrideID() ID { return New(PrefixOverride) }
-
-// NewRotationID creates a new unique rotation ID.
-func NewRotationID() ID { return New(PrefixRotation) }
-
-// NewVersionID creates a new unique version ID.
-func NewVersionID() ID { return New(PrefixVersion) }
-
-// NewAuditID creates a new unique audit ID.
-func NewAuditID() ID { return New(PrefixAudit) }
-
-// ──────────────────────────────────────────────────
-// Convenience parsers (type-safe: ParseSecretID("flag_01h...") fails)
-// ──────────────────────────────────────────────────
-
-// ParseSecretID parses a string into a secret ID, returning an error if the prefix doesn't match.
-func ParseSecretID(s string) (ID, error) { return ParseWithPrefix(s, PrefixSecret) }
-
-// ParseFlagID parses a string into a flag ID.
-func ParseFlagID(s string) (ID, error) { return ParseWithPrefix(s, PrefixFlag) }
-
-// ParseRuleID parses a string into a rule ID.
-func ParseRuleID(s string) (ID, error) { return ParseWithPrefix(s, PrefixRule) }
-
-// ParseConfigID parses a string into a config ID.
-func ParseConfigID(s string) (ID, error) { return ParseWithPrefix(s, PrefixConfig) }
-
-// ParseOverrideID parses a string into an override ID.
-func ParseOverrideID(s string) (ID, error) { return ParseWithPrefix(s, PrefixOverride) }
-
-// ParseRotationID parses a string into a rotation ID.
-func ParseRotationID(s string) (ID, error) { return ParseWithPrefix(s, PrefixRotation) }
-
-// ParseVersionID parses a string into a version ID.
-func ParseVersionID(s string) (ID, error) { return ParseWithPrefix(s, PrefixVersion) }
-
-// ParseAuditID parses a string into an audit ID.
-func ParseAuditID(s string) (ID, error) { return ParseWithPrefix(s, PrefixAudit) }
-
-// ParseAny parses a TypeID string with any prefix.
-func ParseAny(s string) (ID, error) { return Parse(s) }
