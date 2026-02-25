@@ -1,0 +1,76 @@
+---
+title: MongoDB Store
+description: Document store using Grove ORM with mongodriver for MongoDB.
+---
+
+The MongoDB store (`store/mongo`) provides a document-oriented backend using the [Grove ORM](https://github.com/xraph/grove) with `mongodriver`. It maps Vault entities to 11 MongoDB collections with compound indexes for efficient tenant-scoped queries.
+
+## Usage
+
+```go
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/mongodriver"
+    "github.com/xraph/vault/store/mongo"
+)
+
+// Open a MongoDB connection via Grove's mongodriver.
+db := grove.Open(mongodriver.New(
+    mongodriver.WithURI("mongodb://localhost:27017"),
+    mongodriver.WithDatabase("vault"),
+))
+
+s := mongo.New(db)
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger. Defaults to `slog.Default()`. |
+
+```go
+s := mongo.New(db, mongo.WithLogger(slog.Default()))
+```
+
+## Internals
+
+| Aspect | Detail |
+|--------|--------|
+| Driver | Grove ORM with `mongodriver` (MongoDB) |
+| Migrations | Creates compound and unique indexes on all collections |
+| Transactions | Individual operations are atomic; multi-document transactions require explicit sessions |
+
+## Collections
+
+| Collection | Entity |
+|------------|--------|
+| `vault_secrets` | `secret.Secret` |
+| `vault_secret_versions` | `secret.Version` |
+| `vault_flags` | `flag.Definition` |
+| `vault_flag_rules` | `flag.Rule` |
+| `vault_flag_overrides` | `flag.TenantOverride` |
+| `vault_config` | `config.Entry` |
+| `vault_config_versions` | `config.EntryVersion` |
+| `vault_overrides` | `override.Override` |
+| `vault_rotation_policies` | `rotation.Policy` |
+| `vault_rotation_records` | `rotation.Record` |
+| `vault_audit` | `audit.Entry` |
+
+## Lifecycle methods
+
+| Method | Behaviour |
+|--------|-----------|
+| `Migrate(ctx)` | Creates indexes on all 11 collections |
+| `Ping(ctx)` | Calls `db.Ping(ctx)` to verify connectivity |
+| `Close()` | Calls `db.Close()` to disconnect from MongoDB |
+
+## When to use
+
+- **Document-oriented workloads** -- flexible schemas that evolve with your application.
+- **Horizontal scaling** -- MongoDB sharding for large-scale deployments.
+- **Cloud-native** -- MongoDB Atlas for fully managed deployments.
+- **Teams familiar with MongoDB** -- leverage existing document database expertise.

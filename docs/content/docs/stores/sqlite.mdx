@@ -1,0 +1,57 @@
+---
+title: SQLite Store
+description: Lightweight SQLite backend using Grove ORM with sqlitedriver.
+---
+
+The SQLite store (`store/sqlite`) provides a lightweight, embedded backend using the [Grove ORM](https://github.com/xraph/grove) with `sqlitedriver`. It implements the full `store.Store` composite interface and is well-suited for single-process deployments, local development, and testing.
+
+## Usage
+
+```go
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/sqlitedriver"
+    "github.com/xraph/vault/store/sqlite"
+)
+
+// Open a SQLite connection via Grove's sqlitedriver.
+db := grove.Open(sqlitedriver.New("vault.db"))
+
+s := sqlite.New(db)
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger. Defaults to `slog.Default()`. |
+
+```go
+s := sqlite.New(db, sqlite.WithLogger(slog.Default()))
+```
+
+## Internals
+
+| Aspect | Detail |
+|--------|--------|
+| Driver | Grove ORM with `sqlitedriver` (SQLite) |
+| Migrations | Grove migration orchestrator with programmatic migrations |
+| Transactions | Database-level transactions via SQLite |
+
+## Lifecycle methods
+
+| Method | Behaviour |
+|--------|-----------|
+| `Migrate(ctx)` | Creates all tables and indexes using the Grove migration orchestrator |
+| `Ping(ctx)` | Calls `db.Ping(ctx)` to verify connectivity |
+| `Close()` | Calls `db.Close()` to release the database connection |
+
+## When to use
+
+- **Local development** -- single-file database, no server process required.
+- **Testing** -- fast, isolated store with no external dependencies.
+- **Embedded / single-process** -- CLI tools, desktop apps, or edge deployments.
+- **CI pipelines** -- deterministic tests without a database container.

@@ -1,0 +1,76 @@
+---
+title: PostgreSQL Store (Grove ORM)
+description: PostgreSQL backend using Grove ORM with pgdriver.
+---
+
+The PostgreSQL store (`store/postgres`) provides a production-ready backend that uses the [Grove ORM](https://github.com/xraph/grove) with `pgdriver` for PostgreSQL. It maps Vault entities to Grove model structs and uses programmatic migrations to create all required tables.
+
+## Usage
+
+```go
+import (
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
+    "github.com/xraph/vault/store/postgres"
+)
+
+// Open a PostgreSQL connection via Grove's pgdriver.
+db := grove.Open(pgdriver.New(
+    pgdriver.WithDSN("postgres://user:pass@localhost:5432/vault?sslmode=disable"),
+))
+
+s := postgres.New(db)
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+## Options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger. Defaults to `slog.Default()`. |
+
+```go
+s := postgres.New(db, postgres.WithLogger(slog.Default()))
+```
+
+## Internals
+
+| Aspect | Detail |
+|--------|--------|
+| Driver | Grove ORM with `pgdriver` (PostgreSQL) |
+| Migrations | Programmatic DDL statements executed via `pgdriver.PgDB` |
+| Transactions | Database-level ACID transactions |
+
+## Tables
+
+The store creates 11 tables across secrets, flags, config, overrides, rotation, and audit:
+
+| Table | Entity |
+|-------|--------|
+| `vault_secrets` | `secret.Secret` |
+| `vault_secret_versions` | `secret.Version` |
+| `vault_flags` | `flag.Definition` |
+| `vault_flag_rules` | `flag.Rule` |
+| `vault_flag_overrides` | `flag.TenantOverride` |
+| `vault_config` | `config.Entry` |
+| `vault_config_versions` | `config.EntryVersion` |
+| `vault_overrides` | `override.Override` |
+| `vault_rotation_policies` | `rotation.Policy` |
+| `vault_rotation_records` | `rotation.Record` |
+| `vault_audit` | `audit.Entry` |
+
+## Lifecycle methods
+
+| Method | Behaviour |
+|--------|-----------|
+| `Migrate(ctx)` | Creates all 11 tables and indexes via programmatic DDL |
+| `Ping(ctx)` | Calls `db.Ping(ctx)` to verify connectivity |
+| `Close()` | Calls `db.Close()` to release the database connection |
+
+## When to use
+
+- **Production deployments** -- durable, ACID-compliant storage with connection pooling.
+- **Multi-instance deployments** -- all application instances share the same database.
+- **Teams already using PostgreSQL** -- leverage existing infrastructure and expertise.

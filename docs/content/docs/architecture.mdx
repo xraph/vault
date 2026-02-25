@@ -30,8 +30,8 @@ Vault is organized as a set of focused Go packages. The root `vault` package def
 │   override.Store + rotation.Store + audit.Store +                      │
 │   Migrate / Ping / Close)                                              │
 ├───────────────┬─────────────────┬───────────────────────────────────────┤
-│ store/memory  │ store/postgres  │ store/bun                            │
-│ (in-process)  │ (pgx pool)      │ (Bun ORM)                           │
+│ store/memory  │ store/postgres  │ store/grovestore                     │
+│ (in-process)  │ (pgx pool)      │ (Grove ORM)                         │
 └───────────────┴─────────────────┴───────────────────────────────────────┘
 ```
 
@@ -191,4 +191,4 @@ val, err := chain.Get(ctx, "feature-x")
 | `store` | `github.com/xraph/vault/store` | Composite `Store` interface definition |
 | `store/memory` | `github.com/xraph/vault/store/memory` | In-memory store (testing and development) |
 | `store/postgres` | `github.com/xraph/vault/store/postgres` | PostgreSQL store (pgx connection pool) |
-| `store/bun` | `github.com/xraph/vault/store/bun` | Bun ORM store (PostgreSQL via Bun) |
+| `store/grovestore` | `github.com/xraph/vault/store/grovestore` | Grove ORM store (PostgreSQL via Grove) |

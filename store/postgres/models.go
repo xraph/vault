@@ -1,11 +1,11 @@
-// Package bunstore provides a Bun ORM implementation of all Vault store interfaces.
-package bunstore
+// Package postgres provides a Grove ORM implementation of all Vault store interfaces.
+package postgres
 
 import (
 	"encoding/json"
 	"time"
 
-	"github.com/uptrace/bun"
+	"github.com/xraph/grove"
 
 	"github.com/xraph/vault/audit"
 	cfgpkg "github.com/xraph/vault/config"
@@ -27,20 +27,20 @@ func mustParseID(s string) id.ID {
 // Secret models
 // ──────────────────────────────────────────────────
 
-// SecretModel is the Bun model for vault_secrets.
+// SecretModel is the Grove model for vault_secrets.
 type SecretModel struct {
-	bun.BaseModel   `bun:"table:vault_secrets,alias:s"`
-	ID              string          `bun:"id,pk"`
-	Key             string          `bun:"key,notnull"`
-	AppID           string          `bun:"app_id,notnull"`
-	EncryptedValue  []byte          `bun:"encrypted_value"`
-	EncryptionAlg   string          `bun:"encryption_alg"`
-	EncryptionKeyID string          `bun:"encryption_key_id"`
-	Version         int64           `bun:"version,notnull"`
-	Metadata        json.RawMessage `bun:"metadata,type:jsonb"`
-	ExpiresAt       *time.Time      `bun:"expires_at"`
-	CreatedAt       time.Time       `bun:"created_at,notnull"`
-	UpdatedAt       time.Time       `bun:"updated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_secrets,alias:s"`
+	ID              string          `grove:"id,pk"`
+	Key             string          `grove:"key,notnull"`
+	AppID           string          `grove:"app_id,notnull"`
+	EncryptedValue  []byte          `grove:"encrypted_value"`
+	EncryptionAlg   string          `grove:"encryption_alg"`
+	EncryptionKeyID string          `grove:"encryption_key_id"`
+	Version         int64           `grove:"version,notnull"`
+	Metadata        json.RawMessage `grove:"metadata,type:jsonb"`
+	ExpiresAt       *time.Time      `grove:"expires_at"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
+	UpdatedAt       time.Time       `grove:"updated_at,notnull"`
 }
 
 func secretModelFromEntity(s *secret.Secret) *SecretModel {
@@ -82,16 +82,16 @@ func (m *SecretModel) toMeta() *secret.Meta {
 	return meta
 }
 
-// SecretVersionModel is the Bun model for vault_secret_versions.
+// SecretVersionModel is the Grove model for vault_secret_versions.
 type SecretVersionModel struct {
-	bun.BaseModel  `bun:"table:vault_secret_versions,alias:sv"`
-	ID             string    `bun:"id,pk"`
-	SecretKey      string    `bun:"secret_key,notnull"`
-	AppID          string    `bun:"app_id,notnull"`
-	Version        int64     `bun:"version,notnull"`
-	EncryptedValue []byte    `bun:"encrypted_value"`
-	CreatedBy      string    `bun:"created_by"`
-	CreatedAt      time.Time `bun:"created_at,notnull"`
+	grove.BaseModel `grove:"table:vault_secret_versions,alias:sv"`
+	ID              string    `grove:"id,pk"`
+	SecretKey       string    `grove:"secret_key,notnull"`
+	AppID           string    `grove:"app_id,notnull"`
+	Version         int64     `grove:"version,notnull"`
+	EncryptedValue  []byte    `grove:"encrypted_value"`
+	CreatedBy       string    `grove:"created_by"`
+	CreatedAt       time.Time `grove:"created_at,notnull"`
 }
 
 func (m *SecretVersionModel) toEntity() *secret.Version {
@@ -106,21 +106,21 @@ func (m *SecretVersionModel) toEntity() *secret.Version {
 // Flag models
 // ──────────────────────────────────────────────────
 
-// FlagModel is the Bun model for vault_flags.
+// FlagModel is the Grove model for vault_flags.
 type FlagModel struct {
-	bun.BaseModel `bun:"table:vault_flags,alias:f"`
-	ID            string          `bun:"id,pk"`
-	Key           string          `bun:"key,notnull"`
-	Type          string          `bun:"type,notnull"`
-	DefaultValue  json.RawMessage `bun:"default_value,type:jsonb"`
-	Description   string          `bun:"description"`
-	Tags          json.RawMessage `bun:"tags,type:jsonb"`
-	Variants      json.RawMessage `bun:"variants,type:jsonb"`
-	Enabled       bool            `bun:"enabled,notnull"`
-	AppID         string          `bun:"app_id,notnull"`
-	Metadata      json.RawMessage `bun:"metadata,type:jsonb"`
-	CreatedAt     time.Time       `bun:"created_at,notnull"`
-	UpdatedAt     time.Time       `bun:"updated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_flags,alias:f"`
+	ID              string          `grove:"id,pk"`
+	Key             string          `grove:"key,notnull"`
+	Type            string          `grove:"type,notnull"`
+	DefaultValue    json.RawMessage `grove:"default_value,type:jsonb"`
+	Description     string          `grove:"description"`
+	Tags            json.RawMessage `grove:"tags,type:jsonb"`
+	Variants        json.RawMessage `grove:"variants,type:jsonb"`
+	Enabled         bool            `grove:"enabled,notnull"`
+	AppID           string          `grove:"app_id,notnull"`
+	Metadata        json.RawMessage `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
+	UpdatedAt       time.Time       `grove:"updated_at,notnull"`
 }
 
 func flagModelFromEntity(f *flag.Definition) *FlagModel {
@@ -153,18 +153,18 @@ func (m *FlagModel) toEntity() *flag.Definition {
 	return f
 }
 
-// FlagRuleModel is the Bun model for vault_flag_rules.
+// FlagRuleModel is the Grove model for vault_flag_rules.
 type FlagRuleModel struct {
-	bun.BaseModel `bun:"table:vault_flag_rules,alias:fr"`
-	ID            string          `bun:"id,pk"`
-	FlagKey       string          `bun:"flag_key,notnull"`
-	AppID         string          `bun:"app_id,notnull"`
-	Priority      int             `bun:"priority,notnull"`
-	Type          string          `bun:"type,notnull"`
-	Config        json.RawMessage `bun:"config,type:jsonb"`
-	ReturnValue   json.RawMessage `bun:"return_value,type:jsonb"`
-	CreatedAt     time.Time       `bun:"created_at,notnull"`
-	UpdatedAt     time.Time       `bun:"updated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_flag_rules,alias:fr"`
+	ID              string          `grove:"id,pk"`
+	FlagKey         string          `grove:"flag_key,notnull"`
+	AppID           string          `grove:"app_id,notnull"`
+	Priority        int             `grove:"priority,notnull"`
+	Type            string          `grove:"type,notnull"`
+	Config          json.RawMessage `grove:"config,type:jsonb"`
+	ReturnValue     json.RawMessage `grove:"return_value,type:jsonb"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
+	UpdatedAt       time.Time       `grove:"updated_at,notnull"`
 }
 
 func (m *FlagRuleModel) toEntity() *flag.Rule {
@@ -179,16 +179,16 @@ func (m *FlagRuleModel) toEntity() *flag.Rule {
 	return r
 }
 
-// FlagOverrideModel is the Bun model for vault_flag_overrides.
+// FlagOverrideModel is the Grove model for vault_flag_overrides.
 type FlagOverrideModel struct {
-	bun.BaseModel `bun:"table:vault_flag_overrides,alias:fo"`
-	ID            string          `bun:"id,pk"`
-	FlagKey       string          `bun:"flag_key,notnull"`
-	AppID         string          `bun:"app_id,notnull"`
-	TenantID      string          `bun:"tenant_id,notnull"`
-	Value         json.RawMessage `bun:"value,type:jsonb"`
-	CreatedAt     time.Time       `bun:"created_at,notnull"`
-	UpdatedAt     time.Time       `bun:"updated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_flag_overrides,alias:fo"`
+	ID              string          `grove:"id,pk"`
+	FlagKey         string          `grove:"flag_key,notnull"`
+	AppID           string          `grove:"app_id,notnull"`
+	TenantID        string          `grove:"tenant_id,notnull"`
+	Value           json.RawMessage `grove:"value,type:jsonb"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
+	UpdatedAt       time.Time       `grove:"updated_at,notnull"`
 }
 
 func (m *FlagOverrideModel) toEntity() *flag.TenantOverride {
@@ -206,19 +206,19 @@ func (m *FlagOverrideModel) toEntity() *flag.TenantOverride {
 // Config models
 // ──────────────────────────────────────────────────
 
-// ConfigModel is the Bun model for vault_config.
+// ConfigModel is the Grove model for vault_config.
 type ConfigModel struct {
-	bun.BaseModel `bun:"table:vault_config,alias:c"`
-	ID            string          `bun:"id,pk"`
-	Key           string          `bun:"key,notnull"`
-	Value         json.RawMessage `bun:"value,type:jsonb"`
-	ValueType     string          `bun:"value_type"`
-	Version       int64           `bun:"version,notnull"`
-	Description   string          `bun:"description"`
-	AppID         string          `bun:"app_id,notnull"`
-	Metadata      json.RawMessage `bun:"metadata,type:jsonb"`
-	CreatedAt     time.Time       `bun:"created_at,notnull"`
-	UpdatedAt     time.Time       `bun:"updated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_config,alias:c"`
+	ID              string          `grove:"id,pk"`
+	Key             string          `grove:"key,notnull"`
+	Value           json.RawMessage `grove:"value,type:jsonb"`
+	ValueType       string          `grove:"value_type"`
+	Version         int64           `grove:"version,notnull"`
+	Description     string          `grove:"description"`
+	AppID           string          `grove:"app_id,notnull"`
+	Metadata        json.RawMessage `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
+	UpdatedAt       time.Time       `grove:"updated_at,notnull"`
 }
 
 func (m *ConfigModel) toEntity() *cfgpkg.Entry {
@@ -235,16 +235,16 @@ func (m *ConfigModel) toEntity() *cfgpkg.Entry {
 	return e
 }
 
-// ConfigVersionModel is the Bun model for vault_config_versions.
+// ConfigVersionModel is the Grove model for vault_config_versions.
 type ConfigVersionModel struct {
-	bun.BaseModel `bun:"table:vault_config_versions,alias:cv"`
-	ID            string          `bun:"id,pk"`
-	ConfigKey     string          `bun:"config_key,notnull"`
-	AppID         string          `bun:"app_id,notnull"`
-	Version       int64           `bun:"version,notnull"`
-	Value         json.RawMessage `bun:"value,type:jsonb"`
-	CreatedBy     string          `bun:"created_by"`
-	CreatedAt     time.Time       `bun:"created_at,notnull"`
+	grove.BaseModel `grove:"table:vault_config_versions,alias:cv"`
+	ID              string          `grove:"id,pk"`
+	ConfigKey       string          `grove:"config_key,notnull"`
+	AppID           string          `grove:"app_id,notnull"`
+	Version         int64           `grove:"version,notnull"`
+	Value           json.RawMessage `grove:"value,type:jsonb"`
+	CreatedBy       string          `grove:"created_by"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
 }
 
 func (m *ConfigVersionModel) toEntity() *cfgpkg.EntryVersion {
@@ -261,17 +261,17 @@ func (m *ConfigVersionModel) toEntity() *cfgpkg.EntryVersion {
 // Override model
 // ──────────────────────────────────────────────────
 
-// OverrideModel is the Bun model for vault_overrides.
+// OverrideModel is the Grove model for vault_overrides.
 type OverrideModel struct {
-	bun.BaseModel `bun:"table:vault_overrides,alias:ov"`
-	ID            string          `bun:"id,pk"`
-	Key           string          `bun:"key,notnull"`
-	Value         json.RawMessage `bun:"value,type:jsonb"`
-	AppID         string          `bun:"app_id,notnull"`
-	TenantID      string          `bun:"tenant_id,notnull"`
-	Metadata      json.RawMessage `bun:"metadata,type:jsonb"`
-	CreatedAt     time.Time       `bun:"created_at,notnull"`
-	UpdatedAt     time.Time       `bun:"updated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_overrides,alias:ov"`
+	ID              string          `grove:"id,pk"`
+	Key             string          `grove:"key,notnull"`
+	Value           json.RawMessage `grove:"value,type:jsonb"`
+	AppID           string          `grove:"app_id,notnull"`
+	TenantID        string          `grove:"tenant_id,notnull"`
+	Metadata        json.RawMessage `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
+	UpdatedAt       time.Time       `grove:"updated_at,notnull"`
 }
 
 func (m *OverrideModel) toEntity() *override.Override {
@@ -292,18 +292,18 @@ func (m *OverrideModel) toEntity() *override.Override {
 // Rotation models
 // ──────────────────────────────────────────────────
 
-// RotationPolicyModel is the Bun model for vault_rotation_policies.
+// RotationPolicyModel is the Grove model for vault_rotation_policies.
 type RotationPolicyModel struct {
-	bun.BaseModel  `bun:"table:vault_rotation_policies,alias:rp"`
-	ID             string     `bun:"id,pk"`
-	SecretKey      string     `bun:"secret_key,notnull"`
-	AppID          string     `bun:"app_id,notnull"`
-	IntervalNS     int64      `bun:"interval_ns,notnull"`
-	Enabled        bool       `bun:"enabled,notnull"`
-	LastRotatedAt  *time.Time `bun:"last_rotated_at"`
-	NextRotationAt *time.Time `bun:"next_rotation_at"`
-	CreatedAt      time.Time  `bun:"created_at,notnull"`
-	UpdatedAt      time.Time  `bun:"updated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_rotation_policies,alias:rp"`
+	ID              string     `grove:"id,pk"`
+	SecretKey       string     `grove:"secret_key,notnull"`
+	AppID           string     `grove:"app_id,notnull"`
+	IntervalNS      int64      `grove:"interval_ns,notnull"`
+	Enabled         bool       `grove:"enabled,notnull"`
+	LastRotatedAt   *time.Time `grove:"last_rotated_at"`
+	NextRotationAt  *time.Time `grove:"next_rotation_at"`
+	CreatedAt       time.Time  `grove:"created_at,notnull"`
+	UpdatedAt       time.Time  `grove:"updated_at,notnull"`
 }
 
 func rotationPolicyModelFromEntity(p *rotation.Policy) *RotationPolicyModel {
@@ -326,16 +326,16 @@ func (m *RotationPolicyModel) toEntity() *rotation.Policy {
 	return p
 }
 
-// RotationRecordModel is the Bun model for vault_rotation_records.
+// RotationRecordModel is the Grove model for vault_rotation_records.
 type RotationRecordModel struct {
-	bun.BaseModel `bun:"table:vault_rotation_records,alias:rr"`
-	ID            string    `bun:"id,pk"`
-	SecretKey     string    `bun:"secret_key,notnull"`
-	AppID         string    `bun:"app_id,notnull"`
-	OldVersion    int64     `bun:"old_version,notnull"`
-	NewVersion    int64     `bun:"new_version,notnull"`
-	RotatedBy     string    `bun:"rotated_by"`
-	RotatedAt     time.Time `bun:"rotated_at,notnull"`
+	grove.BaseModel `grove:"table:vault_rotation_records,alias:rr"`
+	ID              string    `grove:"id,pk"`
+	SecretKey       string    `grove:"secret_key,notnull"`
+	AppID           string    `grove:"app_id,notnull"`
+	OldVersion      int64     `grove:"old_version,notnull"`
+	NewVersion      int64     `grove:"new_version,notnull"`
+	RotatedBy       string    `grove:"rotated_by"`
+	RotatedAt       time.Time `grove:"rotated_at,notnull"`
 }
 
 func (m *RotationRecordModel) toEntity() *rotation.Record {
@@ -350,20 +350,20 @@ func (m *RotationRecordModel) toEntity() *rotation.Record {
 // Audit model
 // ──────────────────────────────────────────────────
 
-// AuditModel is the Bun model for vault_audit.
+// AuditModel is the Grove model for vault_audit.
 type AuditModel struct {
-	bun.BaseModel `bun:"table:vault_audit,alias:a"`
-	ID            string          `bun:"id,pk"`
-	Action        string          `bun:"action,notnull"`
-	Resource      string          `bun:"resource,notnull"`
-	Key           string          `bun:"key"`
-	AppID         string          `bun:"app_id"`
-	TenantID      string          `bun:"tenant_id"`
-	UserID        string          `bun:"user_id"`
-	IP            string          `bun:"ip"`
-	Outcome       string          `bun:"outcome"`
-	Metadata      json.RawMessage `bun:"metadata,type:jsonb"`
-	CreatedAt     time.Time       `bun:"created_at,notnull"`
+	grove.BaseModel `grove:"table:vault_audit,alias:a"`
+	ID              string          `grove:"id,pk"`
+	Action          string          `grove:"action,notnull"`
+	Resource        string          `grove:"resource,notnull"`
+	Key             string          `grove:"key"`
+	AppID           string          `grove:"app_id"`
+	TenantID        string          `grove:"tenant_id"`
+	UserID          string          `grove:"user_id"`
+	IP              string          `grove:"ip"`
+	Outcome         string          `grove:"outcome"`
+	Metadata        json.RawMessage `grove:"metadata,type:jsonb"`
+	CreatedAt       time.Time       `grove:"created_at,notnull"`
 }
 
 func auditModelFromEntity(e *audit.Entry) *AuditModel {

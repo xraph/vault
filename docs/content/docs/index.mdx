@@ -18,7 +18,7 @@ Vault is a **library** -- not a service. You bring your own database, encryption
 - **Secret rotation** -- The `rotation.Manager` runs a background loop checking policies for due rotations. Register a `Rotator` function per secret key and Vault handles scheduling, versioning, and record-keeping.
 - **Audit logging** -- The `audit.Logger` persists append-only log entries with action, resource, outcome, and full scope context (app, tenant, user, IP). An optional `audit_hook.Extension` forwards events to external systems.
 - **Plugin system** -- Register plugins that implement any combination of 8 capability interfaces: `OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, and `RotationStrategy`. The `plugin.Registry` discovers capabilities via type assertion at registration time.
-- **Composable store backends** -- Three backends implement the same composite `store.Store` interface: `memory` (testing), `postgres` (pgx connection pool), and `bun` (Bun ORM). All support Migrate, Ping, and Close lifecycle methods.
+- **Composable store backends** -- Three backends implement the same composite `store.Store` interface: `memory` (testing), `postgres` (pgx connection pool), and `grovestore` (Grove ORM). All support Migrate, Ping, and Close lifecycle methods.
 
 ## Design philosophy
 
@@ -96,5 +96,5 @@ func main() {
   <Card title="Getting started" href="/docs/getting-started" description="Install Vault and manage your first secret in under five minutes." />
   <Card title="Architecture" href="/docs/architecture" description="Understand how the packages fit together." />
   <Card title="Core concepts" href="/docs/concepts/entities" description="Learn about Secrets, Flags, Config entries, and Overrides." />
-  <Card title="Stores" href="/docs/stores/memory" description="Configure memory, PostgreSQL, or Bun store backends." />
+  <Card title="Stores" href="/docs/stores/memory" description="Configure memory, PostgreSQL, or Grove store backends." />
 </Cards>

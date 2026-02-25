@@ -222,13 +222,13 @@ engine := flag.NewEngine(pgStore)
 configSvc := config.NewService(pgStore, config.WithAppID("myapp"))
 ```
 
-Alternatively, use the Bun ORM backend if your application already uses Bun:
+Alternatively, use the Grove ORM backend if your application already uses Grove:
 
 ```go
-import bunstore "github.com/xraph/vault/store/bun"
+import grovestore "github.com/xraph/vault/store/grovestore"
 
-bunStore := bunstore.New(db) // db is a *bun.DB
-if err := bunStore.Migrate(ctx); err != nil {
+groveStore := grovestore.New(db) // db is a *grove.DB
+if err := groveStore.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
 ```

@@ -57,3 +57,15 @@ type Vault struct {
 	config Config
 	logger *slog.Logger
 }
+
+// NewVault creates a new Vault instance with the given options.
+func NewVault(opts ...Option) *Vault {
+	v := &Vault{
+		config: DefaultConfig(),
+		logger: slog.Default(),
+	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v
+}

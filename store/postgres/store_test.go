@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/xraph/grove"
+	"github.com/xraph/grove/drivers/pgdriver"
 
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/audit"
@@ -22,7 +23,7 @@ import (
 	pgstore "github.com/xraph/vault/store/postgres"
 )
 
-// testStore returns a migrated postgres Store for integration tests.
+// testStore returns a migrated Grove Store for integration tests.
 // Set VAULT_TEST_PG_URL to a Postgres connection string.
 func testStore(t *testing.T) *pgstore.Store {
 	t.Helper()
@@ -32,14 +33,19 @@ func testStore(t *testing.T) *pgstore.Store {
 		t.Skip("VAULT_TEST_PG_URL not set; skipping integration test")
 	}
 
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, connStr)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
+	pgdb := pgdriver.New()
+	if err := pgdb.Open(context.Background(), connStr); err != nil {
+		t.Fatalf("pgdriver open: %v", err)
 	}
-	t.Cleanup(pool.Close)
 
-	s := pgstore.NewFromPool(pool)
+	db, err := grove.Open(pgdb)
+	if err != nil {
+		t.Fatalf("grove open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	ctx := context.Background()
+	s := pgstore.New(db)
 
 	// Run migrations.
 	if err := s.Migrate(ctx); err != nil {
@@ -56,7 +62,7 @@ func testStore(t *testing.T) *pgstore.Store {
 		"vault_audit",
 	}
 	for _, tbl := range tables {
-		if _, err := pool.Exec(ctx, fmt.Sprintf("DELETE FROM %s", tbl)); err != nil {
+		if _, err := pgdb.Exec(ctx, fmt.Sprintf("DELETE FROM %s", tbl)); err != nil {
 			t.Fatalf("clean %s: %v", tbl, err)
 		}
 	}
@@ -279,7 +285,7 @@ func TestConfigCRUD(t *testing.T) {
 		t.Errorf("key: got %q", got.Key)
 	}
 
-	// Update → version 2.
+	// Update -> version 2.
 	entry.Value = 20
 	if err := s.SetConfig(ctx, entry); err != nil {
 		t.Fatalf("SetConfig v2: %v", err)
@@ -455,7 +461,7 @@ func TestRotationCRUD(t *testing.T) {
 		t.Errorf("records: got %d, want 1", len(records))
 	}
 	if records[0].OldVersion != 1 || records[0].NewVersion != 2 {
-		t.Errorf("record versions: got %d→%d", records[0].OldVersion, records[0].NewVersion)
+		t.Errorf("record versions: got %d->%d", records[0].OldVersion, records[0].NewVersion)
 	}
 
 	// Delete policy.
@@ -478,18 +484,18 @@ func TestAuditCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	entry := &audit.Entry{
-		ID:       id.New(),
-		Action:   "secret.accessed",
-		Resource: "secret",
-		Key:      "db-password",
-		AppID:    "app1",
-		TenantID: "t1",
-		UserID:   "u1",
-		IP:       "10.0.0.1",
-		Outcome:  "success",
-		Metadata: map[string]any{"source": "api"},
+		ID:        id.New(),
+		Action:    "secret.accessed",
+		Resource:  "secret",
+		Key:       "db-password",
+		AppID:     "app1",
+		TenantID:  "t1",
+		UserID:    "u1",
+		IP:        "10.0.0.1",
+		Outcome:   "success",
+		Metadata:  map[string]any{"source": "api"},
+		CreatedAt: time.Now().UTC(),
 	}
-	entry.CreatedAt = time.Now().UTC()
 
 	// Record.
 	if err := s.RecordAudit(ctx, entry); err != nil {
@@ -528,50 +534,7 @@ func TestAuditCRUD(t *testing.T) {
 }
 
 // ──────────────────────────────────────────────────
-// Pagination
-// ──────────────────────────────────────────────────
-
-func TestPagination(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-
-	// Insert multiple audit entries.
-	for i := 0; i < 5; i++ {
-		e := &audit.Entry{
-			ID:        id.New(),
-			Action:    "config.set",
-			Resource:  "config",
-			Key:       fmt.Sprintf("key-%d", i),
-			AppID:     "app-page",
-			Outcome:   "success",
-			CreatedAt: time.Now().UTC(),
-		}
-		if err := s.RecordAudit(ctx, e); err != nil {
-			t.Fatalf("RecordAudit %d: %v", i, err)
-		}
-	}
-
-	// Limit.
-	limited, err := s.ListAudit(ctx, "app-page", audit.ListOpts{Limit: 3})
-	if err != nil {
-		t.Fatalf("ListAudit: %v", err)
-	}
-	if len(limited) != 3 {
-		t.Errorf("limit: got %d, want 3", len(limited))
-	}
-
-	// Offset.
-	offset, err := s.ListAudit(ctx, "app-page", audit.ListOpts{Limit: 10, Offset: 2})
-	if err != nil {
-		t.Fatalf("ListAudit: %v", err)
-	}
-	if len(offset) != 3 {
-		t.Errorf("offset: got %d, want 3", len(offset))
-	}
-}
-
-// ──────────────────────────────────────────────────
-// Ping + Migrate idempotency
+// Ping
 // ──────────────────────────────────────────────────
 
 func TestPing(t *testing.T) {

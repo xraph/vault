@@ -26,7 +26,7 @@ All Vault packages are importable from the module `github.com/xraph/vault`. This
 | `store` | `github.com/xraph/vault/store` | `Store` | (interface package) | Composite store interface definition |
 | `store/memory` | `github.com/xraph/vault/store/memory` | `Store` | `New()` | In-memory store for development and testing |
 | `store/postgres` | `github.com/xraph/vault/store/postgres` | `Store`, `StoreOption` | `New()`, `NewFromPool()`, `WithLogger()` | Production PostgreSQL backend using pgx/v5 |
-| `store/bun` | `github.com/xraph/vault/store/bun` | `Store`, `StoreOption` | `New()`, `WithLogger()` | PostgreSQL backend using Bun ORM |
+| `store/grovestore` | `github.com/xraph/vault/store/grovestore` | `Store`, `StoreOption` | `New()`, `WithLogger()` | PostgreSQL backend using Grove ORM |
 
 ## Root package: `github.com/xraph/vault`
 
@@ -673,11 +673,11 @@ func WithLogger(l *slog.Logger) StoreOption
 
 PostgreSQL via `pgxpool`. Embeds 5 SQL migration files. See [PostgreSQL Store](/docs/stores/postgres).
 
-### store/bun
+### store/grovestore
 
 ```go
-func New(db *bun.DB, opts ...StoreOption) *Store
+func New(db *grove.DB, opts ...StoreOption) *Store
 func WithLogger(l *slog.Logger) StoreOption
 ```
 
-PostgreSQL via Bun ORM. Uses 11 model structs and `CreateTable` migrations. See [Bun ORM Store](/docs/stores/bun).
+PostgreSQL via Grove ORM. Uses 11 model structs and `CreateTable` migrations. See [Grove ORM Store](/docs/stores/grove).

@@ -2,10 +2,9 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/rotation"
@@ -14,78 +13,69 @@ import (
 // SaveRotationPolicy creates or updates a rotation policy.
 func (s *Store) SaveRotationPolicy(ctx context.Context, p *rotation.Policy) error {
 	now := time.Now().UTC()
+	m := rotationPolicyModelFromEntity(p)
+	m.CreatedAt = now
+	m.UpdatedAt = now
 
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO vault_rotation_policies
-		    (id, secret_key, app_id, interval_ns, enabled, last_rotated_at, next_rotation_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (secret_key, app_id) DO UPDATE SET
-		    interval_ns = EXCLUDED.interval_ns,
-		    enabled = EXCLUDED.enabled,
-		    last_rotated_at = EXCLUDED.last_rotated_at,
-		    next_rotation_at = EXCLUDED.next_rotation_at,
-		    updated_at = EXCLUDED.updated_at
-	`, p.ID.String(), p.SecretKey, p.AppID, int64(p.Interval),
-		p.Enabled, p.LastRotatedAt, p.NextRotationAt, now, now)
+	_, err := s.pgdb().NewInsert(m).
+		OnConflict("(secret_key, app_id) DO UPDATE").
+		Set("interval_ns = EXCLUDED.interval_ns").
+		Set("enabled = EXCLUDED.enabled").
+		Set("last_rotated_at = EXCLUDED.last_rotated_at").
+		Set("next_rotation_at = EXCLUDED.next_rotation_at").
+		Set("updated_at = EXCLUDED.updated_at").
+		Exec(ctx)
 	return err
 }
 
 // GetRotationPolicy retrieves a rotation policy by secret key and app ID.
 func (s *Store) GetRotationPolicy(ctx context.Context, key, appID string) (*rotation.Policy, error) {
-	row := s.pool.QueryRow(ctx, `
-		SELECT id, secret_key, app_id, interval_ns, enabled,
-		       last_rotated_at, next_rotation_at, created_at, updated_at
-		FROM vault_rotation_policies WHERE secret_key = $1 AND app_id = $2
-	`, key, appID)
-
-	p := &rotation.Policy{}
-	var intervalNS int64
-	err := row.Scan(&p.ID, &p.SecretKey, &p.AppID, &intervalNS, &p.Enabled,
-		&p.LastRotatedAt, &p.NextRotationAt, &p.CreatedAt, &p.UpdatedAt)
+	m := new(RotationPolicyModel)
+	err := s.pgdb().NewSelect(m).
+		Where("secret_key = ?", key).
+		Where("app_id = ?", appID).
+		Scan(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, vault.ErrRotationNotFound
 		}
 		return nil, err
 	}
-	p.Interval = time.Duration(intervalNS)
-	return p, nil
+	return m.toEntity(), nil
 }
 
 // ListRotationPolicies returns all rotation policies for an app.
 func (s *Store) ListRotationPolicies(ctx context.Context, appID string) ([]*rotation.Policy, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, secret_key, app_id, interval_ns, enabled,
-		       last_rotated_at, next_rotation_at, created_at, updated_at
-		FROM vault_rotation_policies WHERE app_id = $1 ORDER BY secret_key ASC
-	`, appID)
+	var models []RotationPolicyModel
+	err := s.pgdb().NewSelect(&models).
+		Where("app_id = ?", appID).
+		OrderExpr("secret_key ASC").
+		Scan(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var result []*rotation.Policy
-	for rows.Next() {
-		p := &rotation.Policy{}
-		var intervalNS int64
-		if err := rows.Scan(&p.ID, &p.SecretKey, &p.AppID, &intervalNS, &p.Enabled,
-			&p.LastRotatedAt, &p.NextRotationAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			return nil, err
-		}
-		p.Interval = time.Duration(intervalNS)
-		result = append(result, p)
+	result := make([]*rotation.Policy, len(models))
+	for i := range models {
+		result[i] = models[i].toEntity()
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // DeleteRotationPolicy removes a rotation policy.
 func (s *Store) DeleteRotationPolicy(ctx context.Context, key, appID string) error {
-	tag, err := s.pool.Exec(ctx,
-		"DELETE FROM vault_rotation_policies WHERE secret_key = $1 AND app_id = $2", key, appID)
+	res, err := s.pgdb().NewDelete((*RotationPolicyModel)(nil)).
+		Where("secret_key = ?", key).
+		Where("app_id = ?", appID).
+		Exec(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return vault.ErrRotationNotFound
 	}
 	return nil
@@ -93,44 +83,37 @@ func (s *Store) DeleteRotationPolicy(ctx context.Context, key, appID string) err
 
 // RecordRotation records a completed rotation event.
 func (s *Store) RecordRotation(ctx context.Context, r *rotation.Record) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO vault_rotation_records (id, secret_key, app_id, old_version, new_version, rotated_by, rotated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, r.ID.String(), r.SecretKey, r.AppID, r.OldVersion, r.NewVersion, r.RotatedBy, r.RotatedAt)
+	m := &RotationRecordModel{
+		ID: r.ID.String(), SecretKey: r.SecretKey, AppID: r.AppID,
+		OldVersion: r.OldVersion, NewVersion: r.NewVersion,
+		RotatedBy: r.RotatedBy, RotatedAt: r.RotatedAt,
+	}
+	_, err := s.pgdb().NewInsert(m).Exec(ctx)
 	return err
 }
 
 // ListRotationRecords returns rotation history for a secret.
 func (s *Store) ListRotationRecords(ctx context.Context, key, appID string, opts rotation.ListOpts) ([]*rotation.Record, error) {
-	query := `
-		SELECT id, secret_key, app_id, old_version, new_version, rotated_by, rotated_at
-		FROM vault_rotation_records WHERE secret_key = $1 AND app_id = $2
-		ORDER BY rotated_at DESC`
+	var models []RotationRecordModel
+	q := s.pgdb().NewSelect(&models).
+		Where("secret_key = ?", key).
+		Where("app_id = ?", appID).
+		OrderExpr("rotated_at DESC")
 
-	args := []any{key, appID}
 	if opts.Limit > 0 {
-		query += " LIMIT $3"
-		args = append(args, opts.Limit)
+		q = q.Limit(opts.Limit)
 	}
 	if opts.Offset > 0 {
-		query += " OFFSET $" + pgPlaceholder(len(args)+1)
-		args = append(args, opts.Offset)
+		q = q.Offset(opts.Offset)
 	}
 
-	rows, err := s.pool.Query(ctx, query, args...)
-	if err != nil {
+	if err := q.Scan(ctx); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var result []*rotation.Record
-	for rows.Next() {
-		r := &rotation.Record{}
-		if err := rows.Scan(&r.ID, &r.SecretKey, &r.AppID,
-			&r.OldVersion, &r.NewVersion, &r.RotatedBy, &r.RotatedAt); err != nil {
-			return nil, err
-		}
-		result = append(result, r)
+	result := make([]*rotation.Record, len(models))
+	for i := range models {
+		result[i] = models[i].toEntity()
 	}
-	return result, rows.Err()
+	return result, nil
 }
