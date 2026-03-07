@@ -13,6 +13,7 @@ import (
 	templruntime "github.com/a-h/templ/runtime"
 	"github.com/xraph/forgeui/components/badge"
 	"github.com/xraph/forgeui/components/table"
+
 	"github.com/xraph/vault/flag"
 )
 
