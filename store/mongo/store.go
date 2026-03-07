@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -53,7 +54,7 @@ var (
 type StoreOption func(*Store)
 
 // WithLogger sets the logger for the store.
-func WithLogger(l *slog.Logger) StoreOption {
+func WithLogger(l log.Logger) StoreOption {
 	return func(s *Store) { s.logger = l }
 }
 
@@ -61,7 +62,7 @@ func WithLogger(l *slog.Logger) StoreOption {
 type Store struct {
 	db     *grove.DB
 	mdb    *mongodriver.MongoDB
-	logger *slog.Logger
+	logger log.Logger
 }
 
 // New creates a new MongoDB store backed by Grove ORM.
@@ -69,7 +70,7 @@ func New(db *grove.DB, opts ...StoreOption) *Store {
 	s := &Store{
 		db:     db,
 		mdb:    mongodriver.Unwrap(db),
-		logger: slog.Default(),
+		logger: log.NewNoopLogger(),
 	}
 	for _, o := range opts {
 		o(s)

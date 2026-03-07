@@ -1,0 +1,112 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/vault/audit"
+	"github.com/xraph/vault/dashboard/components"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/icons"
+)
+
+// OverviewStats holds aggregate counts for the overview page.
+type OverviewStats struct {
+	SecretCount         int
+	FlagCount           int
+	ConfigCount         int
+	OverrideCount       int
+	RotationPolicyCount int
+	AuditEntryCount     int
+}
+
+templ OverviewPage(stats OverviewStats, recentAudit []*audit.Entry) {
+	<div class="space-y-8">
+		<!-- Page Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Overview</h1>
+			<p class="text-muted-foreground mt-1">Secrets, feature flags, and runtime configuration at a glance.</p>
+		</div>
+
+		<!-- Stats Grid -->
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+			@components.StatCard("lock", "Secrets", strconv.Itoa(stats.SecretCount), "Encrypted secrets")
+			@components.StatCard("flag", "Feature Flags", strconv.Itoa(stats.FlagCount), "Flag definitions")
+			@components.StatCard("settings-2", "Config Entries", strconv.Itoa(stats.ConfigCount), "Runtime configuration")
+			@components.StatCard("layers", "Overrides", strconv.Itoa(stats.OverrideCount), "Tenant overrides")
+			@components.StatCard("refresh-cw", "Rotation Policies", strconv.Itoa(stats.RotationPolicyCount), "Active policies")
+			@components.StatCard("file-text", "Audit Entries", strconv.Itoa(stats.AuditEntryCount), "Logged operations")
+		</div>
+
+		<!-- Quick Actions -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				@card.Title() {
+					Quick Actions
+				}
+				@card.Description() {
+					Create new secrets, flags, or configuration entries.
+				}
+			}
+			@card.Content() {
+				<div class="flex flex-wrap gap-3">
+					@button.Button(button.Props{
+						Variant: button.VariantOutline,
+						Attributes: templ.Attributes{
+							"hx-get":      "./secrets/create",
+							"hx-target":   "#content",
+							"hx-push-url": "true",
+							"hx-swap":     "innerHTML",
+						},
+					}) {
+						@icons.Lock(icons.WithSize(16))
+						New Secret
+					}
+					@button.Button(button.Props{
+						Variant: button.VariantOutline,
+						Attributes: templ.Attributes{
+							"hx-get":      "./flags/create",
+							"hx-target":   "#content",
+							"hx-push-url": "true",
+							"hx-swap":     "innerHTML",
+						},
+					}) {
+						@icons.Flag(icons.WithSize(16))
+						New Flag
+					}
+					@button.Button(button.Props{
+						Variant: button.VariantOutline,
+						Attributes: templ.Attributes{
+							"hx-get":      "./config/create",
+							"hx-target":   "#content",
+							"hx-push-url": "true",
+							"hx-swap":     "innerHTML",
+						},
+					}) {
+						@icons.Settings2(icons.WithSize(16))
+						New Config Entry
+					}
+				</div>
+			}
+		}
+
+		<!-- Recent Audit Activity -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				@card.Title() {
+					Recent Activity
+				}
+				@card.Description() {
+					The last 10 audit log entries.
+				}
+			}
+			@card.Content() {
+				if len(recentAudit) == 0 {
+					@components.EmptyState("file-text", "No audit entries yet", "Audit entries will appear here once vault operations are performed.")
+				} else {
+					@components.AuditTable(recentAudit, "./")
+				}
+			}
+		}
+	</div>
+}

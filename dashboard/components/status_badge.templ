@@ -1,0 +1,55 @@
+package components
+
+import "github.com/xraph/forgeui/components/badge"
+
+// EnabledBadge renders a green "Enabled" or red "Disabled" badge.
+templ EnabledBadge(enabled bool) {
+	if enabled {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			<span class="flex items-center gap-1.5">
+				<span class="h-2 w-2 rounded-full bg-green-500"></span>
+				Enabled
+			</span>
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+			<span class="flex items-center gap-1.5">
+				<span class="h-2 w-2 rounded-full bg-red-500"></span>
+				Disabled
+			</span>
+		}
+	}
+}
+
+// OutcomeBadge renders a badge for audit outcomes (success/failure).
+templ OutcomeBadge(outcome string) {
+	if outcome == "success" {
+		@badge.Badge(badge.Props{Variant: badge.VariantDefault}) {
+			<span class="flex items-center gap-1.5">
+				<span class="h-2 w-2 rounded-full bg-green-500"></span>
+				Success
+			</span>
+		}
+	} else {
+		@badge.Badge(badge.Props{Variant: badge.VariantDestructive}) {
+			<span class="flex items-center gap-1.5">
+				<span class="h-2 w-2 rounded-full bg-red-500"></span>
+				Failure
+			</span>
+		}
+	}
+}
+
+// TypeBadge renders a styled badge for flag value types.
+templ TypeBadge(flagType string) {
+	@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+		{ flagType }
+	}
+}
+
+// ResourceBadge renders a badge for audit resource types.
+templ ResourceBadge(resource string) {
+	@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+		{ resource }
+	}
+}

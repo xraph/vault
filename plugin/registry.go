@@ -1,15 +1,16 @@
 package plugin
 
 import (
-	"log/slog"
 	"sync"
+
+	log "github.com/xraph/go-utils/log"
 )
 
 // RegistryOption configures the Registry.
 type RegistryOption func(*Registry)
 
 // WithLogger sets the logger for the registry.
-func WithLogger(l *slog.Logger) RegistryOption {
+func WithLogger(l log.Logger) RegistryOption {
 	return func(r *Registry) { r.logger = l }
 }
 
@@ -28,7 +29,7 @@ type Registry struct {
 	configHooks     []OnConfigChange
 	rotationStrats  map[string]RotationStrategy // rotationName → strategy
 
-	logger *slog.Logger
+	logger log.Logger
 }
 
 // NewRegistry creates a plugin registry.
@@ -36,7 +37,7 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{
 		flagEvaluators: make(map[string]FlagEvaluator),
 		rotationStrats: make(map[string]RotationStrategy),
-		logger:         slog.Default(),
+		logger:         log.NewNoopLogger(),
 	}
 	for _, o := range opts {
 		o(r)
@@ -78,7 +79,7 @@ func (r *Registry) Register(p Plugin) {
 		r.rotationStrats[v.RotationName()] = v
 	}
 
-	r.logger.Info("plugin: registered", "name", p.Name())
+	r.logger.Info("plugin: registered", log.String("name", p.Name()))
 }
 
 // ──────────────────────────────────────────────────

@@ -1,0 +1,86 @@
+package pages
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// truncateString shortens s to maxLen characters, appending "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// formatTimeAgo returns a human-readable relative time string.
+func formatTimeAgo(t time.Time) string {
+	d := time.Since(t)
+	if d < 0 {
+		d = -d
+	}
+
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 30*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	case d < 365*24*time.Hour:
+		return fmt.Sprintf("%dmo ago", int(d.Hours()/(24*30)))
+	default:
+		return fmt.Sprintf("%dy ago", int(d.Hours()/(24*365)))
+	}
+}
+
+// formatJSON returns a pretty-printed JSON string.
+func formatJSON(v any) string {
+	if v == nil {
+		return "{}"
+	}
+	if raw, ok := v.(json.RawMessage); ok {
+		var out json.RawMessage
+		if json.Unmarshal(raw, &out) == nil {
+			b, err := json.MarshalIndent(out, "", "  ")
+			if err == nil {
+				return string(b)
+			}
+		}
+		return string(raw)
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
+}
+
+// formatValue formats a value for display.
+func formatValue(v any) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// fieldRow renders a label-value pair in a definition list style.
+templ fieldRow(label string, value string) {
+	<div>
+		<dt class="text-sm font-medium text-muted-foreground">{ label }</dt>
+		<dd class="mt-1 text-sm">{ value }</dd>
+	</div>
+}
+
+// codeBlock renders a preformatted code block.
+templ codeBlock(content string) {
+	<pre class="bg-muted/50 rounded-sm p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap break-all">{ content }</pre>
+}
+
+// credentialField renders a copyable monospace field.
+templ credentialField(value string) {
+	<code class="block bg-muted/50 rounded-sm px-3 py-2 text-sm font-mono break-all select-all">{ value }</code>
+}

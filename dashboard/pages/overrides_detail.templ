@@ -1,0 +1,82 @@
+package pages
+
+import (
+	"github.com/xraph/vault/override"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// OverrideDetailData holds data for the override detail page.
+type OverrideDetailData struct {
+	Override *override.Override
+}
+
+templ OverrideDetailPage(data OverrideDetailData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../overrides",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Overrides
+		}
+
+		<!-- Override Info Card -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-4">
+					<div class="flex h-12 w-12 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Layers(icons.WithSize(24))
+					</div>
+					<div>
+						@card.Title() {
+							<span class="font-mono text-lg">{ data.Override.Key }</span>
+						}
+						@card.Description() {
+							Tenant override for { data.Override.TenantID }
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@fieldRow("Override ID", data.Override.ID.String())
+					@fieldRow("Key", data.Override.Key)
+					@fieldRow("Value", formatValue(data.Override.Value))
+					@fieldRow("Tenant ID", data.Override.TenantID)
+					@fieldRow("App ID", data.Override.AppID)
+					@fieldRow("Created", data.Override.CreatedAt.Format("Jan 02, 2006 15:04"))
+					@fieldRow("Updated", data.Override.UpdatedAt.Format("Jan 02, 2006 15:04"))
+				</dl>
+			}
+		}
+
+		<!-- Metadata -->
+		if len(data.Override.Metadata) > 0 {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					@card.Title() {
+						Metadata
+					}
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						for key, value := range data.Override.Metadata {
+							@fieldRow(key, value)
+						}
+					</dl>
+				}
+			}
+		}
+	</div>
+}

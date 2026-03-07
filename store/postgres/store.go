@@ -2,7 +2,8 @@ package postgres
 
 import (
 	"context"
-	"log/slog"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/grove"
 	"github.com/xraph/grove/drivers/pgdriver"
@@ -29,19 +30,19 @@ var (
 type StoreOption func(*Store)
 
 // WithLogger sets the logger for the store.
-func WithLogger(l *slog.Logger) StoreOption {
+func WithLogger(l log.Logger) StoreOption {
 	return func(s *Store) { s.logger = l }
 }
 
 // Store is a Grove ORM implementation of all Vault store interfaces.
 type Store struct {
 	db     *grove.DB
-	logger *slog.Logger
+	logger log.Logger
 }
 
 // New creates a new Grove store using the given grove.DB instance.
 func New(db *grove.DB, opts ...StoreOption) *Store {
-	s := &Store{db: db, logger: slog.Default()}
+	s := &Store{db: db, logger: log.NewNoopLogger()}
 	for _, o := range opts {
 		o(s)
 	}

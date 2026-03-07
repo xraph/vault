@@ -1,0 +1,148 @@
+package pages
+
+import (
+	"strconv"
+
+	vaultconfig "github.com/xraph/vault/config"
+	"github.com/xraph/vault/dashboard/components"
+	"github.com/xraph/vault/override"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// ConfigDetailData holds all data needed for the config detail page.
+type ConfigDetailData struct {
+	Entry     *vaultconfig.Entry
+	Versions  []*vaultconfig.EntryVersion
+	Overrides []*override.Override
+}
+
+templ ConfigDetailPage(data ConfigDetailData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../config",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Config
+		}
+
+		<!-- Config Info Card -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-4">
+						<div class="flex h-12 w-12 items-center justify-center rounded-sm bg-primary/10 text-primary">
+							@icons.Settings2(icons.WithSize(24))
+						</div>
+						<div>
+							@card.Title() {
+								<span class="font-mono text-lg">{ data.Entry.Key }</span>
+							}
+							if data.Entry.Description != "" {
+								@card.Description() {
+									{ data.Entry.Description }
+								}
+							}
+						</div>
+					</div>
+					<div class="flex items-center gap-2">
+						@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+							v{ strconv.FormatInt(data.Entry.Version, 10) }
+						}
+						@components.TypeBadge(data.Entry.ValueType)
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@fieldRow("Config ID", data.Entry.ID.String())
+					@fieldRow("Key", data.Entry.Key)
+					@fieldRow("Value", formatValue(data.Entry.Value))
+					@fieldRow("Value Type", data.Entry.ValueType)
+					@fieldRow("Version", strconv.FormatInt(data.Entry.Version, 10))
+					@fieldRow("App ID", data.Entry.AppID)
+					@fieldRow("Created", data.Entry.CreatedAt.Format("Jan 02, 2006 15:04"))
+					@fieldRow("Updated", data.Entry.UpdatedAt.Format("Jan 02, 2006 15:04"))
+				</dl>
+			}
+		}
+
+		<!-- Metadata -->
+		if len(data.Entry.Metadata) > 0 {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					@card.Title() {
+						Metadata
+					}
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						for key, value := range data.Entry.Metadata {
+							@fieldRow(key, value)
+						}
+					</dl>
+				}
+			}
+		}
+
+		<!-- Version History -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@card.Title() {
+						Version History
+					}
+					@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+						{ strconv.Itoa(len(data.Versions)) }
+					}
+				</div>
+				@card.Description() {
+					All versions of this config entry.
+				}
+			}
+			@card.Content() {
+				if len(data.Versions) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No version history available.</p>
+				} else {
+					@components.ConfigVersionTable(data.Versions)
+				}
+			}
+		}
+
+		<!-- Tenant Overrides -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@card.Title() {
+						Tenant Overrides
+					}
+					@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+						{ strconv.Itoa(len(data.Overrides)) }
+					}
+				</div>
+				@card.Description() {
+					Per-tenant value overrides for this config key.
+				}
+			}
+			@card.Content() {
+				if len(data.Overrides) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No tenant overrides for this key.</p>
+				} else {
+					@components.OverrideTable(data.Overrides, "../")
+				}
+			}
+		}
+	</div>
+}

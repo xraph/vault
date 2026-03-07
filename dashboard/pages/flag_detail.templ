@@ -1,0 +1,230 @@
+package pages
+
+import (
+	"strconv"
+	"strings"
+
+	"github.com/xraph/vault/dashboard/components"
+	"github.com/xraph/vault/flag"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// FlagDetailData holds all data needed for the flag detail page.
+type FlagDetailData struct {
+	Flag      *flag.Definition
+	Rules     []*flag.Rule
+	Overrides []*flag.TenantOverride
+}
+
+templ FlagDetailPage(data FlagDetailData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../flags",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Flags
+		}
+
+		<!-- Flag Info Card -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-4">
+						<div class="flex h-12 w-12 items-center justify-center rounded-sm bg-primary/10 text-primary">
+							@icons.Flag(icons.WithSize(24))
+						</div>
+						<div>
+							@card.Title() {
+								<span class="font-mono text-lg">{ data.Flag.Key }</span>
+							}
+							if data.Flag.Description != "" {
+								@card.Description() {
+									{ data.Flag.Description }
+								}
+							}
+						</div>
+					</div>
+					<div class="flex items-center gap-2">
+						@components.EnabledBadge(data.Flag.Enabled)
+						@components.TypeBadge(string(data.Flag.Type))
+						if data.Flag.Enabled {
+							@button.Button(button.Props{
+								Variant: button.VariantOutline,
+								Size:    button.SizeSm,
+								Attributes: templ.Attributes{
+									"hx-get":     "./detail?key=" + data.Flag.Key + "&app_id=" + data.Flag.AppID + "&action=disable",
+									"hx-target":  "#content",
+									"hx-swap":    "innerHTML",
+									"hx-confirm": "Are you sure you want to disable this flag?",
+								},
+							}) {
+								Disable
+							}
+						} else {
+							@button.Button(button.Props{
+								Variant: button.VariantOutline,
+								Size:    button.SizeSm,
+								Attributes: templ.Attributes{
+									"hx-get":     "./detail?key=" + data.Flag.Key + "&app_id=" + data.Flag.AppID + "&action=enable",
+									"hx-target":  "#content",
+									"hx-swap":    "innerHTML",
+									"hx-confirm": "Are you sure you want to enable this flag?",
+								},
+							}) {
+								Enable
+							}
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@fieldRow("Flag ID", data.Flag.ID.String())
+					@fieldRow("Key", data.Flag.Key)
+					@fieldRow("Type", string(data.Flag.Type))
+					@fieldRow("Default Value", formatValue(data.Flag.DefaultValue))
+					@fieldRow("App ID", data.Flag.AppID)
+					@fieldRow("Enabled", enabledStr(data.Flag.Enabled))
+					@fieldRow("Created", data.Flag.CreatedAt.Format("Jan 02, 2006 15:04"))
+					@fieldRow("Updated", data.Flag.UpdatedAt.Format("Jan 02, 2006 15:04"))
+				</dl>
+			}
+		}
+
+		<!-- Tags -->
+		if len(data.Flag.Tags) > 0 {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					<div class="flex items-center gap-2">
+						@card.Title() {
+							Tags
+						}
+						@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+							{ strconv.Itoa(len(data.Flag.Tags)) }
+						}
+					</div>
+				}
+				@card.Content() {
+					<div class="flex flex-wrap gap-2">
+						for _, tag := range data.Flag.Tags {
+							<code class="bg-muted rounded-sm px-2 py-1 text-sm font-mono">{ tag }</code>
+						}
+					</div>
+				}
+			}
+		}
+
+		<!-- Variants -->
+		if len(data.Flag.Variants) > 0 {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					<div class="flex items-center gap-2">
+						@card.Title() {
+							Variants
+						}
+						@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+							{ strconv.Itoa(len(data.Flag.Variants)) }
+						}
+					</div>
+					@card.Description() {
+						Named flag value variants.
+					}
+				}
+				@card.Content() {
+					<div class="space-y-2">
+						for _, v := range data.Flag.Variants {
+							<div class="flex items-center gap-3 py-2 px-3 bg-muted/30 rounded-sm">
+								<span class="text-sm font-mono font-medium">{ formatValue(v.Value) }</span>
+								if v.Description != "" {
+									<span class="text-xs text-muted-foreground">{ v.Description }</span>
+								}
+							</div>
+						}
+					</div>
+				}
+			}
+		}
+
+		<!-- Metadata -->
+		if len(data.Flag.Metadata) > 0 {
+			@card.Card(card.Props{Class: "rounded-sm"}) {
+				@card.Header() {
+					@card.Title() {
+						Metadata
+					}
+				}
+				@card.Content() {
+					<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						for key, value := range data.Flag.Metadata {
+							@fieldRow(key, value)
+						}
+					</dl>
+				}
+			}
+		}
+
+		<!-- Targeting Rules -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@card.Title() {
+						Targeting Rules
+					}
+					@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+						{ strconv.Itoa(len(data.Rules)) }
+					}
+				</div>
+				@card.Description() {
+					Rules are evaluated in priority order (lower number = higher priority).
+				}
+			}
+			@card.Content() {
+				if len(data.Rules) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No targeting rules defined. The default value will always be returned.</p>
+				} else {
+					@components.RuleTable(data.Rules)
+				}
+			}
+		}
+
+		<!-- Tenant Overrides -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@card.Title() {
+						Tenant Overrides
+					}
+					@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+						{ strconv.Itoa(len(data.Overrides)) }
+					}
+				</div>
+				@card.Description() {
+					Direct per-tenant value overrides that bypass rules.
+				}
+			}
+			@card.Content() {
+				if len(data.Overrides) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No tenant overrides defined.</p>
+				} else {
+					@components.FlagOverrideTable(data.Overrides)
+				}
+			}
+		}
+	</div>
+}
+
+// suppress unused import warning
+var _ = strings.Join

@@ -1,0 +1,14 @@
+package widgets
+
+import (
+	"github.com/xraph/vault/audit"
+	"github.com/xraph/vault/dashboard/components"
+)
+
+templ RecentAuditWidget(entries []*audit.Entry) {
+	if len(entries) == 0 {
+		@components.EmptyState("file-text", "No recent audit", "Audit entries will appear here.")
+	} else {
+		@components.AuditTable(entries, "./")
+	}
+}

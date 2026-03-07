@@ -14,10 +14,13 @@ import (
 	"fmt"
 
 	"github.com/xraph/forge"
+	dashboard "github.com/xraph/forge/extensions/dashboard"
+	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
 	"github.com/xraph/vault"
+	vaultdash "github.com/xraph/vault/dashboard"
 	"github.com/xraph/vault/store"
 	mongostore "github.com/xraph/vault/store/mongo"
 	pgstore "github.com/xraph/vault/store/postgres"
@@ -33,8 +36,11 @@ const ExtensionDescription = "Composable secrets management, feature flags, and 
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension at compile time.
-var _ forge.Extension = (*Extension)(nil)
+// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
+var (
+	_ forge.Extension          = (*Extension)(nil)
+	_ dashboard.DashboardAware = (*Extension)(nil)
+)
 
 // Extension adapts Vault as a Forge extension.
 type Extension struct {
@@ -88,6 +94,19 @@ func (e *Extension) Register(fapp forge.App) error {
 			return err
 		}
 		e.store = s
+	}
+	if e.store == nil {
+		if db, err := vessel.Inject[*grove.DB](fapp.Container()); err == nil {
+			// Auto-discover default grove.DB from container (matches authsome/cortex pattern).
+			s, err := e.buildStoreFromGroveDB(db)
+			if err != nil {
+				return err
+			}
+			e.store = s
+			e.Logger().Info("vault: auto-discovered grove.DB from container",
+				forge.F("driver", db.Driver().Name()),
+			)
+		}
 	}
 
 	// Build vault options from merged config.
@@ -159,6 +178,17 @@ func (e *Extension) Health(ctx context.Context) error {
 		return e.store.Ping(ctx)
 	}
 	return nil
+}
+
+// DashboardContributor implements dashboard.DashboardAware. It returns a
+// LocalContributor that renders vault pages, widgets, and settings in the
+// Forge dashboard using templ + ForgeUI.
+func (e *Extension) DashboardContributor() contributor.LocalContributor {
+	return vaultdash.New(
+		vaultdash.NewManifest(),
+		e.store,
+		e.config.AppID,
+	)
 }
 
 // --- Config Loading (mirrors grove extension pattern) ---

@@ -1,0 +1,46 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/vault/override"
+)
+
+// OverrideTable renders a table of per-tenant overrides.
+templ OverrideTable(overrides []*override.Override, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Key }
+				@table.Head() { Value }
+				@table.Head() { Tenant ID }
+				@table.Head() { App ID }
+				@table.Head() { Updated }
+			}
+		}
+		@table.Body() {
+			for _, o := range overrides {
+				<tr class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+					hx-get={ basePath + "overrides/detail?key=" + o.Key + "&app_id=" + o.AppID + "&tenant_id=" + o.TenantID }
+					hx-target="#content"
+					hx-push-url="true"
+					hx-swap="innerHTML">
+					@table.Cell() {
+						<span class="font-mono text-sm font-medium">{ o.Key }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground font-mono">{ formatAny(o.Value) }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ o.TenantID }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ o.AppID }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ o.UpdatedAt.Format("Jan 02, 2006") }</span>
+					}
+				</tr>
+			}
+		}
+	}
+}

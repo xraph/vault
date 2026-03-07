@@ -1,7 +1,9 @@
 package vault
 
 import (
-	"log/slog"
+	"context"
+
+	log "github.com/xraph/go-utils/log"
 )
 
 // Option configures a Vault instance.
@@ -29,7 +31,7 @@ func WithEncryptionKeyEnv(envVar string) Option {
 }
 
 // WithLogger sets the structured logger.
-func WithLogger(l *slog.Logger) Option {
+func WithLogger(l log.Logger) Option {
 	return func(v *Vault) {
 		v.logger = l
 	}
@@ -55,14 +57,19 @@ type Storer interface {
 // (created in a later phase).
 type Vault struct {
 	config Config
-	logger *slog.Logger
+	logger log.Logger
+}
+
+// Health checks the health of the Vault.
+func (v *Vault) Health(_ context.Context) error {
+	return nil
 }
 
 // NewVault creates a new Vault instance with the given options.
 func NewVault(opts ...Option) *Vault {
 	v := &Vault{
 		config: DefaultConfig(),
-		logger: slog.Default(),
+		logger: log.NewNoopLogger(),
 	}
 	for _, opt := range opts {
 		opt(v)

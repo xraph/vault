@@ -3,9 +3,10 @@ package rotation
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/secret"
@@ -23,7 +24,7 @@ func WithCheckInterval(d time.Duration) ManagerOption {
 }
 
 // WithLogger sets the logger for the manager.
-func WithLogger(l *slog.Logger) ManagerOption {
+func WithLogger(l log.Logger) ManagerOption {
 	return func(m *Manager) { m.logger = l }
 }
 
@@ -37,7 +38,7 @@ type Manager struct {
 	store         Store
 	secretService *secret.Service
 	appID         string
-	logger        *slog.Logger
+	logger        log.Logger
 	checkInterval time.Duration
 
 	mu       sync.RWMutex
@@ -52,7 +53,7 @@ func NewManager(store Store, secretSvc *secret.Service, opts ...ManagerOption) *
 	m := &Manager{
 		store:         store,
 		secretService: secretSvc,
-		logger:        slog.Default(),
+		logger:        log.NewNoopLogger(),
 		checkInterval: 1 * time.Minute,
 		rotators:      make(map[string]Rotator),
 	}
@@ -139,13 +140,13 @@ func (m *Manager) RotateNow(ctx context.Context, secretKey, appID string) error 
 		RotatedAt:  now,
 	}
 	if rErr := m.store.RecordRotation(ctx, record); rErr != nil {
-		m.logger.Error("rotation: record failed", "key", secretKey, "error", rErr)
+		m.logger.Error("rotation: record failed", log.String("key", secretKey), log.Any("error", rErr))
 	}
 
 	// Update policy timestamps.
 	m.updatePolicyTimestamps(ctx, secretKey, appID, now)
 
-	m.logger.Info("rotation: completed", "key", secretKey, "old_version", oldVersion, "new_version", meta.Version)
+	m.logger.Info("rotation: completed", log.String("key", secretKey), log.Int64("old_version", oldVersion), log.Int64("new_version", meta.Version))
 	return nil
 }
 
@@ -175,7 +176,7 @@ func (m *Manager) checkDuePolicies(ctx context.Context) {
 
 	policies, err := m.store.ListRotationPolicies(ctx, appID)
 	if err != nil {
-		m.logger.Error("rotation: list policies failed", "error", err)
+		m.logger.Error("rotation: list policies failed", log.Any("error", err))
 		return
 	}
 
@@ -190,7 +191,7 @@ func (m *Manager) checkDuePolicies(ctx context.Context) {
 
 		if err := m.RotateNow(ctx, p.SecretKey, p.AppID); err != nil {
 			m.logger.Error("rotation: scheduled rotation failed",
-				"key", p.SecretKey, "error", err)
+				log.String("key", p.SecretKey), log.Any("error", err))
 		}
 	}
 }
@@ -200,7 +201,7 @@ func (m *Manager) updatePolicyTimestamps(ctx context.Context, secretKey, appID s
 	policy, err := m.store.GetRotationPolicy(ctx, secretKey, appID)
 	if err != nil {
 		m.logger.Error("rotation: get policy for timestamp update failed",
-			"key", secretKey, "error", err)
+			log.String("key", secretKey), log.Any("error", err))
 		return
 	}
 
@@ -211,6 +212,6 @@ func (m *Manager) updatePolicyTimestamps(ctx context.Context, secretKey, appID s
 
 	if err := m.store.SaveRotationPolicy(ctx, policy); err != nil {
 		m.logger.Error("rotation: save policy timestamps failed",
-			"key", secretKey, "error", err)
+			log.String("key", secretKey), log.Any("error", err))
 	}
 }

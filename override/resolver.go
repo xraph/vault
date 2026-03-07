@@ -3,9 +3,10 @@ package override
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/config"
@@ -23,7 +24,7 @@ const (
 type ResolverOption func(*Resolver)
 
 // WithLogger sets the logger for the resolver.
-func WithLogger(l *slog.Logger) ResolverOption {
+func WithLogger(l log.Logger) ResolverOption {
 	return func(r *Resolver) { r.logger = l }
 }
 
@@ -42,7 +43,7 @@ type Resolver struct {
 	configStore   config.Store
 	overrideStore Store
 	cache         *resolverCache
-	logger        *slog.Logger
+	logger        log.Logger
 }
 
 // NewResolver creates a config resolver with override support.
@@ -50,7 +51,7 @@ func NewResolver(configStore config.Store, overrideStore Store, opts ...Resolver
 	r := &Resolver{
 		configStore:   configStore,
 		overrideStore: overrideStore,
-		logger:        slog.Default(),
+		logger:        log.NewNoopLogger(),
 	}
 	for _, o := range opts {
 		o(r)

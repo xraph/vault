@@ -1,0 +1,117 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/xraph/vault/dashboard/components"
+	"github.com/xraph/vault/rotation"
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// RotationDetailData holds all data needed for the rotation detail page.
+type RotationDetailData struct {
+	Policy  *rotation.Policy
+	Records []*rotation.Record
+}
+
+templ RotationDetailPage(data RotationDetailData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../rotation",
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Rotation
+		}
+
+		<!-- Policy Info Card -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center justify-between">
+					<div class="flex items-center gap-4">
+						<div class="flex h-12 w-12 items-center justify-center rounded-sm bg-primary/10 text-primary">
+							@icons.RefreshCw(icons.WithSize(24))
+						</div>
+						<div>
+							@card.Title() {
+								<span class="font-mono text-lg">{ data.Policy.SecretKey }</span>
+							}
+							@card.Description() {
+								Rotation policy for secret
+							}
+						</div>
+					</div>
+					<div class="flex items-center gap-2">
+						@components.EnabledBadge(data.Policy.Enabled)
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Size:    button.SizeSm,
+							Attributes: templ.Attributes{
+								"hx-get":     "./detail?key=" + data.Policy.SecretKey + "&app_id=" + data.Policy.AppID + "&action=rotate_now",
+								"hx-target":  "#content",
+								"hx-swap":    "innerHTML",
+								"hx-confirm": "Are you sure you want to rotate this secret now?",
+							},
+						}) {
+							@icons.RefreshCw(icons.WithSize(14))
+							Rotate Now
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@fieldRow("Policy ID", data.Policy.ID.String())
+					@fieldRow("Secret Key", data.Policy.SecretKey)
+					@fieldRow("App ID", data.Policy.AppID)
+					@fieldRow("Interval", data.Policy.Interval.String())
+					@fieldRow("Status", enabledStr(data.Policy.Enabled))
+					if data.Policy.LastRotatedAt != nil {
+						@fieldRow("Last Rotated", data.Policy.LastRotatedAt.Format("Jan 02, 2006 15:04"))
+					}
+					if data.Policy.NextRotationAt != nil {
+						@fieldRow("Next Rotation", data.Policy.NextRotationAt.Format("Jan 02, 2006 15:04"))
+					}
+					@fieldRow("Created", data.Policy.CreatedAt.Format("Jan 02, 2006 15:04"))
+					@fieldRow("Updated", data.Policy.UpdatedAt.Format("Jan 02, 2006 15:04"))
+				</dl>
+			}
+		}
+
+		<!-- Rotation History -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-2">
+					@card.Title() {
+						Rotation History
+					}
+					@badge.Badge(badge.Props{Variant: badge.VariantSecondary}) {
+						{ strconv.Itoa(len(data.Records)) }
+					}
+				</div>
+				@card.Description() {
+					Historical record of all rotations performed on this secret.
+				}
+			}
+			@card.Content() {
+				if len(data.Records) == 0 {
+					<p class="text-sm text-muted-foreground py-4 text-center">No rotation records yet.</p>
+				} else {
+					@components.RotationRecordTable(data.Records)
+				}
+			}
+		}
+	</div>
+}

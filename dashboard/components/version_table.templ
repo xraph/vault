@@ -1,0 +1,77 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/table"
+	vaultconfig "github.com/xraph/vault/config"
+	"github.com/xraph/vault/secret"
+)
+
+// SecretVersionTable renders a table of secret versions.
+templ SecretVersionTable(versions []*secret.Version) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Version }
+				@table.Head() { Created By }
+				@table.Head() { Created At }
+			}
+		}
+		@table.Body() {
+			for _, v := range versions {
+				@table.Row() {
+					@table.Cell() {
+						<span class="text-sm font-mono font-medium">v{ strconv.FormatInt(v.Version, 10) }</span>
+					}
+					@table.Cell() {
+						if v.CreatedBy != "" {
+							<span class="text-sm text-muted-foreground">{ v.CreatedBy }</span>
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ v.CreatedAt.Format("Jan 02, 2006 15:04") }</span>
+					}
+				}
+			}
+		}
+	}
+}
+
+// ConfigVersionTable renders a table of config entry versions.
+templ ConfigVersionTable(versions []*vaultconfig.EntryVersion) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Version }
+				@table.Head() { Value }
+				@table.Head() { Created By }
+				@table.Head() { Created At }
+			}
+		}
+		@table.Body() {
+			for _, v := range versions {
+				@table.Row() {
+					@table.Cell() {
+						<span class="text-sm font-mono font-medium">v{ strconv.FormatInt(v.Version, 10) }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground font-mono">{ formatAny(v.Value) }</span>
+					}
+					@table.Cell() {
+						if v.CreatedBy != "" {
+							<span class="text-sm text-muted-foreground">{ v.CreatedBy }</span>
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ v.CreatedAt.Format("Jan 02, 2006 15:04") }</span>
+					}
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,115 @@
+package pages
+
+import (
+	"time"
+
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/separator"
+	"github.com/xraph/forgeui/icons"
+)
+
+// SettingsData holds the vault configuration for display.
+type SettingsData struct {
+	AppID              string
+	EncryptionKeyEnv   string
+	FlagCacheTTL       time.Duration
+	SourcePollInterval time.Duration
+	EnableAudit        bool
+	BasePath           string
+	DisableRoutes      bool
+	DisableMigrate     bool
+	GroveDatabase      string
+}
+
+templ SettingsPage(data SettingsData) {
+	<div class="space-y-6">
+		<!-- Header -->
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Settings</h1>
+			<p class="text-muted-foreground mt-1">Vault extension configuration (read-only).</p>
+		</div>
+
+		<!-- Vault Configuration -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Shield(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							Vault Configuration
+						}
+						@card.Description() {
+							Core engine settings.
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+					@fieldRow("App ID", nonEmpty(data.AppID, "-"))
+					@fieldRow("Encryption Key Env", nonEmpty(data.EncryptionKeyEnv, "-"))
+					@fieldRow("Flag Cache TTL", data.FlagCacheTTL.String())
+					@fieldRow("Source Poll Interval", data.SourcePollInterval.String())
+					@fieldRow("Audit Logging", enabledStr(data.EnableAudit))
+					@fieldRow("Base Path", nonEmpty(data.BasePath, "/vault"))
+					@fieldRow("Routes", enabledStr(!data.DisableRoutes))
+					@fieldRow("Auto-Migrate", enabledStr(!data.DisableMigrate))
+				</dl>
+			}
+		}
+
+		<!-- Store Info -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				<div class="flex items-center gap-3">
+					<div class="flex h-10 w-10 items-center justify-center rounded-sm bg-primary/10 text-primary">
+						@icons.Activity(icons.WithSize(20))
+					</div>
+					<div>
+						@card.Title() {
+							Store Backend
+						}
+						@card.Description() {
+							Database connection configuration.
+						}
+					</div>
+				</div>
+			}
+			@card.Content() {
+				@separator.Separator()
+				<dl class="grid grid-cols-1 gap-4 mt-4">
+					@fieldRow("Grove Database", nonEmpty(data.GroveDatabase, "default (auto-discovered)"))
+				</dl>
+			}
+		}
+
+		<!-- Encryption Info -->
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Header() {
+				@card.Title() {
+					Encryption
+				}
+				@card.Description() {
+					Secret encryption algorithm details.
+				}
+			}
+			@card.Content() {
+				<dl class="grid grid-cols-1 gap-4">
+					@fieldRow("Algorithm", "AES-256-GCM")
+					@fieldRow("Key Size", "32 bytes")
+					@fieldRow("Nonce", "12 bytes (random, prepended to ciphertext)")
+				</dl>
+			}
+		}
+	</div>
+}
+
+func nonEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}

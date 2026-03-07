@@ -1,0 +1,58 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/vault/rotation"
+)
+
+// RotationTable renders a table of rotation policies.
+templ RotationTable(policies []*rotation.Policy, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Secret Key }
+				@table.Head() { Interval }
+				@table.Head() { Status }
+				@table.Head() { Last Rotated }
+				@table.Head() { Next Rotation }
+				@table.Head() { App ID }
+			}
+		}
+		@table.Body() {
+			for _, p := range policies {
+				<tr class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+					hx-get={ basePath + "rotation/detail?key=" + p.SecretKey + "&app_id=" + p.AppID }
+					hx-target="#content"
+					hx-push-url="true"
+					hx-swap="innerHTML">
+					@table.Cell() {
+						<span class="font-mono text-sm font-medium">{ p.SecretKey }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ p.Interval.String() }</span>
+					}
+					@table.Cell() {
+						@EnabledBadge(p.Enabled)
+					}
+					@table.Cell() {
+						if p.LastRotatedAt != nil {
+							<span class="text-sm text-muted-foreground">{ p.LastRotatedAt.Format("Jan 02, 2006 15:04") }</span>
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						if p.NextRotationAt != nil {
+							<span class="text-sm text-muted-foreground">{ p.NextRotationAt.Format("Jan 02, 2006 15:04") }</span>
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ p.AppID }</span>
+					}
+				</tr>
+			}
+		}
+	}
+}

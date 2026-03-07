@@ -1,0 +1,24 @@
+package widgets
+
+import (
+	"strconv"
+
+	"github.com/xraph/vault/dashboard/components"
+)
+
+// StatsData holds aggregate counts for the stats widget.
+type StatsData struct {
+	Secrets int
+	Flags   int
+	Config  int
+	Audit   int
+}
+
+templ StatsWidget(data StatsData) {
+	<div class="grid grid-cols-2 gap-4">
+		@components.StatCard("lock", "Secrets", strconv.Itoa(data.Secrets), "Encrypted secrets")
+		@components.StatCard("flag", "Flags", strconv.Itoa(data.Flags), "Feature flags")
+		@components.StatCard("settings-2", "Config", strconv.Itoa(data.Config), "Config entries")
+		@components.StatCard("file-text", "Audit", strconv.Itoa(data.Audit), "Log entries")
+	</div>
+}

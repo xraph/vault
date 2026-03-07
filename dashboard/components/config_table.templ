@@ -1,0 +1,52 @@
+package components
+
+import (
+	"strconv"
+
+	"github.com/xraph/forgeui/components/table"
+	vaultconfig "github.com/xraph/vault/config"
+)
+
+// ConfigTable renders a table of config entries.
+templ ConfigTable(entries []*vaultconfig.Entry, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Key }
+				@table.Head() { Value }
+				@table.Head() { Type }
+				@table.Head() { Version }
+				@table.Head() { App ID }
+				@table.Head() { Updated }
+			}
+		}
+		@table.Body() {
+			for _, e := range entries {
+				<tr class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+					hx-get={ basePath + "config/detail?key=" + e.Key + "&app_id=" + e.AppID }
+					hx-target="#content"
+					hx-push-url="true"
+					hx-swap="innerHTML">
+					@table.Cell() {
+						<span class="font-mono text-sm font-medium">{ e.Key }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground font-mono">{ formatAny(e.Value) }</span>
+					}
+					@table.Cell() {
+						@TypeBadge(e.ValueType)
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">v{ strconv.FormatInt(e.Version, 10) }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ e.AppID }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ e.UpdatedAt.Format("Jan 02, 2006") }</span>
+					}
+				</tr>
+			}
+		}
+	}
+}

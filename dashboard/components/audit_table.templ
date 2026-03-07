@@ -1,0 +1,62 @@
+package components
+
+import (
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/vault/audit"
+)
+
+// AuditTable renders a table of audit log entries.
+templ AuditTable(entries []*audit.Entry, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Action }
+				@table.Head() { Resource }
+				@table.Head() { Key }
+				@table.Head() { Outcome }
+				@table.Head() { App ID }
+				@table.Head() { Tenant }
+				@table.Head() { User }
+				@table.Head() { Time }
+			}
+		}
+		@table.Body() {
+			for _, e := range entries {
+				@table.Row() {
+					@table.Cell() {
+						<span class="text-sm font-medium">{ e.Action }</span>
+					}
+					@table.Cell() {
+						@ResourceBadge(e.Resource)
+					}
+					@table.Cell() {
+						<span class="font-mono text-sm">{ e.Key }</span>
+					}
+					@table.Cell() {
+						@OutcomeBadge(e.Outcome)
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ e.AppID }</span>
+					}
+					@table.Cell() {
+						if e.TenantID != "" {
+							<span class="text-sm text-muted-foreground">{ e.TenantID }</span>
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						if e.UserID != "" {
+							<span class="text-sm text-muted-foreground">{ e.UserID }</span>
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ e.CreatedAt.Format("Jan 02, 15:04") }</span>
+					}
+				}
+			}
+		}
+	}
+}

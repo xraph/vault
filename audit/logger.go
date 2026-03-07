@@ -2,8 +2,9 @@ package audit
 
 import (
 	"context"
-	"log/slog"
 	"time"
+
+	log "github.com/xraph/go-utils/log"
 
 	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/id"
@@ -19,7 +20,7 @@ func WithHook(h *audithook.Extension) LoggerOption {
 }
 
 // WithLogger sets the slog logger for internal errors.
-func WithLogger(sl *slog.Logger) LoggerOption {
+func WithLogger(sl log.Logger) LoggerOption {
 	return func(l *Logger) { l.logger = sl }
 }
 
@@ -27,14 +28,14 @@ func WithLogger(sl *slog.Logger) LoggerOption {
 type Logger struct {
 	store  Store
 	hook   *audithook.Extension
-	logger *slog.Logger
+	logger log.Logger
 }
 
 // NewLogger creates an audit logger.
 func NewLogger(store Store, opts ...LoggerOption) *Logger {
 	l := &Logger{
 		store:  store,
-		logger: slog.Default(),
+		logger: log.NewNoopLogger(),
 	}
 	for _, o := range opts {
 		o(l)
@@ -61,7 +62,7 @@ func (l *Logger) LogAccess(ctx context.Context, key, action, resource string) {
 
 	if err := l.store.RecordAudit(ctx, entry); err != nil {
 		l.logger.Error("audit: record failed",
-			"action", action, "key", key, "error", err)
+			log.String("action", action), log.String("key", key), log.Any("error", err))
 	}
 
 	if l.hook != nil {
@@ -101,7 +102,7 @@ func (l *Logger) LogFailure(ctx context.Context, key, action, resource string, e
 
 	if sErr := l.store.RecordAudit(ctx, entry); sErr != nil {
 		l.logger.Error("audit: record failed",
-			"action", action, "key", key, "error", sErr)
+			log.String("action", action), log.String("key", key), log.Any("error", sErr))
 	}
 
 	if l.hook != nil {

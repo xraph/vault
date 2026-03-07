@@ -1,0 +1,76 @@
+package components
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/vault/flag"
+)
+
+// FlagTable renders a table of feature flag definitions.
+templ FlagTable(flags []*flag.Definition, basePath string) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Key }
+				@table.Head() { Type }
+				@table.Head() { Default }
+				@table.Head() { Status }
+				@table.Head() { Tags }
+				@table.Head() { App ID }
+				@table.Head() { Updated }
+			}
+		}
+		@table.Body() {
+			for _, f := range flags {
+				<tr class="border-b transition-colors hover:bg-muted/50 cursor-pointer"
+					hx-get={ basePath + "flags/detail?key=" + f.Key + "&app_id=" + f.AppID }
+					hx-target="#content"
+					hx-push-url="true"
+					hx-swap="innerHTML">
+					@table.Cell() {
+						<span class="font-mono text-sm font-medium">{ f.Key }</span>
+					}
+					@table.Cell() {
+						@TypeBadge(string(f.Type))
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground font-mono">{ formatAny(f.DefaultValue) }</span>
+					}
+					@table.Cell() {
+						@EnabledBadge(f.Enabled)
+					}
+					@table.Cell() {
+						if len(f.Tags) > 0 {
+							<span class="text-xs text-muted-foreground">{ strings.Join(f.Tags, ", ") }</span>
+						} else {
+							<span class="text-muted-foreground">-</span>
+						}
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ f.AppID }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ f.UpdatedAt.Format("Jan 02, 2006") }</span>
+					}
+				</tr>
+			}
+		}
+	}
+}
+
+func formatAny(v any) string {
+	if v == nil {
+		return "-"
+	}
+	return truncateAny(v, 20)
+}
+
+func truncateAny(v any, max int) string {
+	s := fmt.Sprintf("%v", v)
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
+}

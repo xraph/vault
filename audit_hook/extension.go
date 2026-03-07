@@ -2,7 +2,8 @@ package audithook
 
 import (
 	"context"
-	"log/slog"
+
+	log "github.com/xraph/go-utils/log"
 )
 
 // AuditEvent represents a single audit event emitted by the extension.
@@ -36,14 +37,14 @@ func (f RecorderFunc) Record(ctx context.Context, event *AuditEvent) error {
 type Extension struct {
 	recorder Recorder
 	enabled  map[string]bool // nil = all actions enabled
-	logger   *slog.Logger
+	logger   log.Logger
 }
 
 // New creates an audit hook extension.
 func New(recorder Recorder, opts ...Option) *Extension {
 	e := &Extension{
 		recorder: recorder,
-		logger:   slog.Default(),
+		logger:   log.NewNoopLogger(),
 	}
 	for _, o := range opts {
 		o(e)
@@ -96,6 +97,6 @@ func (e *Extension) Record(
 
 	if rErr := e.recorder.Record(ctx, event); rErr != nil {
 		e.logger.Error("audit_hook: record failed",
-			"action", action, "key", key, "error", rErr)
+			log.String("action", action), log.String("key", key), log.Any("error", rErr))
 	}
 }

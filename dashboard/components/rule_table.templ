@@ -1,0 +1,95 @@
+package components
+
+import (
+	"strconv"
+	"strings"
+
+	"github.com/xraph/forgeui/components/badge"
+	"github.com/xraph/forgeui/components/table"
+	"github.com/xraph/vault/flag"
+)
+
+// RuleTable renders a table of flag targeting rules.
+templ RuleTable(rules []*flag.Rule) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Priority }
+				@table.Head() { Type }
+				@table.Head() { Config }
+				@table.Head() { Return Value }
+			}
+		}
+		@table.Body() {
+			for _, r := range rules {
+				@table.Row() {
+					@table.Cell() {
+						<span class="text-sm font-mono">{ strconv.Itoa(r.Priority) }</span>
+					}
+					@table.Cell() {
+						@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+							{ string(r.Type) }
+						}
+					}
+					@table.Cell() {
+						<span class="text-sm text-muted-foreground">{ ruleConfigSummary(r) }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm font-mono">{ formatAny(r.ReturnValue) }</span>
+					}
+				}
+			}
+		}
+	}
+}
+
+func ruleConfigSummary(r *flag.Rule) string {
+	switch r.Type {
+	case flag.RuleWhenTenant:
+		return "Tenants: " + strings.Join(r.Config.TenantIDs, ", ")
+	case flag.RuleWhenUser:
+		return "Users: " + strings.Join(r.Config.UserIDs, ", ")
+	case flag.RuleWhenTenantTag:
+		return "Tag: " + r.Config.TagKey + "=" + r.Config.TagValue
+	case flag.RuleRollout:
+		return strconv.Itoa(r.Config.Percentage) + "% rollout"
+	case flag.RuleSchedule:
+		s := "Schedule: "
+		if r.Config.StartAt != nil {
+			s += r.Config.StartAt.Format("Jan 02 15:04")
+		}
+		s += " - "
+		if r.Config.EndAt != nil {
+			s += r.Config.EndAt.Format("Jan 02 15:04")
+		}
+		return s
+	case flag.RuleCustom:
+		return "Evaluator: " + r.Config.Evaluator
+	default:
+		return "-"
+	}
+}
+
+// FlagOverrideTable renders a table of flag tenant overrides.
+templ FlagOverrideTable(overrides []*flag.TenantOverride) {
+	@table.Table() {
+		@table.Header() {
+			@table.Row() {
+				@table.Head() { Tenant ID }
+				@table.Head() { Value }
+			}
+		}
+		@table.Body() {
+			for _, o := range overrides {
+				@table.Row() {
+					@table.Cell() {
+						<span class="text-sm font-mono">{ o.TenantID }</span>
+					}
+					@table.Cell() {
+						<span class="text-sm font-mono">{ formatAny(o.Value) }</span>
+					}
+				}
+			}
+		}
+	}
+}
