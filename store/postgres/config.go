@@ -37,12 +37,12 @@ func (s *Store) SetConfig(ctx context.Context, e *cfgpkg.Entry) error {
 	defer tx.Rollback() //nolint:errcheck // rollback on deferred cleanup
 
 	// Get current version.
-	var currentVersion int64
-	err = tx.NewSelect((*ConfigModel)(nil)).
+	var existing ConfigModel
+	err = tx.NewSelect(&existing).
 		Column("version").
 		Where("key = ?", e.Key).
 		Where("app_id = ?", e.AppID).
-		Scan(ctx, &currentVersion)
+		Scan(ctx)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -52,7 +52,7 @@ func (s *Store) SetConfig(ctx context.Context, e *cfgpkg.Entry) error {
 			e.Version = 1
 		}
 	} else {
-		e.Version = currentVersion + 1
+		e.Version = existing.Version + 1
 	}
 
 	valueJSON, err := json.Marshal(e.Value)
