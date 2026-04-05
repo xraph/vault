@@ -61,6 +61,19 @@ templ ConfigDetailPage(data ConfigDetailData) {
 							v{ strconv.FormatInt(data.Entry.Version, 10) }
 						}
 						@components.TypeBadge(data.Entry.ValueType)
+						@button.Button(button.Props{
+							Variant: button.VariantDefault,
+							Size:    button.SizeSm,
+							Attributes: templ.Attributes{
+								"hx-get":      "../config/edit?key=" + data.Entry.Key + "&app_id=" + data.Entry.AppID,
+								"hx-target":   "#content",
+								"hx-push-url": "true",
+								"hx-swap":     "innerHTML",
+							},
+						}) {
+							@icons.Pencil(icons.WithSize(16))
+							Edit
+						}
 					</div>
 				</div>
 			}

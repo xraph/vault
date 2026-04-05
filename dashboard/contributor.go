@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -68,6 +69,8 @@ func (c *Contributor) RenderPage(ctx context.Context, route string, params contr
 		return c.renderConfigDetail(ctx, params)
 	case "/config/create":
 		return c.renderConfigCreate(ctx, params)
+	case "/config/edit":
+		return c.renderConfigEdit(ctx, params)
 	case "/overrides":
 		return c.renderOverrides(ctx, params)
 	case "/overrides/detail":
@@ -461,6 +464,74 @@ func (c *Contributor) renderConfigCreate(ctx context.Context, params contributor
 
 	return pages.ConfigCreatePage(pages.ConfigCreateData{
 		AppID: appID,
+	}), nil
+}
+
+func (c *Contributor) renderConfigEdit(ctx context.Context, params contributor.Params) (templ.Component, error) {
+	// On POST the values come from FormData; on GET from QueryParams.
+	key := params.FormData["key"]
+	if key == "" {
+		key = params.QueryParams["key"]
+	}
+	appID := params.FormData["app_id"]
+	if appID == "" {
+		appID = params.QueryParams["app_id"]
+	}
+	if appID == "" {
+		appID = c.appID
+	}
+	if key == "" {
+		return nil, contributor.ErrPageNotFound
+	}
+
+	// Handle form POST — update the config entry.
+	if params.FormData["action"] == "update_config" {
+		value := params.FormData["value"]
+		valueType := strings.TrimSpace(params.FormData["value_type"])
+		description := strings.TrimSpace(params.FormData["description"])
+
+		// Fetch existing entry to preserve metadata and identity.
+		existing, err := c.store.GetConfig(ctx, key, appID)
+		if err != nil {
+			return pages.ConfigEditPage(pages.ConfigEditData{
+				Entry: &vaultconfig.Entry{Key: key, AppID: appID},
+				Error: fmt.Sprintf("failed to fetch config: %v", err),
+			}), nil
+		}
+
+		// Determine the actual value to store.
+		var parsedValue any = value
+		if valueType == "json" {
+			// Store as parsed JSON so vault can serialize properly.
+			var jsonVal any
+			if jsonErr := json.Unmarshal([]byte(value), &jsonVal); jsonErr == nil {
+				parsedValue = jsonVal
+			}
+		}
+
+		existing.Value = parsedValue
+		existing.ValueType = valueType
+		existing.Description = description
+
+		if err := c.store.SetConfig(ctx, existing); err != nil {
+			return pages.ConfigEditPage(pages.ConfigEditData{
+				Entry: existing,
+				Error: fmt.Sprintf("failed to update config: %v", err),
+			}), nil
+		}
+
+		// Redirect back to detail page on success.
+		return c.renderConfigDetail(ctx, params)
+	}
+
+	// GET — render the edit form with current values.
+	entry, err := c.store.GetConfig(ctx, key, appID)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard: resolve config for edit: %w", err)
+	}
+
+	return pages.ConfigEditPage(pages.ConfigEditData{
+		Entry: entry,
 	}), nil
 }
 

@@ -1,0 +1,291 @@
+package pages
+
+import (
+	vaultconfig "github.com/xraph/vault/config"
+	"github.com/xraph/forgeui/components/button"
+	"github.com/xraph/forgeui/components/card"
+	"github.com/xraph/forgeui/components/input"
+	"github.com/xraph/forgeui/icons"
+)
+
+// ConfigEditData holds data for the config edit form.
+type ConfigEditData struct {
+	Entry *vaultconfig.Entry
+	Error string
+}
+
+templ ConfigEditPage(data ConfigEditData) {
+	<div class="space-y-6">
+		<!-- Back Button -->
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeSm,
+			Attributes: templ.Attributes{
+				"hx-get":      "../config/detail?key=" + data.Entry.Key + "&app_id=" + data.Entry.AppID,
+				"hx-target":   "#content",
+				"hx-swap":     "innerHTML",
+				"hx-push-url": "true",
+			},
+		}) {
+			@icons.ChevronLeft(icons.WithSize(16))
+			Back to Detail
+		}
+
+		<div>
+			<h1 class="text-3xl font-bold tracking-tight">Edit Config Entry</h1>
+			<p class="text-muted-foreground mt-1">
+				Update <span class="font-mono font-medium">{ data.Entry.Key }</span>
+			</p>
+		</div>
+
+		if data.Error != "" {
+			<div class="bg-destructive/10 text-destructive rounded-sm p-4 text-sm">
+				{ data.Error }
+			</div>
+		}
+
+		@card.Card(card.Props{Class: "rounded-sm"}) {
+			@card.Content() {
+				<form class="space-y-6 p-6"
+					hx-post="."
+					hx-target="#content"
+					hx-swap="innerHTML"
+					onsubmit="if(!prepareConfigEditValue(this)){event.preventDefault();return false;}">
+					<input type="hidden" name="action" value="update_config"/>
+					<input type="hidden" name="key" value={ data.Entry.Key }/>
+					<input type="hidden" name="app_id" value={ data.Entry.AppID }/>
+
+					<div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+						<div class="space-y-2">
+							<label class="text-sm font-medium" for="edit_key">Key</label>
+							@input.Input(input.Props{
+								Type:        input.TypeText,
+								Name:        "display_key",
+								Placeholder: data.Entry.Key,
+								Attributes: templ.Attributes{
+									"id":       "edit_key",
+									"value":    data.Entry.Key,
+									"disabled": "true",
+								},
+							})
+							<p class="text-xs text-muted-foreground">Key cannot be changed after creation.</p>
+						</div>
+
+						<div class="space-y-2">
+							<label class="text-sm font-medium" for="edit_app_id">App ID</label>
+							@input.Input(input.Props{
+								Type:        input.TypeText,
+								Name:        "display_app_id",
+								Placeholder: data.Entry.AppID,
+								Attributes: templ.Attributes{
+									"id":       "edit_app_id",
+									"value":    data.Entry.AppID,
+									"disabled": "true",
+								},
+							})
+						</div>
+					</div>
+
+					<div class="space-y-2">
+						<label class="text-sm font-medium" for="edit_value_type">Value Type</label>
+						<select id="edit_value_type" name="value_type"
+							onchange="toggleConfigEditValueEditor()"
+							class="flex h-10 w-full rounded-sm border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+							<option value="string" if data.Entry.ValueType == "string" { selected }>string</option>
+							<option value="bool" if data.Entry.ValueType == "bool" { selected }>bool</option>
+							<option value="int" if data.Entry.ValueType == "int" { selected }>int</option>
+							<option value="float" if data.Entry.ValueType == "float" { selected }>float</option>
+							<option value="json" if data.Entry.ValueType == "json" { selected }>json</option>
+							<option value="yaml" if data.Entry.ValueType == "yaml" { selected }>yaml</option>
+						</select>
+					</div>
+
+					<!-- Simple value input (string, bool, int, float) -->
+					<div id="edit-simple-value" class="space-y-2">
+						<label class="text-sm font-medium" for="edit_value">Value</label>
+						@input.Input(input.Props{
+							Type:        input.TypeText,
+							Name:        "value",
+							Placeholder: "Enter value...",
+							Attributes: templ.Attributes{
+								"required": "true",
+								"id":       "edit_value",
+								"value":    formatValue(data.Entry.Value),
+							},
+						})
+					</div>
+
+					<!-- Code editor for json / yaml -->
+					<div id="edit-code-value" class="space-y-2 hidden">
+						<div class="flex items-center justify-between">
+							<label class="text-sm font-medium" for="edit_value_code">Value</label>
+							<span id="edit-code-lang" class="text-xs text-muted-foreground font-mono uppercase"></span>
+						</div>
+						<textarea
+							id="edit_value_code"
+							name="value_code"
+							class="flex min-h-[200px] w-full rounded-sm border border-input bg-muted/30 px-4 py-3 font-mono text-sm leading-relaxed ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+							oninput="debouncedConfigEditValidate()"
+							onblur="validateConfigEditCode()"
+							spellcheck="false">{ formatJSON(data.Entry.Value) }</textarea>
+						<p id="edit-code-error" class="text-destructive text-xs mt-1 hidden"></p>
+						<p id="edit-code-valid" class="text-emerald-600 dark:text-emerald-400 text-xs mt-1 hidden"></p>
+					</div>
+
+					<div class="space-y-2">
+						<label class="text-sm font-medium" for="edit_description">Description</label>
+						<textarea
+							id="edit_description"
+							name="description"
+							class="flex min-h-[80px] w-full rounded-sm border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+							placeholder="Describe what this config controls...">{ data.Entry.Description }</textarea>
+					</div>
+
+					<div class="flex justify-end gap-3">
+						@button.Button(button.Props{
+							Variant: button.VariantOutline,
+							Attributes: templ.Attributes{
+								"hx-get":      "../config/detail?key=" + data.Entry.Key + "&app_id=" + data.Entry.AppID,
+								"hx-target":   "#content",
+								"hx-swap":     "innerHTML",
+								"hx-push-url": "true",
+								"type":        "button",
+							},
+						}) {
+							Cancel
+						}
+						@button.Button(button.Props{
+							Variant: button.VariantDefault,
+							Attributes: templ.Attributes{
+								"type": "submit",
+							},
+						}) {
+							@icons.Save(icons.WithSize(16))
+							Save Changes
+						}
+					</div>
+				</form>
+			}
+		}
+	</div>
+	<script src="https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"></script>
+	@configEditScript()
+}
+
+// configEditScript toggles between simple input and code editor based on value type.
+script configEditScript() {
+	var _editValidateTimer = null;
+
+	window.debouncedConfigEditValidate = function() {
+		clearTimeout(_editValidateTimer);
+		_editValidateTimer = setTimeout(validateConfigEditCode, 400);
+	};
+
+	window.validateConfigEditCode = function() {
+		var vt = document.getElementById('edit_value_type').value;
+		var codeInput = document.getElementById('edit_value_code');
+		var errorDiv = document.getElementById('edit-code-error');
+		var validDiv = document.getElementById('edit-code-valid');
+		var val = codeInput.value.trim();
+
+		// Reset state.
+		errorDiv.classList.add('hidden');
+		errorDiv.textContent = '';
+		validDiv.classList.add('hidden');
+		validDiv.textContent = '';
+		codeInput.classList.remove('!border-destructive', '!border-emerald-500');
+
+		if (!val) {
+			return true;
+		}
+
+		var error = null;
+
+		if (vt === 'json') {
+			try {
+				JSON.parse(val);
+			} catch (e) {
+				error = e.message;
+			}
+		} else if (vt === 'yaml') {
+			if (typeof jsyaml !== 'undefined') {
+				try {
+					jsyaml.load(val);
+				} catch (e) {
+					error = e.reason || e.message;
+				}
+			}
+		}
+
+		if (error) {
+			errorDiv.textContent = vt.toUpperCase() + ' syntax error: ' + error;
+			errorDiv.classList.remove('hidden');
+			codeInput.classList.add('!border-destructive');
+			return false;
+		}
+
+		validDiv.textContent = 'Valid ' + vt.toUpperCase();
+		validDiv.classList.remove('hidden');
+		codeInput.classList.add('!border-emerald-500');
+		return true;
+	};
+
+	window.toggleConfigEditValueEditor = function() {
+		var vt = document.getElementById('edit_value_type').value;
+		var simple = document.getElementById('edit-simple-value');
+		var code = document.getElementById('edit-code-value');
+		var langLabel = document.getElementById('edit-code-lang');
+		var simpleInput = document.getElementById('edit_value');
+		var codeInput = document.getElementById('edit_value_code');
+		var errorDiv = document.getElementById('edit-code-error');
+		var validDiv = document.getElementById('edit-code-valid');
+
+		if (vt === 'json' || vt === 'yaml') {
+			simple.classList.add('hidden');
+			code.classList.remove('hidden');
+			simpleInput.removeAttribute('required');
+			langLabel.textContent = vt.toUpperCase();
+
+			// Reset validation state on type switch.
+			errorDiv.classList.add('hidden');
+			validDiv.classList.add('hidden');
+			codeInput.classList.remove('!border-destructive', '!border-emerald-500');
+
+			if (vt === 'json') {
+				codeInput.placeholder = '{\n  "key": "value"\n}';
+			} else {
+				codeInput.placeholder = 'key: value\nnested:\n  field: true';
+			}
+
+			// Re-validate existing content for the new type.
+			if (codeInput.value.trim()) {
+				validateConfigEditCode();
+			}
+		} else {
+			simple.classList.remove('hidden');
+			code.classList.add('hidden');
+			simpleInput.setAttribute('required', 'true');
+		}
+	};
+
+	// Before submit, validate and copy code editor value into the simple
+	// value field so the server always reads from "value".
+	window.prepareConfigEditValue = function(form) {
+		var vt = document.getElementById('edit_value_type').value;
+		if (vt === 'json' || vt === 'yaml') {
+			if (!validateConfigEditCode()) {
+				return false;
+			}
+
+			var codeInput = document.getElementById('edit_value_code');
+			var simpleInput = document.getElementById('edit_value');
+			simpleInput.value = codeInput.value;
+			simpleInput.removeAttribute('required');
+		}
+
+		return true;
+	};
+
+	// Initialize on load.
+	toggleConfigEditValueEditor();
+}
