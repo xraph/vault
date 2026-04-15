@@ -211,6 +211,7 @@ func (c *Contributor) renderSecretDetail(ctx context.Context, params contributor
 
 func (c *Contributor) renderSecretCreate(ctx context.Context, params contributor.Params) (templ.Component, error) {
 	appID := c.appID
+	postURL := params.PageBase + "/secrets/create"
 
 	// Handle form POST.
 	if params.FormData["action"] == "create_secret" {
@@ -230,8 +231,9 @@ func (c *Contributor) renderSecretCreate(ctx context.Context, params contributor
 
 		if err := c.store.SetSecret(ctx, s); err != nil {
 			return pages.SecretCreatePage(pages.SecretCreateData{
-				Error: err.Error(),
-				AppID: appID,
+				Error:   err.Error(),
+				AppID:   appID,
+				PostURL: postURL,
 			}), nil
 		}
 
@@ -239,7 +241,8 @@ func (c *Contributor) renderSecretCreate(ctx context.Context, params contributor
 	}
 
 	return pages.SecretCreatePage(pages.SecretCreateData{
-		AppID: appID,
+		AppID:   appID,
+		PostURL: postURL,
 	}), nil
 }
 
@@ -322,6 +325,7 @@ func (c *Contributor) renderFlagDetail(ctx context.Context, params contributor.P
 
 func (c *Contributor) renderFlagCreate(ctx context.Context, params contributor.Params) (templ.Component, error) {
 	appID := c.appID
+	postURL := params.PageBase + "/flags/create"
 
 	// Handle form POST.
 	if params.FormData["action"] == "create_flag" {
@@ -359,8 +363,9 @@ func (c *Contributor) renderFlagCreate(ctx context.Context, params contributor.P
 
 		if err := c.store.DefineFlag(ctx, def); err != nil {
 			return pages.FlagCreatePage(pages.FlagCreateData{
-				Error: err.Error(),
-				AppID: appID,
+				Error:   err.Error(),
+				AppID:   appID,
+				PostURL: postURL,
 			}), nil
 		}
 
@@ -368,7 +373,8 @@ func (c *Contributor) renderFlagCreate(ctx context.Context, params contributor.P
 	}
 
 	return pages.FlagCreatePage(pages.FlagCreateData{
-		AppID: appID,
+		AppID:   appID,
+		PostURL: postURL,
 	}), nil
 }
 
@@ -431,6 +437,7 @@ func (c *Contributor) renderConfigDetail(ctx context.Context, params contributor
 
 func (c *Contributor) renderConfigCreate(ctx context.Context, params contributor.Params) (templ.Component, error) {
 	appID := c.appID
+	postURL := params.PageBase + "/config/create"
 
 	// Handle form POST.
 	if params.FormData["action"] == "create_config" {
@@ -454,8 +461,9 @@ func (c *Contributor) renderConfigCreate(ctx context.Context, params contributor
 
 		if err := c.store.SetConfig(ctx, entry); err != nil {
 			return pages.ConfigCreatePage(pages.ConfigCreateData{
-				Error: err.Error(),
-				AppID: appID,
+				Error:   err.Error(),
+				AppID:   appID,
+				PostURL: postURL,
 			}), nil
 		}
 
@@ -463,7 +471,8 @@ func (c *Contributor) renderConfigCreate(ctx context.Context, params contributor
 	}
 
 	return pages.ConfigCreatePage(pages.ConfigCreateData{
-		AppID: appID,
+		AppID:   appID,
+		PostURL: postURL,
 	}), nil
 }
 
@@ -484,6 +493,8 @@ func (c *Contributor) renderConfigEdit(ctx context.Context, params contributor.P
 		return nil, contributor.ErrPageNotFound
 	}
 
+	postURL := params.PageBase + "/config/edit"
+
 	// Handle form POST — update the config entry.
 	if params.FormData["action"] == "update_config" {
 		value := params.FormData["value"]
@@ -494,8 +505,9 @@ func (c *Contributor) renderConfigEdit(ctx context.Context, params contributor.P
 		existing, err := c.store.GetConfig(ctx, key, appID)
 		if err != nil {
 			return pages.ConfigEditPage(pages.ConfigEditData{
-				Entry: &vaultconfig.Entry{Key: key, AppID: appID},
-				Error: fmt.Sprintf("failed to fetch config: %v", err),
+				Entry:   &vaultconfig.Entry{Key: key, AppID: appID},
+				Error:   fmt.Sprintf("failed to fetch config: %v", err),
+				PostURL: postURL,
 			}), nil
 		}
 
@@ -515,12 +527,19 @@ func (c *Contributor) renderConfigEdit(ctx context.Context, params contributor.P
 
 		if err := c.store.SetConfig(ctx, existing); err != nil {
 			return pages.ConfigEditPage(pages.ConfigEditData{
-				Entry: existing,
-				Error: fmt.Sprintf("failed to update config: %v", err),
+				Entry:   existing,
+				Error:   fmt.Sprintf("failed to update config: %v", err),
+				PostURL: postURL,
 			}), nil
 		}
 
 		// Redirect back to detail page on success.
+		// Ensure key and app_id are in QueryParams so renderConfigDetail can find them.
+		if params.QueryParams == nil {
+			params.QueryParams = make(map[string]string)
+		}
+		params.QueryParams["key"] = key
+		params.QueryParams["app_id"] = appID
 		return c.renderConfigDetail(ctx, params)
 	}
 
@@ -531,7 +550,8 @@ func (c *Contributor) renderConfigEdit(ctx context.Context, params contributor.P
 	}
 
 	return pages.ConfigEditPage(pages.ConfigEditData{
-		Entry: entry,
+		Entry:   entry,
+		PostURL: postURL,
 	}), nil
 }
 

@@ -9,8 +9,9 @@ import (
 
 // ConfigCreateData holds data for the config create form.
 type ConfigCreateData struct {
-	Error string
-	AppID string
+	Error   string
+	AppID   string
+	PostURL string
 }
 
 templ ConfigCreatePage(data ConfigCreateData) {
@@ -44,7 +45,7 @@ templ ConfigCreatePage(data ConfigCreateData) {
 		@card.Card(card.Props{Class: "rounded-sm"}) {
 			@card.Content() {
 				<form class="space-y-6 p-6"
-					hx-post="."
+					hx-post={ data.PostURL }
 					hx-target="#content"
 					hx-swap="innerHTML"
 					onsubmit="if(!prepareConfigValue(this)){event.preventDefault();return false;}">
@@ -54,12 +55,12 @@ templ ConfigCreatePage(data ConfigCreateData) {
 						<div class="space-y-2">
 							<label class="text-sm font-medium" for="key">Key</label>
 							@input.Input(input.Props{
+								ID:          "key",
 								Type:        input.TypeText,
 								Name:        "key",
 								Placeholder: "e.g. rate_limit",
 								Attributes: templ.Attributes{
 									"required": "true",
-									"id":       "key",
 								},
 							})
 						</div>
@@ -67,13 +68,11 @@ templ ConfigCreatePage(data ConfigCreateData) {
 						<div class="space-y-2">
 							<label class="text-sm font-medium" for="app_id">App ID</label>
 							@input.Input(input.Props{
+								ID:          "app_id",
 								Type:        input.TypeText,
 								Name:        "app_id",
+								Value:       data.AppID,
 								Placeholder: "e.g. myapp",
-								Attributes: templ.Attributes{
-									"id":    "app_id",
-									"value": data.AppID,
-								},
 							})
 						</div>
 					</div>
@@ -96,12 +95,12 @@ templ ConfigCreatePage(data ConfigCreateData) {
 					<div id="cfg-simple-value" class="space-y-2">
 						<label class="text-sm font-medium" for="value">Value</label>
 						@input.Input(input.Props{
+							ID:          "value",
 							Type:        input.TypeText,
 							Name:        "value",
 							Placeholder: "e.g. 100, true, hello",
 							Attributes: templ.Attributes{
 								"required": "true",
-								"id":       "value",
 							},
 						})
 					</div>
@@ -146,10 +145,8 @@ templ ConfigCreatePage(data ConfigCreateData) {
 							Cancel
 						}
 						@button.Button(button.Props{
+							Type:    button.TypeSubmit,
 							Variant: button.VariantDefault,
-							Attributes: templ.Attributes{
-								"type": "submit",
-							},
 						}) {
 							@icons.Settings2(icons.WithSize(16))
 							Create Entry

@@ -3,6 +3,7 @@
   "pages": [
     "full-example",
     "forge-extension",
+    "confy-integration",
     "custom-store",
     "multi-tenant-patterns"
   ]

@@ -39,6 +39,24 @@ type Config struct {
 	// When empty and WithGroveDatabase was called, the default (unnamed) DB is used.
 	GroveDatabase string `json:"grove_database" mapstructure:"grove_database" yaml:"grove_database"`
 
+	// MountToConfy registers vault as a confy ConfigSource and SecretProvider
+	// so vault-managed config and secrets are accessible via the forge ConfigManager.
+	MountToConfy bool `json:"mount_to_confy" mapstructure:"mount_to_confy" yaml:"mount_to_confy"`
+
+	// ConfyKeyPrefix is prepended to all vault keys when exposed through confy.
+	// For example, "vault." causes vault key "db.host" to appear as "vault.db.host".
+	ConfyKeyPrefix string `json:"confy_key_prefix" mapstructure:"confy_key_prefix" yaml:"confy_key_prefix"`
+
+	// ConfyMountKeys restricts which vault keys are mounted into confy.
+	// Only the listed keys will be included; all others are filtered out.
+	// When empty, all keys are included (unless ConfyMountPatterns is set).
+	ConfyMountKeys []string `json:"confy_mount_keys" mapstructure:"confy_mount_keys" yaml:"confy_mount_keys"`
+
+	// ConfyMountPatterns restricts which vault keys are mounted into confy
+	// using glob patterns (e.g. "db.*", "auth.*"). Multiple patterns are OR-ed.
+	// When empty, all keys are included (unless ConfyMountKeys is set).
+	ConfyMountPatterns []string `json:"confy_mount_patterns" mapstructure:"confy_mount_patterns" yaml:"confy_mount_patterns"`
+
 	// RequireConfig requires config to be present in YAML files.
 	// If true and no config is found, Register returns an error.
 	RequireConfig bool `json:"-" yaml:"-"`

@@ -19,7 +19,10 @@ import (
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
+	"github.com/xraph/confy"
+
 	"github.com/xraph/vault"
+	vaultconfy "github.com/xraph/vault/confy"
 	vaultdash "github.com/xraph/vault/dashboard"
 	"github.com/xraph/vault/store"
 	mongostore "github.com/xraph/vault/store/mongo"
@@ -144,11 +147,17 @@ func (e *Extension) Register(fapp forge.App) error {
 		}
 	}
 
+	// Mount vault as a confy ConfigSource and SecretProvider if enabled.
+	if e.config.MountToConfy && e.store != nil {
+		e.mountToConfy(fapp)
+	}
+
 	e.Logger().Debug("vault: extension registered",
 		forge.F("app_id", e.config.AppID),
 		forge.F("disable_routes", e.config.DisableRoutes),
 		forge.F("disable_migrate", e.config.DisableMigrate),
 		forge.F("base_path", e.config.BasePath),
+		forge.F("mount_to_confy", e.config.MountToConfy),
 	)
 
 	return nil
@@ -188,6 +197,62 @@ func (e *Extension) DashboardContributor() contributor.LocalContributor {
 		vaultdash.NewManifest(),
 		e.store,
 		e.config.AppID,
+	)
+}
+
+// mountToConfy registers vault as a confy ConfigSource and SecretProvider
+// in the forge ConfigManager. If the ConfigManager is not available in the
+// DI container, this is a no-op.
+func (e *Extension) mountToConfy(fapp forge.App) {
+	cm, err := vessel.Inject[confy.Confy](fapp.Container())
+	if err != nil {
+		e.Logger().Debug("vault: confy not available in container, skipping mount",
+			forge.F("error", err.Error()),
+		)
+		return
+	}
+
+	// Build source options from config.
+	sourceOpts := []vaultconfy.VaultSourceOption{
+		vaultconfy.WithSourcePollInterval(e.config.SourcePollInterval),
+	}
+	if e.config.ConfyKeyPrefix != "" {
+		sourceOpts = append(sourceOpts, vaultconfy.WithKeyPrefix(e.config.ConfyKeyPrefix))
+	}
+	if len(e.config.ConfyMountKeys) > 0 {
+		sourceOpts = append(sourceOpts, vaultconfy.WithKeys(e.config.ConfyMountKeys...))
+	}
+	if len(e.config.ConfyMountPatterns) > 0 {
+		sourceOpts = append(sourceOpts, vaultconfy.WithKeyPatterns(e.config.ConfyMountPatterns...))
+	}
+
+	src := vaultconfy.NewVaultConfigSource(
+		e.store, e.store, e.config.AppID,
+		sourceOpts...,
+	)
+
+	if err := cm.LoadFrom(src); err != nil {
+		e.Logger().Warn("vault: failed to mount config source to confy",
+			forge.F("error", err.Error()),
+		)
+		return
+	}
+
+	// Register secret provider if confy has a secrets manager.
+	sm := cm.SecretsManager()
+	if sm != nil {
+		provider := vaultconfy.NewVaultSecretProvider(e.store, e.config.AppID)
+		if err := sm.RegisterProvider("vault", provider); err != nil {
+			e.Logger().Warn("vault: failed to register secret provider with confy",
+				forge.F("error", err.Error()),
+			)
+		} else {
+			e.Logger().Info("vault: registered secret provider with confy")
+		}
+	}
+
+	e.Logger().Info("vault: mounted config source to confy",
+		forge.F("app_id", e.config.AppID),
 	)
 }
 
@@ -288,6 +353,9 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	if programmaticConfig.EnableAudit {
 		yamlConfig.EnableAudit = true
 	}
+	if programmaticConfig.MountToConfy {
+		yamlConfig.MountToConfy = true
+	}
 
 	// String fields: YAML takes precedence.
 	if yamlConfig.BasePath == "" && programmaticConfig.BasePath != "" {
@@ -301,6 +369,17 @@ func (e *Extension) mergeConfigurations(yamlConfig, programmaticConfig Config) C
 	}
 	if yamlConfig.GroveDatabase == "" && programmaticConfig.GroveDatabase != "" {
 		yamlConfig.GroveDatabase = programmaticConfig.GroveDatabase
+	}
+	if yamlConfig.ConfyKeyPrefix == "" && programmaticConfig.ConfyKeyPrefix != "" {
+		yamlConfig.ConfyKeyPrefix = programmaticConfig.ConfyKeyPrefix
+	}
+
+	// Slice fields: programmatic fills gaps.
+	if len(yamlConfig.ConfyMountKeys) == 0 && len(programmaticConfig.ConfyMountKeys) > 0 {
+		yamlConfig.ConfyMountKeys = programmaticConfig.ConfyMountKeys
+	}
+	if len(yamlConfig.ConfyMountPatterns) == 0 && len(programmaticConfig.ConfyMountPatterns) > 0 {
+		yamlConfig.ConfyMountPatterns = programmaticConfig.ConfyMountPatterns
 	}
 
 	// Duration fields: YAML takes precedence, programmatic fills gaps.

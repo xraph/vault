@@ -39,7 +39,6 @@ func (s *Store) SetConfig(ctx context.Context, e *cfgpkg.Entry) error {
 	// Get current version.
 	var existing ConfigModel
 	err = tx.NewSelect(&existing).
-		Column("version").
 		Where("key = ?", e.Key).
 		Where("app_id = ?", e.AppID).
 		Scan(ctx)

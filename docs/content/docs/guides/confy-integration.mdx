@@ -1,0 +1,322 @@
+---
+title: Confy Integration
+description: Mount vault config and secrets into forge's confy-backed ConfigManager.
+---
+
+The `confy` package provides adapters that expose vault's config and secret stores as [confy](https://github.com/xraph/confy) sources. This allows forge applications to access vault-managed configuration and secrets through the standard `ConfigManager` API, with support for watching, selective key mounting, and key prefixing.
+
+## Installation
+
+```go
+import vaultconfy "github.com/xraph/vault/confy"
+```
+
+## VaultConfigSource
+
+Implements `confy.ConfigSource`. Loads all (or filtered) vault config entries as a flat `map[string]any` and supports polling-based watching.
+
+### Creating a config source
+
+```go
+src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp")
+```
+
+Pass any combination of options to customise behaviour:
+
+```go
+src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp",
+    vaultconfy.WithSourceName("vault:config"),
+    vaultconfy.WithSourcePriority(200),
+    vaultconfy.WithSourcePollInterval(15 * time.Second),
+    vaultconfy.WithKeyPrefix("vault."),
+    vaultconfy.WithKeys("db.host", "db.port"),
+    vaultconfy.WithKeyPatterns("auth.*", "feature.*"),
+)
+```
+
+### Options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithSourceName` | `WithSourceName(name string)` | Sets the source name. Default `"vault"`. |
+| `WithSourcePriority` | `WithSourcePriority(p int)` | Sets the confy priority. Default `100`. |
+| `WithSourcePollInterval` | `WithSourcePollInterval(d time.Duration)` | Sets the watch poll interval. Default `30s`. |
+| `WithKeyPrefix` | `WithKeyPrefix(prefix string)` | Prepends a prefix to vault keys in confy. |
+| `WithKeys` | `WithKeys(keys ...string)` | Whitelist of specific vault keys to mount. |
+| `WithKeyPatterns` | `WithKeyPatterns(patterns ...string)` | Glob patterns to filter vault keys. |
+
+### Selective mounting
+
+By default, all vault config entries are mounted into confy. You can filter which keys are exposed using three composable mechanisms.
+
+#### Key prefix
+
+Prepend a namespace to all vault keys when they appear in confy:
+
+```go
+vaultconfy.WithKeyPrefix("vault.")
+// vault key "db.host" → confy key "vault.db.host"
+```
+
+#### Key whitelist
+
+Only mount explicitly named keys:
+
+```go
+vaultconfy.WithKeys("db.host", "db.port", "api_key")
+// only these 3 keys appear in confy; all others are excluded
+```
+
+#### Glob patterns
+
+Mount keys matching one or more glob patterns (uses `filepath.Match` semantics):
+
+```go
+vaultconfy.WithKeyPatterns("db.*", "auth.*")
+// all keys starting with "db." or "auth." are included
+```
+
+#### Combining filters
+
+Whitelist and patterns are OR-ed: a key passes if it is in the whitelist **or** matches any pattern. The prefix is applied after filtering.
+
+```go
+src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp",
+    vaultconfy.WithKeys("cache.ttl"),            // explicit whitelist
+    vaultconfy.WithKeyPatterns("db.*"),           // glob pattern
+    vaultconfy.WithKeyPrefix("secrets."),         // prefix all surviving keys
+)
+// Results:
+//   vault "db.host"   → confy "secrets.db.host"
+//   vault "db.port"   → confy "secrets.db.port"
+//   vault "cache.ttl" → confy "secrets.cache.ttl"
+//   vault "app.name"  → filtered out (not in whitelist, no pattern match)
+```
+
+### Loading into confy
+
+```go
+cm := confy.New()
+src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp")
+
+if err := cm.LoadFrom(src); err != nil {
+    log.Fatal(err)
+}
+
+// Read vault config through confy.
+dbHost := cm.GetString("db.host")
+```
+
+### Watching for changes
+
+The source supports polling-based watch. When any vault config entry changes (version bump, new key, or deletion), the confy callback fires with the full config map.
+
+```go
+cm.LoadFrom(src)
+cm.Watch(ctx) // starts watching all watchable sources
+```
+
+Or watch specific keys:
+
+```go
+cm.WatchWithCallback("db.host", func(key string, value any) {
+    log.Printf("db.host changed to %v", value)
+})
+```
+
+### Secret access via confy
+
+If a secret store is provided, the source also supports `GetSecret`:
+
+```go
+password, err := src.GetSecret(ctx, "db_password")
+```
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| `Name()` | Configurable (default `"vault"`) |
+| `GetType()` | `"vault"` |
+| `IsWatchable()` | `true` |
+| `SupportsSecrets()` | `true` (when secret store provided) |
+
+## VaultSecretProvider
+
+Implements `confy.SecretProvider`. Wraps vault's secret store for use with confy's secrets management system.
+
+### Creating a secret provider
+
+```go
+provider := vaultconfy.NewVaultSecretProvider(secretStore, "myapp")
+```
+
+### Usage with confy SecretsManager
+
+```go
+sm := cm.SecretsManager()
+sm.RegisterProvider("vault", provider)
+
+// Now confy can resolve secrets from vault.
+secret, err := sm.GetSecret(ctx, "db_password")
+```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `GetSecret(ctx, key)` | Retrieves a decrypted secret as a string |
+| `SetSecret(ctx, key, value)` | Creates or updates a secret |
+| `DeleteSecret(ctx, key)` | Removes a secret and all versions |
+| `ListSecrets(ctx)` | Returns all secret keys for the app |
+| `HealthCheck(ctx)` | Verifies the secret store is accessible |
+
+### Properties
+
+| Property | Value |
+|----------|-------|
+| `Name()` | `"vault"` |
+| `SupportsRotation()` | `false` (managed by vault's rotation service) |
+| `SupportsCaching()` | `false` (vault store handles caching) |
+
+## Forge extension integration
+
+The vault forge extension can automatically mount into confy when `mount_to_confy` is enabled.
+
+### YAML configuration
+
+```yaml
+extensions:
+  vault:
+    app_id: myapp
+    mount_to_confy: true
+    # Optional: selective mounting
+    confy_key_prefix: "vault."
+    confy_mount_keys:
+      - db.host
+      - db.port
+      - api_key
+    confy_mount_patterns:
+      - "auth.*"
+      - "feature.*"
+```
+
+### Programmatic configuration
+
+```go
+import "github.com/xraph/vault/extension"
+
+ext := extension.New(
+    extension.WithAppID("myapp"),
+    extension.WithMountToConfy(),
+    extension.WithConfyKeyPrefix("vault."),
+    extension.WithConfyMountKeys("db.host", "db.port"),
+    extension.WithConfyMountPatterns("auth.*", "feature.*"),
+)
+```
+
+### Extension options
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithMountToConfy` | `WithMountToConfy()` | Enables mounting vault into the forge ConfigManager |
+| `WithConfyKeyPrefix` | `WithConfyKeyPrefix(prefix string)` | Sets the key prefix for all mounted vault keys |
+| `WithConfyMountKeys` | `WithConfyMountKeys(keys ...string)` | Whitelist of vault keys to mount |
+| `WithConfyMountPatterns` | `WithConfyMountPatterns(patterns ...string)` | Glob patterns for vault keys to mount |
+
+### How it works
+
+When `mount_to_confy: true` is set and a store is available:
+
+1. The extension resolves `confy.Confy` from the forge DI container.
+2. Creates a `VaultConfigSource` with the configured filters and poll interval.
+3. Calls `cm.LoadFrom(source)` to register it as a confy source.
+4. If the confy instance has a `SecretsManager`, registers a `VaultSecretProvider`.
+5. If confy is not available in the container, this step is silently skipped.
+
+After mounting, all vault config entries (matching the filters) are accessible via the standard confy API:
+
+```go
+cm := app.Config() // forge's ConfigManager
+
+// Read vault-managed config through confy.
+dbHost := cm.GetString("vault.db.host", "localhost")
+apiKey := cm.GetString("vault.api_key")
+
+// Watch for changes.
+cm.WatchWithCallback("vault.db.host", func(key string, value any) {
+    log.Printf("db host changed: %v", value)
+})
+```
+
+## Full example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/xraph/confy"
+    vaultconfy "github.com/xraph/vault/confy"
+    "github.com/xraph/vault/store/memory"
+    "github.com/xraph/vault/config"
+    "github.com/xraph/vault"
+    "github.com/xraph/vault/id"
+)
+
+func main() {
+    ctx := context.Background()
+    store := memory.New()
+
+    // Seed some config entries.
+    store.SetConfig(ctx, &config.Entry{
+        Entity: vault.NewEntity(), ID: id.NewConfigID(),
+        Key: "db.host", Value: "localhost", AppID: "myapp",
+    })
+    store.SetConfig(ctx, &config.Entry{
+        Entity: vault.NewEntity(), ID: id.NewConfigID(),
+        Key: "db.port", Value: "5432", AppID: "myapp",
+    })
+    store.SetConfig(ctx, &config.Entry{
+        Entity: vault.NewEntity(), ID: id.NewConfigID(),
+        Key: "app.name", Value: "MyApp", AppID: "myapp",
+    })
+
+    // Create a vault confy source that only mounts "db.*" keys
+    // under the "vault." prefix.
+    src := vaultconfy.NewVaultConfigSource(store, store, "myapp",
+        vaultconfy.WithKeyPrefix("vault."),
+        vaultconfy.WithKeyPatterns("db.*"),
+        vaultconfy.WithSourcePollInterval(5 * time.Second),
+    )
+
+    // Load into confy.
+    cm := confy.New()
+    if err := cm.LoadFrom(src); err != nil {
+        log.Fatal(err)
+    }
+
+    // Read vault config through confy.
+    fmt.Println(cm.GetString("vault.db.host")) // "localhost"
+    fmt.Println(cm.GetString("vault.db.port")) // "5432"
+    fmt.Println(cm.GetString("vault.app.name")) // "" (filtered out)
+
+    // Watch for changes.
+    cm.WatchWithCallback("vault.db.host", func(key string, value any) {
+        fmt.Printf("changed: %s = %v\n", key, value)
+    })
+    cm.Watch(ctx)
+
+    // Update a vault config entry -- the watcher fires on next poll.
+    store.SetConfig(ctx, &config.Entry{
+        Entity: vault.NewEntity(), ID: id.NewConfigID(),
+        Key: "db.host", Value: "prod-db.example.com", AppID: "myapp",
+    })
+
+    time.Sleep(10 * time.Second)
+}
+```

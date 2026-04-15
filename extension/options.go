@@ -63,6 +63,30 @@ func WithEnableAudit(enable bool) Option {
 	return func(e *Extension) { e.config.EnableAudit = enable }
 }
 
+// WithMountToConfy enables mounting vault config and secrets into the forge ConfigManager
+// via confy's ConfigSource and SecretProvider interfaces.
+func WithMountToConfy() Option {
+	return func(e *Extension) { e.config.MountToConfy = true }
+}
+
+// WithConfyKeyPrefix sets a prefix prepended to all vault keys in confy.
+// For example, "vault." causes vault key "db.host" to appear as "vault.db.host".
+func WithConfyKeyPrefix(prefix string) Option {
+	return func(e *Extension) { e.config.ConfyKeyPrefix = prefix }
+}
+
+// WithConfyMountKeys restricts which vault keys are mounted into confy.
+// Only the listed keys will be included; all others are filtered out.
+func WithConfyMountKeys(keys ...string) Option {
+	return func(e *Extension) { e.config.ConfyMountKeys = keys }
+}
+
+// WithConfyMountPatterns restricts which vault keys are mounted into confy
+// using glob patterns (e.g. "db.*", "auth.*"). Multiple patterns are OR-ed.
+func WithConfyMountPatterns(patterns ...string) Option {
+	return func(e *Extension) { e.config.ConfyMountPatterns = patterns }
+}
+
 // WithGroveDatabase sets the name of the grove.DB to resolve from the DI container.
 // The extension will auto-construct the appropriate store backend (postgres/sqlite/mongo)
 // based on the grove driver type. Pass an empty string to use the default (unnamed) grove.DB.

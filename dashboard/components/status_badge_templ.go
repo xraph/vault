@@ -5,10 +5,11 @@ package components
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import "github.com/a-h/templ"
-import templruntime "github.com/a-h/templ/runtime"
-
-import "github.com/xraph/forgeui/components/badge"
+import (
+	"github.com/a-h/templ"
+	templruntime "github.com/a-h/templ/runtime"
+	"github.com/xraph/forgeui/components/badge"
+)
 
 // EnabledBadge renders a green "Enabled" or red "Disabled" badge.
 func EnabledBadge(enabled bool) templ.Component {

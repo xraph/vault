@@ -202,16 +202,28 @@ fmt.Println(val.Raw) // value of DB_HOST
 
 ## Database source
 
-Reads configuration from a `config.Store` backend, converting config entries to source `Value` structs.
+Reads configuration from a `config.Store` backend, converting config entries to source `Value` structs. Supports polling-based `Watch` to detect changes.
 
 ### Creating a Database source
 
 ```go
-func NewDatabase(store config.Store, appID string) *Database
+func NewDatabase(store config.Store, appID string, opts ...DatabaseOption) *Database
 ```
 
 ```go
 db := source.NewDatabase(configStore, "myapp")
+```
+
+### DatabaseOption
+
+| Option | Signature | Description |
+|--------|-----------|-------------|
+| `WithPollInterval` | `WithPollInterval(d time.Duration) DatabaseOption` | Sets the polling interval for watch. Default is 30 seconds. |
+
+```go
+db := source.NewDatabase(configStore, "myapp",
+    source.WithPollInterval(10 * time.Second),
+)
 ```
 
 ### Get
@@ -246,6 +258,34 @@ Returns all config entries for the app, optionally filtered by prefix.
 vals, err := db.List(ctx, "db.")
 ```
 
+### Watch
+
+Registers a callback for changes to a specific key. The database source uses a background polling goroutine to detect changes by comparing version numbers on each tick. Watch is non-blocking and returns immediately.
+
+```go
+db.Watch(ctx, "max-connections", func(ctx context.Context, key string, val *source.Value) {
+    if val == nil {
+        fmt.Printf("key %s was deleted\n", key)
+        return
+    }
+    fmt.Printf("changed: %s = %s (version %d)\n", key, val.Raw, val.Version)
+})
+```
+
+A single goroutine is started on the first `Watch` call and polls all watched keys on each tick. The goroutine exits when `Close()` is called or the context is cancelled.
+
+**Change detection:** The poller compares the `Version` field of each watched key against the last seen version. When the version changes, all callbacks for that key are fired. Deletions (key no longer exists) are also detected and fire the callback with a `nil` value.
+
+**False-positive avoidance:** When `Watch` is called, the current version is seeded from the store so the first poll tick does not produce a spurious notification.
+
+### Close
+
+Stops the poll goroutine and waits for it to exit. Safe to call multiple times.
+
+```go
+db.Close()
+```
+
 ### Error mapping
 
 The database source maps `vault.ErrConfigNotFound` to `source.ErrKeyNotFound` for consistent error handling across sources.
@@ -255,10 +295,10 @@ The database source maps `vault.ErrConfigNotFound` to `source.ErrKeyNotFound` fo
 | Property | Value |
 |----------|-------|
 | `Name()` | `"database"` |
-| Supports `Watch` | Not yet (returns `nil`) |
+| Supports `Watch` | Yes (polling-based) |
 | Supports `List` | Yes |
-| Thread-safe | Depends on store implementation |
-| `Close()` | No-op |
+| Thread-safe | Yes (`sync.RWMutex`) |
+| `Close()` | Stops poll goroutine |
 
 ## Chain
 

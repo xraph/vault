@@ -339,3 +339,52 @@ cfgSvc.Watch("rate_limit", func(ctx context.Context, key string, oldValue, newVa
     // Update your rate limiter, reconfigure a connection pool, etc.
 })
 ```
+
+## Mounting vault into confy
+
+The vault extension can automatically register itself as a confy `ConfigSource` and `SecretProvider`, making vault-managed config and secrets accessible through forge's `ConfigManager`.
+
+### Basic mount
+
+```yaml
+extensions:
+  vault:
+    app_id: myapp
+    mount_to_confy: true
+```
+
+Or programmatically:
+
+```go
+ext := extension.New(
+    extension.WithAppID("myapp"),
+    extension.WithMountToConfy(),
+)
+```
+
+### Selective mounting
+
+Control which vault keys are exposed to confy using key prefixes, whitelists, and glob patterns:
+
+```yaml
+extensions:
+  vault:
+    app_id: myapp
+    mount_to_confy: true
+    confy_key_prefix: "vault."
+    confy_mount_keys:
+      - db.host
+      - api_key
+    confy_mount_patterns:
+      - "auth.*"
+      - "feature.*"
+```
+
+After mounting, vault config is accessible through the standard confy API:
+
+```go
+cm := app.Config()
+dbHost := cm.GetString("vault.db.host", "localhost")
+```
+
+For detailed documentation, see the [Confy Integration](/docs/guides/confy-integration) guide.

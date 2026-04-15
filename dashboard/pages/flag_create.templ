@@ -9,8 +9,9 @@ import (
 
 // FlagCreateData holds data for the flag create form.
 type FlagCreateData struct {
-	Error string
-	AppID string
+	Error   string
+	AppID   string
+	PostURL string
 }
 
 templ FlagCreatePage(data FlagCreateData) {
@@ -44,7 +45,7 @@ templ FlagCreatePage(data FlagCreateData) {
 		@card.Card(card.Props{Class: "rounded-sm"}) {
 			@card.Content() {
 				<form class="space-y-6 p-6"
-					hx-post="."
+					hx-post={ data.PostURL }
 					hx-target="#content"
 					hx-swap="innerHTML"
 					onsubmit="if(!prepareFlagValue(this)){event.preventDefault();return false;}">
@@ -54,12 +55,12 @@ templ FlagCreatePage(data FlagCreateData) {
 						<div class="space-y-2">
 							<label class="text-sm font-medium" for="key">Key</label>
 							@input.Input(input.Props{
+								ID:          "key",
 								Type:        input.TypeText,
 								Name:        "key",
 								Placeholder: "e.g. enable_dark_mode",
 								Attributes: templ.Attributes{
 									"required": "true",
-									"id":       "key",
 								},
 							})
 						</div>
@@ -67,13 +68,11 @@ templ FlagCreatePage(data FlagCreateData) {
 						<div class="space-y-2">
 							<label class="text-sm font-medium" for="app_id">App ID</label>
 							@input.Input(input.Props{
+								ID:          "app_id",
 								Type:        input.TypeText,
 								Name:        "app_id",
+								Value:       data.AppID,
 								Placeholder: "e.g. myapp",
-								Attributes: templ.Attributes{
-									"id":    "app_id",
-									"value": data.AppID,
-								},
 							})
 						</div>
 					</div>
@@ -96,12 +95,12 @@ templ FlagCreatePage(data FlagCreateData) {
 					<div id="flag-simple-value" class="space-y-2">
 						<label class="text-sm font-medium" for="default_value">Default Value</label>
 						@input.Input(input.Props{
+							ID:          "default_value",
 							Type:        input.TypeText,
 							Name:        "default_value",
 							Placeholder: "e.g. true, hello, 42",
 							Attributes: templ.Attributes{
 								"required": "true",
-								"id":       "default_value",
 							},
 						})
 					</div>
@@ -135,12 +134,10 @@ templ FlagCreatePage(data FlagCreateData) {
 					<div class="space-y-2">
 						<label class="text-sm font-medium" for="tags">Tags (comma-separated)</label>
 						@input.Input(input.Props{
+							ID:          "tags",
 							Type:        input.TypeText,
 							Name:        "tags",
 							Placeholder: "e.g. frontend, experiment, beta",
-							Attributes: templ.Attributes{
-								"id": "tags",
-							},
 						})
 					</div>
 
@@ -164,10 +161,8 @@ templ FlagCreatePage(data FlagCreateData) {
 							Cancel
 						}
 						@button.Button(button.Props{
+							Type:    button.TypeSubmit,
 							Variant: button.VariantDefault,
-							Attributes: templ.Attributes{
-								"type": "submit",
-							},
 						}) {
 							@icons.Flag(icons.WithSize(16))
 							Create Flag
