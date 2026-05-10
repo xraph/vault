@@ -160,10 +160,11 @@ func (s *VaultConfigSource) Watch(ctx context.Context, callback func(map[string]
 		return fmt.Errorf("vault config source: already watching")
 	}
 
-	s.watchStop = make(chan struct{})
+	stop := make(chan struct{})
+	s.watchStop = stop
 	s.watching = true
 
-	go s.watchLoop(ctx, callback)
+	go s.watchLoop(ctx, stop, callback)
 
 	return nil
 }
@@ -234,7 +235,7 @@ func (s *VaultConfigSource) matchesFilter(key string) bool {
 }
 
 // watchLoop polls for config changes on a timer.
-func (s *VaultConfigSource) watchLoop(ctx context.Context, callback func(map[string]any)) {
+func (s *VaultConfigSource) watchLoop(ctx context.Context, stop <-chan struct{}, callback func(map[string]any)) {
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 
@@ -242,7 +243,7 @@ func (s *VaultConfigSource) watchLoop(ctx context.Context, callback func(map[str
 		select {
 		case <-ctx.Done():
 			return
-		case <-s.watchStop:
+		case <-stop:
 			return
 		case <-ticker.C:
 			s.pollAndNotify(ctx, callback)
