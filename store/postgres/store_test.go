@@ -79,7 +79,7 @@ func TestSecretCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	sec := &secret.Secret{
-		ID:              id.New(),
+		ID:              id.NewSecretID(),
 		Key:             "db-password",
 		AppID:           "app1",
 		EncryptedValue:  []byte("encrypted-v1"),
@@ -162,7 +162,7 @@ func TestFlagCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	def := &flag.Definition{
-		ID:           id.New(),
+		ID:           id.NewFlagID(),
 		Key:          "dark-mode",
 		Type:         "boolean",
 		DefaultValue: true,
@@ -198,8 +198,8 @@ func TestFlagCRUD(t *testing.T) {
 
 	// Rules.
 	rules := []*flag.Rule{
-		{ID: id.New(), FlagKey: "dark-mode", AppID: "app1", Type: "percentage", Priority: 1,
-			Config: flag.RuleConfig{Percentage: intPtr(50)}, ReturnValue: true},
+		{ID: id.NewRuleID(), FlagKey: "dark-mode", AppID: "app1", Type: "percentage", Priority: 1,
+			Config: flag.RuleConfig{Percentage: 50}, ReturnValue: true},
 	}
 	if err := s.SetFlagRules(ctx, "dark-mode", "app1", rules); err != nil {
 		t.Fatalf("SetFlagRules: %v", err)
@@ -259,7 +259,7 @@ func TestConfigCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	entry := &config.Entry{
-		ID:          id.New(),
+		ID:          id.NewConfigID(),
 		Key:         "pool.size",
 		Value:       10,
 		ValueType:   "int",
@@ -341,7 +341,7 @@ func TestOverrideCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	o := &override.Override{
-		ID:       id.New(),
+		ID:       id.NewOverrideID(),
 		Key:      "pool.size",
 		Value:    50,
 		AppID:    "app1",
@@ -404,7 +404,7 @@ func TestRotationCRUD(t *testing.T) {
 	next := now.Add(24 * time.Hour)
 
 	policy := &rotation.Policy{
-		ID:             id.New(),
+		ID:             id.NewRotationID(),
 		SecretKey:      "api-key",
 		AppID:          "app1",
 		Interval:       24 * time.Hour,
@@ -441,7 +441,7 @@ func TestRotationCRUD(t *testing.T) {
 
 	// Record.
 	rec := &rotation.Record{
-		ID:         id.New(),
+		ID:         id.NewRotationID(),
 		SecretKey:  "api-key",
 		AppID:      "app1",
 		OldVersion: 1,
@@ -484,7 +484,7 @@ func TestAuditCRUD(t *testing.T) {
 	ctx := context.Background()
 
 	entry := &audit.Entry{
-		ID:        id.New(),
+		ID:        id.NewAuditID(),
 		Action:    "secret.accessed",
 		Resource:  "secret",
 		Key:       "db-password",
@@ -557,5 +557,3 @@ func TestMigrateIdempotent(t *testing.T) {
 }
 
 // helpers
-
-func intPtr(v int) *int { return &v }
