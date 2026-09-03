@@ -36,13 +36,14 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback on deferred cleanup
 
-	// Get current version.
-	var currentVersion int64
-	err = tx.NewSelect((*SecretModel)(nil)).
-		Column("version").
+	// Get current version. Scans the whole row into the model rather than the
+	// version column into an int64: grove's scanner builds its scan targets from
+	// the model's fields and rejects a non-struct destination outright.
+	var existing SecretModel
+	err = tx.NewSelect(&existing).
 		Where("key = ?", sec.Key).
 		Where("app_id = ?", sec.AppID).
-		Scan(ctx, &currentVersion)
+		Scan(ctx)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -50,7 +51,7 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		sec.Version = 1
 	} else {
-		sec.Version = currentVersion + 1
+		sec.Version = existing.Version + 1
 	}
 
 	now := time.Now().UTC()
