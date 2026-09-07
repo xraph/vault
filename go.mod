@@ -3,7 +3,7 @@ module github.com/xraph/vault
 go 1.26.0
 
 require (
-	github.com/a-h/templ v0.3.1001
+	github.com/a-h/templ v0.3.1020
 	github.com/xraph/confy v1.0.2
 	github.com/xraph/forge v1.10.0
 	github.com/xraph/forgeui v1.4.1
@@ -14,7 +14,7 @@ require (
 	github.com/xraph/grove/drivers/sqlitedriver v1.6.3
 	github.com/xraph/vessel v1.0.4
 	go.jetify.com/typeid/v2 v2.0.0-alpha.3
-	go.mongodb.org/mongo-driver/v2 v2.5.0
+	go.mongodb.org/mongo-driver/v2 v2.8.2
 )
 
 require (
