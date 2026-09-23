@@ -11,8 +11,13 @@ type Config struct {
 	// If empty, encryption is disabled (not recommended for production).
 	EncryptionKey []byte `json:"-" yaml:"-"`
 
-	// EncryptionKeyEnv is the environment variable name for the encryption key.
-	// Used as a fallback if EncryptionKey is not set directly.
+	// EncryptionKeyEnv names an environment variable to read the encryption
+	// key from when EncryptionKey is not set directly. This is not a
+	// fallback that degrades to plaintext: naming the variable is a
+	// statement of intent, so if it is set, its value must decode to a
+	// valid key or New fails. It is the empty EncryptionKeyEnv (alongside
+	// an empty EncryptionKey) that means no key was configured at all and
+	// secrets are stored as given.
 	EncryptionKeyEnv string `json:"encryption_key_env" yaml:"encryption_key_env"`
 
 	// FlagCacheTTL is the TTL for the flag evaluation cache.

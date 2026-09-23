@@ -130,6 +130,11 @@ func buildEncryptor(cfg Config) (*crypto.Encryptor, error) {
 	return enc, nil
 }
 
+// AppID returns the vault's configured application id. Every contract
+// handler operates on this app and this app alone; no request carries an
+// app id of its own.
+func (v *Vault) AppID() string { return v.config.AppID }
+
 // EncryptionEnabled reports whether secrets are encrypted at rest.
 // False means a key was not configured and values are stored as given.
 func (v *Vault) EncryptionEnabled() bool { return v.encryptor != nil }

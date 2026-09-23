@@ -271,6 +271,23 @@ func TestWithConfigStillOverridesWithNonZeroValues(t *testing.T) {
 	}
 }
 
+// AppID must reflect WithConfig's overlay semantics: a later WithConfig
+// call with unrelated fields set must not silently drop the app id an
+// earlier WithAppID configured.
+func TestAppIDReturnsTheConfiguredValueAfterWithConfigOverlays(t *testing.T) {
+	v, err := vault.New(
+		vault.WithStore(memory.New()),
+		vault.WithAppID("a"),
+		vault.WithConfig(vault.Config{FlagCacheTTL: time.Minute}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := v.AppID(); got != "a" {
+		t.Errorf("AppID() = %q, want %q", got, "a")
+	}
+}
+
 func TestKeylessRoundTripReturnsThePlaintext(t *testing.T) {
 	v, err := vault.New(vault.WithStore(memory.New()), vault.WithAppID("app1"))
 	if err != nil {

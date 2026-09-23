@@ -88,6 +88,50 @@ func TestRotateNow(t *testing.T) {
 	}
 }
 
+// A rotation must not silently erase the expiry and metadata that were set
+// on the secret before it: secret.Service.Set builds a fresh row, and
+// without carrying these forward, the backends upsert empty values for
+// both. This must fail against today's code.
+func TestRotateNowPreservesExpiryAndMetadata(t *testing.T) {
+	s := memory.New()
+	svc := setupSecretService(t, s)
+
+	expiresAt := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
+	metadata := map[string]string{"owner": "payments-team"}
+	if _, err := svc.Set(bg(), "rotating-secret", []byte("old-value"), "",
+		secret.WithExpiresAt(expiresAt),
+		secret.WithMetadata(metadata),
+	); err != nil {
+		t.Fatalf("secret.Set: %v", err)
+	}
+
+	mgr := rotation.NewManager(s, svc, rotation.WithAppID(testApp))
+	mgr.RegisterRotator("rotating-secret", func(_ context.Context, _ []byte) ([]byte, error) {
+		return []byte("new-value"), nil
+	})
+
+	if err := mgr.RotateNow(bg(), "rotating-secret", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := svc.GetMeta(bg(), "rotating-secret", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Version != 2 {
+		t.Errorf("version: got %d, want 2", meta.Version)
+	}
+	if meta.ExpiresAt == nil {
+		t.Fatal("ExpiresAt is nil after rotation, want it carried forward")
+	}
+	if !meta.ExpiresAt.Equal(expiresAt) {
+		t.Errorf("ExpiresAt: got %v, want %v", meta.ExpiresAt, expiresAt)
+	}
+	if meta.Metadata["owner"] != "payments-team" {
+		t.Errorf("Metadata[owner]: got %q, want %q", meta.Metadata["owner"], "payments-team")
+	}
+}
+
 func TestRotateNowCreatesRecord(t *testing.T) {
 	s := memory.New()
 	svc := setupSecretService(t, s)

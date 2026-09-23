@@ -191,14 +191,31 @@ func (e *Extension) buildVault() (*vault.Vault, error) {
 	return v, nil
 }
 
-// Start implements [forge.Extension].
+// Start implements [forge.Extension]. It starts the rotation manager's
+// background loop, without which a policy with an enabled, due rotation
+// and a registered rotator never rotates on schedule. The loop is started
+// with context.Background() rather than the context Start receives, which
+// may be cancelled or time out well before the extension itself stops.
 func (e *Extension) Start(_ context.Context) error {
+	if e.v != nil {
+		if err := e.v.Rotation().Start(context.Background()); err != nil {
+			return err
+		}
+	}
 	e.MarkStarted()
 	return nil
 }
 
-// Stop implements [forge.Extension].
-func (e *Extension) Stop(_ context.Context) error {
+// Stop implements [forge.Extension]. The rotation loop is stopped before
+// the store is closed, so no in-flight rotation check can run against a
+// closed store.
+func (e *Extension) Stop(ctx context.Context) error {
+	if e.v != nil {
+		if err := e.v.Rotation().Stop(ctx); err != nil {
+			e.MarkStopped()
+			return err
+		}
+	}
 	if e.store != nil {
 		if err := e.store.Close(); err != nil {
 			e.MarkStopped()

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xraph/forge"
+
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/store/memory"
 )
@@ -89,6 +91,41 @@ func TestBuildVaultWithoutAStoreSaysHowToConfigureOne(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "vault: vault:") {
 		t.Errorf("error has a doubled-up prefix: %q", err)
+	}
+}
+
+// TestStartStopRunsTheRotationLoopWithoutHanging pins that the extension's
+// Start begins the rotation manager's loop and Stop stops it cleanly.
+// Nothing in the repository ever called rotation.Manager.Start before this
+// fix, so a policy's scheduled rotation never ran. The test is bounded so a
+// regression that makes Stop hang fails the test instead of the suite.
+func TestStartStopRunsTheRotationLoopWithoutHanging(t *testing.T) {
+	e := &Extension{
+		BaseExtension: forge.NewBaseExtension(ExtensionName, ExtensionVersion, ExtensionDescription),
+		store:         memory.New(),
+	}
+	v, err := e.buildVault()
+	if err != nil {
+		t.Fatalf("buildVault() returned an error: %v", err)
+	}
+	e.v = v
+
+	done := make(chan error, 1)
+	go func() {
+		if startErr := e.Start(context.Background()); startErr != nil {
+			done <- startErr
+			return
+		}
+		done <- e.Stop(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Start/Stop returned an error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start/Stop did not return within 5s; the rotation loop may be hanging Stop")
 	}
 }
 

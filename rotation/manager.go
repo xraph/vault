@@ -135,14 +135,30 @@ func (m *Manager) RotateNow(ctx context.Context, secretKey, appID string) error 
 
 	oldVersion := currentSecret.Version
 
+	// secret.Service.Set builds a fresh row, so a rotation that doesn't
+	// carry expiry and metadata forward silently erases both. Read them
+	// from the current secret before the rotator runs.
+	currentMeta, err := m.secretService.GetMeta(ctx, secretKey, appID)
+	if err != nil {
+		return fmt.Errorf("rotation: get current secret meta %q: %w", secretKey, err)
+	}
+
 	// Invoke the rotator.
 	newValue, err := rotator(ctx, currentSecret.Value)
 	if err != nil {
 		return fmt.Errorf("rotation: rotator failed for %q: %w", secretKey, err)
 	}
 
-	// Set the new value (auto-versions).
-	meta, err := m.secretService.Set(ctx, secretKey, newValue, appID)
+	var setOpts []secret.SetOption
+	if currentMeta.ExpiresAt != nil {
+		setOpts = append(setOpts, secret.WithExpiresAt(*currentMeta.ExpiresAt))
+	}
+	if len(currentMeta.Metadata) > 0 {
+		setOpts = append(setOpts, secret.WithMetadata(currentMeta.Metadata))
+	}
+
+	// Set the new value (auto-versions), carrying expiry and metadata forward.
+	meta, err := m.secretService.Set(ctx, secretKey, newValue, appID, setOpts...)
 	if err != nil {
 		return fmt.Errorf("rotation: set new secret %q: %w", secretKey, err)
 	}
