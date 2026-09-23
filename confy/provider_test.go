@@ -10,6 +10,11 @@ import (
 	"github.com/xraph/vault/store/memory"
 )
 
+// *secret.Service is the value callers pass to NewVaultSecretProvider, so it
+// must satisfy the full SecretService surface. This fails to compile if a
+// signature on either side drifts.
+var _ vaultconfy.SecretService = (*secret.Service)(nil)
+
 // testEncryptor returns an Encryptor over a fresh random key, for tests that
 // need a real (as opposed to keyless) secret.Service.
 func testEncryptor(t *testing.T) *crypto.Encryptor {
