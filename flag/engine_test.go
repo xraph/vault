@@ -432,3 +432,69 @@ func TestEvaluateWithCache(t *testing.T) {
 		t.Errorf("cached: got %v, want %q", val2, "default")
 	}
 }
+
+// A cached result from a user-targeted rule must not be served to another
+// user of the same tenant. Before the fix the cache key ignored the user.
+func TestCacheDoesNotServeOneUsersRuleResultToAnother(t *testing.T) {
+	s := memory.New()
+	defineFlag(t, s, "feat-cu", false, true)
+	rules := []*flag.Rule{flag.WhenUser("u-1").Return(true)}
+	rules[0].FlagKey = "feat-cu"
+	rules[0].AppID = testApp
+	rules[0].Priority = 1
+	if err := s.SetFlagRules(bg(), "feat-cu", testApp, rules); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := flag.NewEngine(s, flag.WithCacheTTL(time.Minute))
+
+	v1, err := engine.Evaluate(withTenantAndUser("t", "u-1"), "feat-cu", testApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v1 != true {
+		t.Fatalf("u-1: got %v, want true", v1)
+	}
+	v2, err := engine.Evaluate(withTenantAndUser("t", "u-2"), "feat-cu", testApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v2 != false {
+		t.Errorf("u-2: got %v, want false: u-1's rule result was served from the cache", v2)
+	}
+}
+
+// The same flag key in two apps must not share cached results.
+func TestCacheDoesNotBleedBetweenApps(t *testing.T) {
+	s := memory.New()
+	for app, def := range map[string]string{"app-a": "a-default", "app-b": "b-default"} {
+		if err := s.DefineFlag(bg(), &flag.Definition{
+			Entity:       vault.NewEntity(),
+			ID:           id.NewFlagID(),
+			Key:          "shared",
+			Type:         flag.TypeString,
+			DefaultValue: def,
+			Enabled:      true,
+			AppID:        app,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	engine := flag.NewEngine(s, flag.WithCacheTTL(time.Minute))
+
+	va, err := engine.Evaluate(withTenant("t"), "shared", "app-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if va != "a-default" {
+		t.Fatalf("app-a: got %v, want a-default", va)
+	}
+	vb, err := engine.Evaluate(withTenant("t"), "shared", "app-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vb != "b-default" {
+		t.Errorf("app-b: got %v, want b-default: app-a's result was served from the cache", vb)
+	}
+}

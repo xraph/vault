@@ -12,7 +12,10 @@ type cacheEntry struct {
 }
 
 // evaluationCache is a simple TTL-based cache for flag evaluation results.
-// Keys are composed of flagKey + tenantID.
+// Keys are composed of flagKey, appID, tenantID and userID. Every input that
+// can change a result must be in the key: without appID the same flag key in
+// two apps shared results, and without userID a user-targeted rule's result
+// was served to every other user of the tenant until the TTL expired.
 type evaluationCache struct {
 	mu      sync.RWMutex
 	entries map[string]cacheEntry
@@ -27,17 +30,18 @@ func newEvaluationCache(ttl time.Duration) *evaluationCache {
 	}
 }
 
-// cacheKey builds a composite cache key from flag key and tenant ID.
-func cacheKey(flagKey, tenantID string) string {
-	return flagKey + "\x00" + tenantID
+// cacheKey builds a composite cache key. flagKey comes first so that
+// invalidate can drop every entry for a flag with a prefix match.
+func cacheKey(flagKey, appID, tenantID, userID string) string {
+	return flagKey + "\x00" + appID + "\x00" + tenantID + "\x00" + userID
 }
 
 // get retrieves a cached value. Returns (value, true) on hit, (nil, false) on miss or expired.
-func (c *evaluationCache) get(flagKey, tenantID string) (any, bool) {
+func (c *evaluationCache) get(flagKey, appID, tenantID, userID string) (any, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	entry, ok := c.entries[cacheKey(flagKey, tenantID)]
+	entry, ok := c.entries[cacheKey(flagKey, appID, tenantID, userID)]
 	if !ok {
 		return nil, false
 	}
@@ -48,11 +52,11 @@ func (c *evaluationCache) get(flagKey, tenantID string) (any, bool) {
 }
 
 // set stores a value in the cache with the configured TTL.
-func (c *evaluationCache) set(flagKey, tenantID string, value any) {
+func (c *evaluationCache) set(flagKey, appID, tenantID, userID string, value any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.entries[cacheKey(flagKey, tenantID)] = cacheEntry{
+	c.entries[cacheKey(flagKey, appID, tenantID, userID)] = cacheEntry{
 		value:     value,
 		expiresAt: time.Now().Add(c.ttl),
 	}

@@ -81,9 +81,10 @@ func NewEngine(store Store, opts ...EngineOption) *Engine {
 // evaluation cache. EvaluateDetail deliberately does not.
 func (e *Engine) Evaluate(ctx context.Context, key, appID string) (any, error) {
 	tenantID := contextString(ctx, ContextKeyTenantID)
+	userID := contextString(ctx, ContextKeyUserID)
 
 	if e.cache != nil {
-		if val, ok := e.cache.get(key, tenantID); ok {
+		if val, ok := e.cache.get(key, appID, tenantID, userID); ok {
 			return val, nil
 		}
 	}
@@ -95,7 +96,7 @@ func (e *Engine) Evaluate(ctx context.Context, key, appID string) (any, error) {
 	// A disabled flag was never cached before, and still is not: flipping
 	// Enabled must take effect immediately rather than after the TTL.
 	if d.Reason != ReasonDisabled {
-		e.cacheSet(key, tenantID, d.Value)
+		e.cacheSet(key, appID, tenantID, userID, d.Value)
 	}
 	return d.Value, nil
 }
@@ -291,9 +292,9 @@ func (e *Engine) evalSchedule(rule *Rule) bool {
 	return true
 }
 
-func (e *Engine) cacheSet(key, tenantID string, val any) {
+func (e *Engine) cacheSet(key, appID, tenantID, userID string, val any) {
 	if e.cache != nil {
-		e.cache.set(key, tenantID, val)
+		e.cache.set(key, appID, tenantID, userID, val)
 	}
 }
 
