@@ -37,10 +37,29 @@ func WithLogger(l log.Logger) Option {
 	}
 }
 
-// WithConfig sets the vault configuration directly.
+// WithConfig overlays the given Config onto the Vault's current
+// configuration. A non-zero field in cfg overrides the current value; a
+// zero-valued field leaves whatever an earlier option (or DefaultConfig)
+// already set. It does not replace the whole Config wholesale, so it is
+// safe to combine with WithAppID, WithEncryptionKey, and friends in any
+// order without one silently erasing the other.
 func WithConfig(cfg Config) Option {
 	return func(v *Vault) {
-		v.config = cfg
+		if cfg.AppID != "" {
+			v.config.AppID = cfg.AppID
+		}
+		if len(cfg.EncryptionKey) > 0 {
+			v.config.EncryptionKey = cfg.EncryptionKey
+		}
+		if cfg.EncryptionKeyEnv != "" {
+			v.config.EncryptionKeyEnv = cfg.EncryptionKeyEnv
+		}
+		if cfg.FlagCacheTTL != 0 {
+			v.config.FlagCacheTTL = cfg.FlagCacheTTL
+		}
+		if cfg.SourcePollInterval != 0 {
+			v.config.SourcePollInterval = cfg.SourcePollInterval
+		}
 	}
 }
 

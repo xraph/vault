@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/store/memory"
@@ -167,5 +168,84 @@ func TestSecretMutationsWriteAnAuditEntry(t *testing.T) {
 	}
 	if n == 0 {
 		t.Error("no audit entry was written for a secret mutation")
+	}
+}
+
+// WithConfig must overlay, not replace: a later WithConfig with unrelated
+// fields set must not silently drop a key configured by an earlier option.
+// Before the fix, this combination reported EncryptionEnabled() == false
+// and stored every secret in plaintext without any error.
+func TestWithConfigDoesNotDropAnEarlierEncryptionKey(t *testing.T) {
+	key, _ := hex.DecodeString(testKeyHex)
+	v, err := vault.New(
+		vault.WithStore(memory.New()),
+		vault.WithEncryptionKey(key),
+		vault.WithConfig(vault.Config{FlagCacheTTL: time.Minute}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.EncryptionEnabled() {
+		t.Error("EncryptionEnabled() is false: WithConfig dropped the earlier WithEncryptionKey")
+	}
+}
+
+// WithConfig must not drop an earlier AppID either. Before the fix, a
+// WithConfig call after WithAppID zeroed AppID and every write landed under
+// the empty app scope instead of the configured one.
+func TestWithConfigDoesNotDropAnEarlierAppID(t *testing.T) {
+	s := memory.New()
+	v, err := vault.New(
+		vault.WithStore(s),
+		vault.WithAppID("a"),
+		vault.WithConfig(vault.Config{FlagCacheTTL: time.Minute}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Empty appID argument: the service must fall back to its configured
+	// default, which must still be "a".
+	if _, setErr := v.Secrets().Set(ctx, "k", []byte("v"), ""); setErr != nil {
+		t.Fatal(setErr)
+	}
+	gotA, err := s.CountSecrets(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotA != 1 {
+		t.Errorf("CountSecrets(%q) = %d, want 1: the write should have landed under the configured AppID", "a", gotA)
+	}
+	gotEmpty, err := s.CountSecrets(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEmpty != 0 {
+		t.Errorf("CountSecrets(\"\") = %d, want 0: WithConfig dropped the earlier AppID and the write landed under the empty scope", gotEmpty)
+	}
+}
+
+// The overlay must still override when the incoming Config field is
+// non-zero, so this pins that WithConfig did not become a no-op.
+func TestWithConfigStillOverridesWithNonZeroValues(t *testing.T) {
+	s := memory.New()
+	v, err := vault.New(
+		vault.WithStore(s),
+		vault.WithAppID("a"),
+		vault.WithConfig(vault.Config{AppID: "b"}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, setErr := v.Secrets().Set(ctx, "k", []byte("v"), ""); setErr != nil {
+		t.Fatal(setErr)
+	}
+	gotB, err := s.CountSecrets(ctx, "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotB != 1 {
+		t.Errorf("CountSecrets(%q) = %d, want 1: WithConfig should still override AppID with a non-zero value", "b", gotB)
 	}
 }
