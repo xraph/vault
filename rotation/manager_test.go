@@ -295,3 +295,27 @@ func TestMultipleRotationsIncrementsVersions(t *testing.T) {
 		t.Errorf("records: got %d, want 2", len(records))
 	}
 }
+
+func TestRotatorKeysListsRegisteredRotatorsSorted(t *testing.T) {
+	s := memory.New()
+	m := rotation.NewManager(s, nil)
+
+	if got := m.RotatorKeys(); len(got) != 0 {
+		t.Errorf("with nothing registered: got %v, want empty", got)
+	}
+
+	noop := func(_ context.Context, cur []byte) ([]byte, error) { return cur, nil }
+	m.RegisterRotator("zeta", noop)
+	m.RegisterRotator("alpha", noop)
+
+	got := m.RotatorKeys()
+	want := []string{"alpha", "zeta"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v (sorted)", got, want)
+		}
+	}
+}

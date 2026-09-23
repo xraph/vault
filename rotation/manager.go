@@ -3,6 +3,7 @@ package rotation
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -69,6 +70,24 @@ func (m *Manager) RegisterRotator(secretKey string, r Rotator) {
 	defer m.mu.Unlock()
 
 	m.rotators[secretKey] = r
+}
+
+// RotatorKeys returns the secret keys that have a registered rotator, sorted.
+//
+// RotateNow fails for any key not in this list, because a rotator is Go code
+// an application registers and nothing outside the process can supply one. A
+// caller that offers rotation as an action should gate on this rather than
+// offering a button that always fails.
+func (m *Manager) RotatorKeys() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	keys := make([]string, 0, len(m.rotators))
+	for k := range m.rotators {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // Start begins the background rotation check loop.
