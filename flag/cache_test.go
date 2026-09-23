@@ -1,12 +1,13 @@
 package flag
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
 
 func TestCacheSetGet(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app", "tenant-a", "", "value1")
 
 	val, ok := c.get("flag1", "app", "tenant-a", "")
@@ -19,7 +20,7 @@ func TestCacheSetGet(t *testing.T) {
 }
 
 func TestCacheMiss(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 
 	_, ok := c.get("flag1", "app", "tenant-a", "")
 	if ok {
@@ -28,7 +29,7 @@ func TestCacheMiss(t *testing.T) {
 }
 
 func TestCacheDifferentTenants(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app", "tenant-a", "", "val-a")
 	c.set("flag1", "app", "tenant-b", "", "val-b")
 
@@ -43,7 +44,7 @@ func TestCacheDifferentTenants(t *testing.T) {
 }
 
 func TestCacheDifferentApps(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app-a", "t", "", "val-a")
 
 	if val, ok := c.get("flag1", "app-b", "t", ""); ok {
@@ -62,7 +63,7 @@ func TestCacheDifferentApps(t *testing.T) {
 }
 
 func TestCacheDifferentUsers(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app", "t", "u-1", "val-1")
 
 	if val, ok := c.get("flag1", "app", "t", "u-2"); ok {
@@ -76,7 +77,7 @@ func TestCacheDifferentUsers(t *testing.T) {
 // The separator must keep fields apart, so that shifting characters from
 // one field into the next cannot collide.
 func TestCacheKeyFieldsDoNotRunTogether(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "ab", "c", "", "v")
 
 	if _, ok := c.get("flag1", "a", "bc", ""); ok {
@@ -85,7 +86,7 @@ func TestCacheKeyFieldsDoNotRunTogether(t *testing.T) {
 }
 
 func TestCacheEmptyTenantID(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app", "", "", "global-val")
 
 	val, ok := c.get("flag1", "app", "", "")
@@ -95,7 +96,7 @@ func TestCacheEmptyTenantID(t *testing.T) {
 }
 
 func TestCacheTTLExpiry(t *testing.T) {
-	c := newEvaluationCache(1 * time.Millisecond)
+	c := newEvaluationCache(1*time.Millisecond, 0)
 	c.set("flag1", "app", "t", "", "val")
 
 	// Wait for expiry.
@@ -108,7 +109,7 @@ func TestCacheTTLExpiry(t *testing.T) {
 }
 
 func TestCacheInvalidateFlag(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app", "t-1", "", "v1")
 	c.set("flag1", "app", "t-2", "", "v2")
 	c.set("flag1", "other-app", "t-1", "u-1", "v4")
@@ -139,7 +140,7 @@ func TestCacheInvalidateFlag(t *testing.T) {
 }
 
 func TestCacheInvalidateAll(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app", "t-1", "", "v1")
 	c.set("flag2", "app", "t-2", "", "v2")
 
@@ -153,12 +154,97 @@ func TestCacheInvalidateAll(t *testing.T) {
 }
 
 func TestCacheOverwrite(t *testing.T) {
-	c := newEvaluationCache(5 * time.Minute)
+	c := newEvaluationCache(5*time.Minute, 0)
 	c.set("flag1", "app", "t", "", "old")
 	c.set("flag1", "app", "t", "", "new")
 
 	val, ok := c.get("flag1", "app", "t", "")
 	if !ok || val != "new" {
 		t.Errorf("got %v, want %q (overwritten)", val, "new")
+	}
+}
+
+// The cache is never allowed to grow past its cap, no matter how many
+// distinct keys come through: since the key includes the user, an
+// unbounded cache grows by one entry per user forever.
+func TestCacheNeverExceedsItsCap(t *testing.T) {
+	c := newEvaluationCache(5*time.Minute, 100)
+
+	for i := 0; i < 1000; i++ {
+		c.set("flag1", "app", "t", fmt.Sprintf("u-%d", i), i)
+		if len(c.entries) > 100 {
+			t.Fatalf("after %d sets: len(entries) = %d, want <= 100", i+1, len(c.entries))
+		}
+	}
+}
+
+// When set hits the cap, it sweeps expired entries first, and only clears
+// the whole map if that sweep was not enough. The population here is
+// deliberately mixed (half expired, half still live) so that sweep-then-
+// clear and always-clear give different, distinguishable results: if the
+// test only checked that the map ended up small with the fresh entry
+// present, an implementation that dropped the sweep and always cleared on
+// cap would pass it too.
+func TestCacheSweepsExpiredBeforeClearing(t *testing.T) {
+	const ttl = 150 * time.Millisecond
+	c := newEvaluationCache(ttl, 10)
+
+	// Five entries that will be left to expire.
+	for i := 0; i < 5; i++ {
+		c.set("flag1", "app", "t", fmt.Sprintf("expired-%d", i), i)
+	}
+
+	time.Sleep(400 * time.Millisecond) // comfortably past ttl: the five above are now expired
+
+	// Five more entries, set only now, so they are still live. Together
+	// with the five expired ones above, this fills the cache to its cap.
+	for i := 0; i < 5; i++ {
+		c.set("flag1", "app", "t", fmt.Sprintf("live-%d", i), i)
+	}
+	if len(c.entries) != 10 {
+		t.Fatalf("len(entries) = %d, want 10 (5 expired + 5 live) before the triggering set", len(c.entries))
+	}
+
+	// This set finds the cache at cap (10 entries, 5 expired). Sweep-then-
+	// clear removes only the 5 expired ones, which is enough, so the 5 live
+	// ones survive. Always-clear would drop them too.
+	c.set("flag1", "app", "t", "fresh", "fresh-val")
+
+	for i := 0; i < 5; i++ {
+		if _, ok := c.entries[cacheKey("flag1", "app", "t", fmt.Sprintf("expired-%d", i))]; ok {
+			t.Errorf("expired-%d should have been swept", i)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		if _, ok := c.entries[cacheKey("flag1", "app", "t", fmt.Sprintf("live-%d", i))]; !ok {
+			t.Errorf("live-%d should have survived: only expired entries are dropped by a sweep", i)
+		}
+	}
+	entry, ok := c.entries[cacheKey("flag1", "app", "t", "fresh")]
+	if !ok || entry.value != "fresh-val" {
+		t.Fatalf("fresh entry missing or wrong: %+v, ok=%v", entry, ok)
+	}
+	if len(c.entries) != 6 {
+		t.Fatalf("len(entries) = %d, want 6 (5 live + fresh, 5 expired swept)", len(c.entries))
+	}
+}
+
+// WithCacheMaxEntries must take effect whether it is applied before or
+// after WithCacheTTL: options must not silently overwrite each other's work.
+func TestCacheMaxEntriesOptionOrderIndependent(t *testing.T) {
+	maxFirst := NewEngine(nil, WithCacheMaxEntries(50), WithCacheTTL(time.Minute))
+	if maxFirst.cache == nil {
+		t.Fatal("maxEntries-then-TTL: expected a cache to be configured")
+	}
+	if maxFirst.cache.maxEntries != 50 {
+		t.Errorf("maxEntries-then-TTL: got maxEntries %d, want 50", maxFirst.cache.maxEntries)
+	}
+
+	ttlFirst := NewEngine(nil, WithCacheTTL(time.Minute), WithCacheMaxEntries(50))
+	if ttlFirst.cache == nil {
+		t.Fatal("TTL-then-maxEntries: expected a cache to be configured")
+	}
+	if ttlFirst.cache.maxEntries != 50 {
+		t.Errorf("TTL-then-maxEntries: got maxEntries %d, want 50", ttlFirst.cache.maxEntries)
 	}
 }

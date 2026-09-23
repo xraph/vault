@@ -498,3 +498,35 @@ func TestCacheDoesNotBleedBetweenApps(t *testing.T) {
 		t.Errorf("app-b: got %v, want b-default: app-a's result was served from the cache", vb)
 	}
 }
+
+// Invalidate must make a flag change visible right away, without waiting
+// for the TTL: a dashboard toggling a flag needs the next Evaluate call to
+// see it, not the next call after the cache expires.
+func TestInvalidateMakesAChangeVisibleImmediately(t *testing.T) {
+	s := memory.New()
+	defineFlag(t, s, "feat-inv", "old", true)
+
+	engine := flag.NewEngine(s, flag.WithCacheTTL(time.Hour))
+
+	val, err := engine.Evaluate(bg(), "feat-inv", testApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val != "old" {
+		t.Fatalf("got %v, want %q", val, "old")
+	}
+
+	// Change the flag's default via the store, as an operator toggling it
+	// through the dashboard would.
+	defineFlag(t, s, "feat-inv", "new", true)
+
+	engine.Invalidate("feat-inv")
+
+	val2, err := engine.Evaluate(bg(), "feat-inv", testApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if val2 != "new" {
+		t.Fatalf("got %v, want %q (change visible immediately after Invalidate, before the TTL)", val2, "new")
+	}
+}

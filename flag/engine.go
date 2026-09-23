@@ -57,15 +57,31 @@ type Detail struct {
 // EngineOption configures the Engine.
 type EngineOption func(*Engine)
 
-// WithCacheTTL sets the evaluation cache TTL.
+// WithCacheTTL sets the evaluation cache TTL, enabling the cache.
 func WithCacheTTL(ttl time.Duration) EngineOption {
-	return func(e *Engine) { e.cache = newEvaluationCache(ttl) }
+	return func(e *Engine) {
+		e.cacheTTL = ttl
+		e.cacheEnabled = true
+	}
+}
+
+// WithCacheMaxEntries bounds how many evaluation results the cache holds at
+// once. n <= 0 means the default of 10000. It has no effect unless the cache
+// is also enabled with WithCacheTTL, and it works regardless of the order
+// the two options are given in: the cache is built once, after every option
+// has run.
+func WithCacheMaxEntries(n int) EngineOption {
+	return func(e *Engine) { e.cacheMaxEntries = n }
 }
 
 // Engine evaluates feature flags using definitions, rules, and overrides.
 type Engine struct {
 	store Store
 	cache *evaluationCache
+
+	cacheEnabled    bool
+	cacheTTL        time.Duration
+	cacheMaxEntries int
 }
 
 // NewEngine creates a flag evaluation engine.
@@ -73,6 +89,9 @@ func NewEngine(store Store, opts ...EngineOption) *Engine {
 	e := &Engine{store: store}
 	for _, o := range opts {
 		o(e)
+	}
+	if e.cacheEnabled {
+		e.cache = newEvaluationCache(e.cacheTTL, e.cacheMaxEntries)
 	}
 	return e
 }
@@ -304,6 +323,16 @@ func (e *Engine) evalSchedule(rule *Rule) bool {
 func (e *Engine) cacheSet(key, appID, tenantID, userID string, val any) {
 	if e.cache != nil {
 		e.cache.set(key, appID, tenantID, userID, val)
+	}
+}
+
+// Invalidate drops every cached evaluation for a flag, across apps, tenants
+// and users. Call it after changing a flag's definition, rules or tenant
+// overrides so Evaluate callers see the change now rather than after the TTL.
+// It is a no-op when the engine has no cache.
+func (e *Engine) Invalidate(flagKey string) {
+	if e.cache != nil {
+		e.cache.invalidate(flagKey)
 	}
 }
 

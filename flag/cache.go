@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+// defaultMaxEntries bounds the cache when the caller does not set one. Since
+// the key includes the user, an unbounded cache grows by one entry per flag,
+// app, tenant and user forever.
+const defaultMaxEntries = 10000
+
 // cacheEntry holds a cached evaluation result with expiry.
 type cacheEntry struct {
 	value     any
@@ -17,16 +22,22 @@ type cacheEntry struct {
 // two apps shared results, and without userID a user-targeted rule's result
 // was served to every other user of the tenant until the TTL expired.
 type evaluationCache struct {
-	mu      sync.RWMutex
-	entries map[string]cacheEntry
-	ttl     time.Duration
+	mu         sync.RWMutex
+	entries    map[string]cacheEntry
+	ttl        time.Duration
+	maxEntries int
 }
 
-// newEvaluationCache creates a cache with the given TTL.
-func newEvaluationCache(ttl time.Duration) *evaluationCache {
+// newEvaluationCache creates a cache with the given TTL and entry cap.
+// maxEntries <= 0 falls back to defaultMaxEntries.
+func newEvaluationCache(ttl time.Duration, maxEntries int) *evaluationCache {
+	if maxEntries <= 0 {
+		maxEntries = defaultMaxEntries
+	}
 	return &evaluationCache{
-		entries: make(map[string]cacheEntry),
-		ttl:     ttl,
+		entries:    make(map[string]cacheEntry),
+		ttl:        ttl,
+		maxEntries: maxEntries,
 	}
 }
 
@@ -51,10 +62,26 @@ func (c *evaluationCache) get(flagKey, appID, tenantID, userID string) (any, boo
 	return entry.value, true
 }
 
-// set stores a value in the cache with the configured TTL.
+// set stores a value in the cache with the configured TTL. When the cache is
+// at or over its cap, it first sweeps every expired entry; if that was not
+// enough, it clears the map entirely rather than picking entries to evict.
+// The cache is an optimisation, so dropping entries only changes the hit
+// rate, never an answer.
 func (c *evaluationCache) set(flagKey, appID, tenantID, userID string, value any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if len(c.entries) >= c.maxEntries {
+		now := time.Now()
+		for k, e := range c.entries {
+			if now.After(e.expiresAt) {
+				delete(c.entries, k)
+			}
+		}
+		if len(c.entries) >= c.maxEntries {
+			c.entries = make(map[string]cacheEntry)
+		}
+	}
 
 	c.entries[cacheKey(flagKey, appID, tenantID, userID)] = cacheEntry{
 		value:     value,
