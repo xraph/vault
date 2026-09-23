@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"strings"
@@ -88,5 +89,37 @@ func TestBuildVaultWithoutAStoreSaysHowToConfigureOne(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "vault: vault:") {
 		t.Errorf("error has a doubled-up prefix: %q", err)
+	}
+}
+
+// TestAuditIsOnEvenWhenEnableAuditIsFalse confirms that auditing is always
+// on regardless of the EnableAudit configuration setting. This proves the
+// setting is now a no-op and can be safely ignored.
+func TestAuditIsOnEvenWhenEnableAuditIsFalse(t *testing.T) {
+	e := &Extension{
+		config: Config{
+			EnableAudit: false,
+		},
+		store: memory.New(),
+	}
+
+	v, err := e.buildVault()
+	if err != nil {
+		t.Fatalf("buildVault() returned an error: %v", err)
+	}
+
+	ctx := context.Background()
+	appID := "test-app"
+	_, err = v.Secrets().Set(ctx, "test-key", []byte("test-value"), appID)
+	if err != nil {
+		t.Fatalf("Secrets().Set() returned an error: %v", err)
+	}
+
+	count, err := v.Store().CountAudit(ctx, appID)
+	if err != nil {
+		t.Fatalf("CountAudit() returned an error: %v", err)
+	}
+	if count == 0 {
+		t.Error("expected audit entries to exist, but CountAudit returned 0; auditing should always be on")
 	}
 }

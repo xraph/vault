@@ -58,7 +58,7 @@ func WithEncryptionKeyEnv(envVar string) Option {
 	return func(e *Extension) { e.config.EncryptionKeyEnv = envVar }
 }
 
-// WithEnableAudit enables or disables audit logging.
+// Deprecated: audit logging is always on and this setting has no effect.
 func WithEnableAudit(enable bool) Option {
 	return func(e *Extension) { e.config.EnableAudit = enable }
 }

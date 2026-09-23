@@ -30,7 +30,7 @@ type Config struct {
 	// Defaults to 30 seconds.
 	SourcePollInterval time.Duration `json:"source_poll_interval" mapstructure:"source_poll_interval" yaml:"source_poll_interval"`
 
-	// EnableAudit enables audit logging for vault operations.
+	// Deprecated: audit logging is always on and this setting has no effect.
 	EnableAudit bool `json:"enable_audit" mapstructure:"enable_audit" yaml:"enable_audit"`
 
 	// GroveDatabase is the name of a grove.DB registered in the DI container.
@@ -67,6 +67,5 @@ func DefaultConfig() Config {
 	return Config{
 		FlagCacheTTL:       30 * time.Second,
 		SourcePollInterval: 30 * time.Second,
-		EnableAudit:        true,
 	}
 }
