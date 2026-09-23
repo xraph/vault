@@ -65,5 +65,7 @@ func decodeKey(raw string) ([]byte, error) {
 		return key, nil
 	}
 
-	return nil, fmt.Errorf("crypto: unable to decode key from %q (expected 32-byte hex or base64)", raw[:min(len(raw), 10)]+"...")
+	// Never echo any part of raw: this error reaches startup logs, and even
+	// a prefix of a near-valid key narrows the search for the real one.
+	return nil, fmt.Errorf("crypto: unable to decode encryption key (expected 32 bytes as hex or base64, got %d characters)", len(raw))
 }
