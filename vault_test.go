@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	log "github.com/xraph/go-utils/log"
+
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/secret"
 	"github.com/xraph/vault/store/memory"
@@ -373,5 +375,42 @@ func TestSecretsAreCiphertextAtRest(t *testing.T) {
 	}
 	if raw.EncryptionAlg != "AES-256-GCM" {
 		t.Errorf("EncryptionAlg = %q, want %q", raw.EncryptionAlg, "AES-256-GCM")
+	}
+}
+
+// A library caller who passes a logger must hear about the plaintext
+// fallback, including when the env var they named is unset.
+func TestNewWarnsWhenItFallsBackToPlaintext(t *testing.T) {
+	logger, ok := log.NewTestLogger().(*log.TestLogger)
+	if !ok {
+		t.Fatal("NewTestLogger did not return a *TestLogger")
+	}
+	if _, err := vault.New(
+		vault.WithStore(memory.New()),
+		vault.WithLogger(logger),
+		vault.WithEncryptionKeyEnv("VAULT_TEST_KEY_DEFINITELY_UNSET"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !logger.AssertHasLog("WARN", "vault: no encryption key configured; secrets will be stored unencrypted") {
+		t.Errorf("no plaintext fallback warning was logged; got %+v", logger.GetLogs())
+	}
+}
+
+func TestNewDoesNotWarnWithAKey(t *testing.T) {
+	key, _ := hex.DecodeString(testKeyHex)
+	logger, ok := log.NewTestLogger().(*log.TestLogger)
+	if !ok {
+		t.Fatal("NewTestLogger did not return a *TestLogger")
+	}
+	if _, err := vault.New(
+		vault.WithStore(memory.New()),
+		vault.WithLogger(logger),
+		vault.WithEncryptionKey(key),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if n := logger.CountLogs("WARN"); n != 0 {
+		t.Errorf("got %d warnings with a valid key, want 0: %+v", n, logger.GetLogs())
 	}
 }

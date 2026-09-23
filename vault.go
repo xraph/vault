@@ -62,6 +62,12 @@ func New(opts ...Option) (*Vault, error) {
 		return nil, err
 	}
 	v.encryptor = enc
+	if enc == nil {
+		// Library callers get no other signal that secrets are about to be
+		// stored in the clear, including one whose key env var is unset.
+		v.logger.Warn("vault: no encryption key configured; secrets will be stored unencrypted",
+			log.String("encryption_key_env", v.config.EncryptionKeyEnv))
+	}
 
 	// The audit logger first: the secret service's hooks take it.
 	v.auditLog = audit.NewLogger(v.store, audit.WithLogger(v.logger))
