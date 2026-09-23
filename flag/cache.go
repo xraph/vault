@@ -21,11 +21,22 @@ type cacheEntry struct {
 // can change a result must be in the key: without appID the same flag key in
 // two apps shared results, and without userID a user-targeted rule's result
 // was served to every other user of the tenant until the TTL expired.
+//
+// gen is a cache-wide generation counter. invalidate and invalidateAll bump
+// it under the write lock. Evaluate reads it before it reads the store and
+// writes its result through setIfGen, which stores nothing if the counter
+// moved in between. Without it, an evaluation that read a flag just before a
+// writer changed it and called Invalidate would cache the old value after
+// the Invalidate, and that value would outlive the change for a full TTL.
+// The counter is shared by every flag, so an Invalidate on one flag also
+// stops in-flight evaluations of other flags from caching. That costs a few
+// cache misses, never a wrong answer.
 type evaluationCache struct {
 	mu         sync.RWMutex
 	entries    map[string]cacheEntry
 	ttl        time.Duration
 	maxEntries int
+	gen        uint64
 }
 
 // newEvaluationCache creates a cache with the given TTL and entry cap.
@@ -71,6 +82,34 @@ func (c *evaluationCache) set(flagKey, appID, tenantID, userID string, value any
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.putLocked(flagKey, appID, tenantID, userID, value)
+}
+
+// generation returns the current generation. Read it before reading the
+// store, and pass it to setIfGen with the result.
+func (c *evaluationCache) generation() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.gen
+}
+
+// setIfGen stores value like set, but only if no invalidate or
+// invalidateAll ran since gen was read. A result computed from a store read
+// that an Invalidate has since overtaken is dropped, not cached.
+func (c *evaluationCache) setIfGen(flagKey, appID, tenantID, userID string, value any, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.gen != gen {
+		return
+	}
+	c.putLocked(flagKey, appID, tenantID, userID, value)
+}
+
+// putLocked does the work of set and setIfGen. The caller holds c.mu for
+// writing.
+func (c *evaluationCache) putLocked(flagKey, appID, tenantID, userID string, value any) {
 	if len(c.entries) >= c.maxEntries {
 		now := time.Now()
 		for k, e := range c.entries {
@@ -94,6 +133,8 @@ func (c *evaluationCache) invalidate(flagKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.gen++
+
 	prefix := flagKey + "\x00"
 	for k := range c.entries {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
@@ -106,6 +147,8 @@ func (c *evaluationCache) invalidate(flagKey string) {
 func (c *evaluationCache) invalidateAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	c.gen++
 
 	c.entries = make(map[string]cacheEntry)
 }

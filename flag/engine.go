@@ -105,10 +105,14 @@ func (e *Engine) Evaluate(ctx context.Context, key, appID string) (any, error) {
 	tenantID := contextString(ctx, ContextKeyTenantID)
 	userID := contextString(ctx, ContextKeyUserID)
 
+	// gen is read before the store is, so an Invalidate that lands while
+	// this evaluation is in flight stops it caching what it read.
+	var gen uint64
 	if e.cache != nil {
 		if val, ok := e.cache.get(key, appID, tenantID, userID); ok {
 			return val, nil
 		}
+		gen = e.cache.generation()
 	}
 
 	d, err := e.evaluate(ctx, key, appID, false)
@@ -118,7 +122,7 @@ func (e *Engine) Evaluate(ctx context.Context, key, appID string) (any, error) {
 	// A disabled flag was never cached before, and still is not: flipping
 	// Enabled must take effect immediately rather than after the TTL.
 	if d.Reason != ReasonDisabled {
-		e.cacheSet(key, appID, tenantID, userID, d.Value)
+		e.cacheSetIfGen(key, appID, tenantID, userID, d.Value, gen)
 	}
 	return d.Value, nil
 }
@@ -320,16 +324,18 @@ func (e *Engine) evalSchedule(rule *Rule) bool {
 	return true
 }
 
-func (e *Engine) cacheSet(key, appID, tenantID, userID string, val any) {
+func (e *Engine) cacheSetIfGen(key, appID, tenantID, userID string, val any, gen uint64) {
 	if e.cache != nil {
-		e.cache.set(key, appID, tenantID, userID, val)
+		e.cache.setIfGen(key, appID, tenantID, userID, val, gen)
 	}
 }
 
 // Invalidate drops every cached evaluation for a flag, across apps, tenants
 // and users. Call it after changing a flag's definition, rules or tenant
 // overrides so Evaluate callers see the change now rather than after the TTL.
-// It is a no-op when the engine has no cache.
+// An Evaluate that was already in flight when Invalidate ran may still return
+// the old value to its own caller, but it does not cache it. It is a no-op
+// when the engine has no cache.
 func (e *Engine) Invalidate(flagKey string) {
 	if e.cache != nil {
 		e.cache.invalidate(flagKey)

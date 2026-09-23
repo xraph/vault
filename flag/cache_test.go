@@ -249,3 +249,40 @@ func TestCacheMaxEntriesOptionOrderIndependent(t *testing.T) {
 		t.Errorf("TTL-then-maxEntries: got maxEntries %d, want 50", ttlFirst.cache.maxEntries)
 	}
 }
+
+// An evaluation reads the generation before it reads the store. If an
+// invalidate lands before it writes its result back, that result came from
+// a store read the invalidate has overtaken, so setIfGen must drop it. The
+// generation is driven directly here, so the interleaving is exact and the
+// test cannot pass or fail on timing.
+func TestInvalidateWinsAgainstAnInFlightEvaluate(t *testing.T) {
+	c := newEvaluationCache(time.Hour, 10)
+
+	// invalidate: a stale generation stores nothing.
+	stale := c.generation()
+	c.invalidate("flag1")
+	c.setIfGen("flag1", "app", "t", "u", "old", stale)
+	if _, ok := c.entries[cacheKey("flag1", "app", "t", "u")]; ok {
+		t.Fatal("setIfGen stored a value read before invalidate ran")
+	}
+	if _, ok := c.get("flag1", "app", "t", "u"); ok {
+		t.Fatal("get hit on a value read before invalidate ran")
+	}
+
+	// invalidateAll moves the generation too.
+	stale = c.generation()
+	c.invalidateAll()
+	c.setIfGen("flag1", "app", "t", "u", "old", stale)
+	if len(c.entries) != 0 {
+		t.Fatalf("setIfGen stored a value read before invalidateAll ran: %d entries", len(c.entries))
+	}
+
+	// With nothing in between, the same call stores the value. Without
+	// this, a setIfGen that never stored anything would pass the checks
+	// above.
+	current := c.generation()
+	c.setIfGen("flag1", "app", "t", "u", "new", current)
+	if val, ok := c.get("flag1", "app", "t", "u"); !ok || val != "new" {
+		t.Fatalf("get = %v, %v; want %q, true for a generation nothing overtook", val, ok, "new")
+	}
+}
