@@ -18,7 +18,8 @@
 //	if err != nil { ... }
 //
 //	// Secrets
-//	secret, _ := v.Secrets().Get(ctx, "openai_api_key")
+//	// An empty appID uses the one configured with WithAppID.
+//	secret, err := v.Secrets().Get(ctx, "openai_api_key", "")
 //
 //	// Feature flags
 //	enabled := v.Flags().Bool(ctx, "new_dashboard", false)

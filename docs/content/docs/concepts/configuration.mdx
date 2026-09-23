@@ -3,7 +3,14 @@ title: Configuration
 description: Configuring a Vault instance.
 ---
 
-The root `vault` package defines the `Config` struct, `DefaultConfig()` defaults, and `Option` functions for configuring a Vault instance. The `Storer` interface defines the minimal contract for store backends at the root level.
+The root `vault` package defines the `Config` struct, `DefaultConfig()` defaults, and the `Option` functions you pass to `vault.New`. You need a store and nothing else; every other option has a default.
+
+```go
+v, err := vault.New(
+    vault.WithStore(memory.New()),
+    vault.WithAppID("myapp"),
+)
+```
 
 ## vault.Config
 
@@ -56,7 +63,7 @@ cfg := vault.DefaultConfig()
 
 ## Option functions
 
-`Option` is a function type that configures a `Vault` instance. Options are passed to the `Vault` constructor.
+`Option` is a function type that configures a `Vault` instance. You pass options to `vault.New`, which applies them in order.
 
 ```go
 type Option func(*Vault)
@@ -66,31 +73,46 @@ type Option func(*Vault)
 
 | Option | Signature | Description |
 |--------|-----------|-------------|
+| `WithStore` | `WithStore(s store.Store) Option` | Sets the store backend. Required: `New` returns `ErrNoStore` without one. |
 | `WithAppID` | `WithAppID(appID string) Option` | Sets the application identifier used for scoping. |
 | `WithEncryptionKey` | `WithEncryptionKey(key []byte) Option` | Sets the 32-byte AES-256-GCM master encryption key. |
 | `WithEncryptionKeyEnv` | `WithEncryptionKeyEnv(envVar string) Option` | Sets the environment variable name for the encryption key. |
-| `WithLogger` | `WithLogger(l *slog.Logger) Option` | Sets the structured logger for internal events. |
-| `WithConfig` | `WithConfig(cfg Config) Option` | Sets the entire configuration directly, overriding defaults. |
+| `WithLogger` | `WithLogger(l log.Logger) Option` | Sets the structured logger (`github.com/xraph/go-utils/log`) for internal events. |
+| `WithConfig` | `WithConfig(cfg Config) Option` | Overlays `cfg` onto the current configuration. Non-zero fields override; zero fields leave what earlier options set. |
 
 ### Usage
 
 ```go
 import (
-    "log/slog"
     "github.com/xraph/vault"
+    "github.com/xraph/vault/store/memory"
 )
 
-v := &vault.Vault{}
-opts := []vault.Option{
+v, err := vault.New(
+    vault.WithStore(memory.New()),
     vault.WithAppID("myapp"),
     vault.WithEncryptionKey([]byte("my-32-byte-secret-key-for-vault!")),
-    vault.WithLogger(slog.Default()),
-}
-
-for _, opt := range opts {
-    opt(v)
+)
+if err != nil {
+    return err
 }
 ```
+
+`New` fails if you leave out the store, or if you give it a key that isn't a valid 32-byte key. It doesn't fail when no key is configured at all. In that case secrets are stored unencrypted and `New` logs a warning through your logger, so you'll want a key in anything past local development.
+
+### Combining WithConfig with other options
+
+`WithConfig` copies only the non-zero fields of the `Config` you give it. A field you leave at its zero value keeps whatever an earlier option or `DefaultConfig()` set, so you can put `WithConfig` before or after `WithAppID` and `WithEncryptionKey` and both still hold:
+
+```go
+v, err := vault.New(
+    vault.WithStore(s),
+    vault.WithEncryptionKey(key),
+    vault.WithConfig(vault.Config{FlagCacheTTL: time.Minute}), // key is kept
+)
+```
+
+This also means `WithConfig` can't clear a field. Passing an empty `AppID` leaves the current one in place.
 
 ### Loading the encryption key from an environment variable
 
@@ -109,18 +131,9 @@ key, err := provider.GetKey(ctx)
 
 The provider auto-detects hex encoding (64 characters = 32 bytes) and base64 encoding (standard, URL-safe, or raw/no-padding).
 
-## Storer interface
+## The store
 
-The root `vault` package defines a minimal `Storer` interface to avoid import cycles. The full `store.Store` interface in the `store` package composes all subsystem store interfaces.
-
-```go
-type Storer interface {
-    Ping(ctx interface{ Deadline() (interface{}, bool) }) error
-    Close() error
-}
-```
-
-The `store.Store` interface (in `github.com/xraph/vault/store`) extends this with the full set of subsystem interfaces:
+`WithStore` takes a `store.Store` from `github.com/xraph/vault/store`. It composes every subsystem's store interface, and `vault.New` hands that one store to all six services:
 
 ```go
 type Store interface {
@@ -137,11 +150,11 @@ type Store interface {
 }
 ```
 
-All three backends (`memory`, `postgres`, `grovestore`) implement this composite interface.
+The `memory`, `postgres`, `sqlite` and `mongo` backends all implement it. `v.Store()` gives you back the store you passed in, and `v.Health(ctx)` pings it.
 
 ## Per-service configuration
 
-Each service package defines its own option functions for service-level configuration. These are independent of the root `vault.Option` functions.
+`vault.New` builds every service below for you. You only need these option functions if you're composing the services yourself without `New`. They're independent of the root `vault.Option` functions.
 
 ### secret.ServiceOption
 
