@@ -1,7 +1,10 @@
 package flag_test
 
 import (
+	"context"
+	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,5 +204,43 @@ func TestDetailTraceFollowsPriorityOrder(t *testing.T) {
 	}
 	if len(d.Trace) == 0 || d.Trace[0].Priority != 0 {
 		t.Errorf("trace starts at priority %v, want 0", d.Trace)
+	}
+}
+
+// Trace must marshal as [] on every path, never null: a client iterating
+// it should not need a nil check that only the disabled and override paths
+// would ever exercise.
+func TestDetailTraceIsNeverNull(t *testing.T) {
+	s := memory.New()
+	defineFlag(t, s, "off", false, false)
+	defineFlag(t, s, "ov", false, true)
+	if err := s.SetFlagTenantOverride(bg(), "ov", testApp, "t-1", true); err != nil {
+		t.Fatal(err)
+	}
+	e := flag.NewEngine(s)
+
+	cases := []struct {
+		name, key string
+		ctx       context.Context
+		reason    string
+	}{
+		{"disabled", "off", bg(), flag.ReasonDisabled},
+		{"tenant override", "ov", withTenant("t-1"), flag.ReasonTenantOverride},
+	}
+	for _, c := range cases {
+		d, err := e.EvaluateDetail(c.ctx, c.key, testApp)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if d.Reason != c.reason {
+			t.Fatalf("%s: reason %q, want %q", c.name, d.Reason, c.reason)
+		}
+		b, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), `"trace":[]`) {
+			t.Errorf("%s: JSON %s does not contain \"trace\":[]", c.name, b)
+		}
 	}
 }

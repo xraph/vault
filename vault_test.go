@@ -12,6 +12,10 @@ import (
 	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/audit"
+	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/id"
+	"github.com/xraph/vault/override"
 	"github.com/xraph/vault/secret"
 	"github.com/xraph/vault/store/memory"
 )
@@ -413,4 +417,78 @@ func TestNewDoesNotWarnWithAKey(t *testing.T) {
 	if n := logger.CountLogs("WARN"); n != 0 {
 		t.Errorf("got %d warnings with a valid key, want 0: %+v", n, logger.GetLogs())
 	}
+}
+
+// Config reads must go through the override resolver, which is what
+// config.WithResolver wires. Without it the app-level value comes back and
+// the tenant override is silently ignored.
+//
+// The tenant goes on the context under override.ContextKeyTenantID rather
+// than through scope.WithTenantID: the two keys share a string but not a
+// type, so the resolver cannot see a tenant set through scope.
+func TestConfigReadsHonourTenantOverrides(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	if err := s.SetConfig(ctx, &config.Entry{
+		Entity:    vault.NewEntity(),
+		ID:        id.NewConfigID(),
+		Key:       "rate_limit",
+		Value:     100,
+		ValueType: "int",
+		AppID:     "app1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetOverride(ctx, &override.Override{
+		Entity:   vault.NewEntity(),
+		ID:       id.NewOverrideID(),
+		Key:      "rate_limit",
+		Value:    500,
+		AppID:    "app1",
+		TenantID: "t-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := v.Config().Int(ctx, "rate_limit", 0); got != 100 {
+		t.Fatalf("no tenant: got %d, want the app-level 100", got)
+	}
+	tctx := context.WithValue(ctx, override.ContextKeyTenantID, "t-1")
+	if got := v.Config().Int(tctx, "rate_limit", 0); got != 500 {
+		t.Errorf("tenant t-1: got %d, want the override 500", got)
+	}
+}
+
+// Reading a secret must write an audit entry attributed to its app. That
+// is the OnAccess hook; without it only mutations are audited.
+func TestSecretReadsWriteAnAttributedAuditEntry(t *testing.T) {
+	key, _ := hex.DecodeString(testKeyHex)
+	s := memory.New()
+	v, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"), vault.WithEncryptionKey(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, setErr := v.Secrets().Set(ctx, "api_key", []byte("s3cret"), "app1"); setErr != nil {
+		t.Fatal(setErr)
+	}
+	if _, getErr := v.Secrets().Get(ctx, "api_key", "app1"); getErr != nil {
+		t.Fatal(getErr)
+	}
+
+	entries, err := s.ListAudit(ctx, "app1", audit.ListOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Action == "secret.get" && e.AppID == "app1" {
+			return
+		}
+	}
+	t.Errorf("no secret.get audit entry for app1 among %d entries", len(entries))
 }

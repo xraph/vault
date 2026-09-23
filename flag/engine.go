@@ -120,15 +120,22 @@ func (e *Engine) evaluate(ctx context.Context, key, appID string, withTrace bool
 		return Detail{}, err
 	}
 
+	// An explained evaluation always carries a trace, empty on the paths
+	// that consult no rules, so it marshals as [] and never as null.
+	var trace []TraceStep
+	if withTrace {
+		trace = []TraceStep{}
+	}
+
 	// Disabled: the default, and nothing below is consulted at all.
 	if !def.Enabled {
-		return Detail{Value: def.DefaultValue, Reason: ReasonDisabled}, nil
+		return Detail{Value: def.DefaultValue, Reason: ReasonDisabled, Trace: trace}, nil
 	}
 
 	if tenantID != "" {
 		overrideVal, oErr := e.store.GetFlagTenantOverride(ctx, key, appID, tenantID)
 		if oErr == nil {
-			return Detail{Value: overrideVal, Reason: ReasonTenantOverride}, nil
+			return Detail{Value: overrideVal, Reason: ReasonTenantOverride, Trace: trace}, nil
 		}
 		if !errors.Is(oErr, core.ErrOverrideNotFound) {
 			return Detail{}, oErr
@@ -140,7 +147,6 @@ func (e *Engine) evaluate(ctx context.Context, key, appID string, withTrace bool
 		return Detail{}, err
 	}
 
-	var trace []TraceStep
 	if withTrace {
 		trace = make([]TraceStep, 0, len(rules))
 	}
