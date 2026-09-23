@@ -144,10 +144,11 @@ func TestCountFlagsPerAppWithIdentityAssertion(t *testing.T) {
 // blank scope with the whole table, a list handler that fails to resolve a
 // tenant would hand one caller every tenant's secrets. Assert on identity,
 // because a count assertion passes when the wrong rows arrive in the right
-// quantity.
+// quantity. One row really is scoped to "", so a backend that answers a
+// blank scope with nothing at all fails here too.
 func TestEmptyAppIDMatchesOnlyEmptyScopedRows(t *testing.T) {
 	s := testStore(t)
-	for _, app := range []string{"a", "b"} {
+	for _, app := range []string{"a", "b", ""} {
 		if err := s.SetSecret(bg(), &secret.Secret{
 			Entity: core.NewEntity(), ID: id.NewSecretID(),
 			Key: "k-" + app, AppID: app, EncryptedValue: []byte("x"),
@@ -160,18 +161,19 @@ func TestEmptyAppIDMatchesOnlyEmptyScopedRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("empty appID counted %d rows, want 0; a blank scope must not match every row", n)
+	if n != 1 {
+		t.Errorf("empty appID counted %d rows, want 1: only the row scoped to \"\" may match", n)
 	}
 
 	list, err := s.ListSecrets(bg(), "", secret.ListOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range list {
-		if m.AppID != "" {
-			t.Errorf("empty appID returned a row scoped to %q", m.AppID)
-		}
+	if len(list) != 1 {
+		t.Fatalf("empty appID listed %d rows, want exactly 1", len(list))
+	}
+	if list[0].Key != "k-" || list[0].AppID != "" {
+		t.Errorf("empty appID listed {Key: %q, AppID: %q}, want {Key: %q, AppID: \"\"}", list[0].Key, list[0].AppID, "k-")
 	}
 }
 

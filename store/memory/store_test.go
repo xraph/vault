@@ -132,6 +132,16 @@ func TestMemoryStoreDoesNotPersistValue(t *testing.T) {
 	if string(got.EncryptedValue) != "encrypted-data" {
 		t.Errorf("EncryptedValue = %q, want %q", got.EncryptedValue, "encrypted-data")
 	}
+
+	// A version read goes through the same stored copy, so it must not carry
+	// a decrypted Value either.
+	v1, err := s.GetSecretVersion(bg(), "db-password", testApp, 1)
+	if err != nil {
+		t.Fatalf("GetSecretVersion: %v", err)
+	}
+	if v1.Value != nil {
+		t.Errorf("version 1 Value = %q, want nil: a version read must not hand back a decrypted value", v1.Value)
+	}
 }
 
 func TestSecretAutoVersioning(t *testing.T) {

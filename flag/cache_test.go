@@ -186,20 +186,21 @@ func TestCacheNeverExceedsItsCap(t *testing.T) {
 // present, an implementation that dropped the sweep and always cleared on
 // cap would pass it too.
 func TestCacheSweepsExpiredBeforeClearing(t *testing.T) {
-	const ttl = 150 * time.Millisecond
-	c := newEvaluationCache(ttl, 10)
+	c := newEvaluationCache(time.Minute, 10)
 
-	// Five entries that will be left to expire.
+	// Seed the map directly, with no sleeping: five entries that expired an
+	// hour ago and five that stay live for another hour. Together they fill
+	// the cache to its cap exactly.
+	now := time.Now()
 	for i := 0; i < 5; i++ {
-		c.set("flag1", "app", "t", fmt.Sprintf("expired-%d", i), i)
-	}
-
-	time.Sleep(400 * time.Millisecond) // comfortably past ttl: the five above are now expired
-
-	// Five more entries, set only now, so they are still live. Together
-	// with the five expired ones above, this fills the cache to its cap.
-	for i := 0; i < 5; i++ {
-		c.set("flag1", "app", "t", fmt.Sprintf("live-%d", i), i)
+		c.entries[cacheKey("flag1", "app", "t", fmt.Sprintf("expired-%d", i))] = cacheEntry{
+			value:     i,
+			expiresAt: now.Add(-time.Hour),
+		}
+		c.entries[cacheKey("flag1", "app", "t", fmt.Sprintf("live-%d", i))] = cacheEntry{
+			value:     i,
+			expiresAt: now.Add(time.Hour),
+		}
 	}
 	if len(c.entries) != 10 {
 		t.Fatalf("len(entries) = %d, want 10 (5 expired + 5 live) before the triggering set", len(c.entries))
