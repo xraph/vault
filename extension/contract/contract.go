@@ -81,6 +81,21 @@ func Register(
 		{"secrets.delete", func() error {
 			return dispatcher.RegisterCommand(d, c, "secrets.delete", 1, secretsDeleteHandler(deps))
 		}},
+		{"rotation.policies", func() error {
+			return dispatcher.RegisterQuery(d, c, "rotation.policies", 1, rotationPoliciesHandler(deps))
+		}},
+		{"rotation.detail", func() error {
+			return dispatcher.RegisterQuery(d, c, "rotation.detail", 1, rotationDetailHandler(deps))
+		}},
+		{"rotation.savePolicy", func() error {
+			return dispatcher.RegisterCommand(d, c, "rotation.savePolicy", 1, rotationSavePolicyHandler(deps))
+		}},
+		{"rotation.deletePolicy", func() error {
+			return dispatcher.RegisterCommand(d, c, "rotation.deletePolicy", 1, rotationDeletePolicyHandler(deps))
+		}},
+		{"rotation.rotateNow", func() error {
+			return dispatcher.RegisterCommand(d, c, "rotation.rotateNow", 1, rotationRotateNowHandler(deps))
+		}},
 	} {
 		if err := bind.fn(); err != nil {
 			return fmt.Errorf("vault/contract: register %s: %w", bind.intent, err)

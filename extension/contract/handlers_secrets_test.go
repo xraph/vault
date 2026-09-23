@@ -559,6 +559,35 @@ func TestSecretsDelete_NoPolicyIsFine(t *testing.T) {
 	}
 }
 
+// TestSecretsDelete_OrphanedPolicyCleanedUpOnRetry covers the case where a
+// rotation policy exists for a key whose secret is already gone (as a
+// previous delete's policy cleanup could have failed and left behind). The
+// retry must still remove the orphaned policy before it reports the
+// secret's own NOT_FOUND, or the policy can never be cleaned up: any later
+// retry hits the same secret NOT_FOUND and never reaches
+// DeleteRotationPolicy again.
+func TestSecretsDelete_OrphanedPolicyCleanedUpOnRetry(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	const key = "orphaned"
+
+	policy := &rotation.Policy{
+		Entity: vault.NewEntity(), ID: id.NewRotationID(), SecretKey: key, AppID: testAppID,
+		Interval: 24 * time.Hour, Enabled: true,
+	}
+	if err := st.SaveRotationPolicy(ctx, policy); err != nil {
+		t.Fatalf("seed orphaned policy: %v", err)
+	}
+
+	_, err := secretsDeleteHandler(Deps{Vault: v})(ctx, secretsDeleteRequest{Key: key}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeNotFound {
+		t.Fatalf("delete of a key with an orphaned policy but no secret: code %q, err %v; want NOT_FOUND", code, err)
+	}
+	if _, polErr := st.GetRotationPolicy(ctx, key, testAppID); !errors.Is(polErr, vault.ErrRotationNotFound) {
+		t.Errorf("orphaned rotation policy still exists after the retry: %v", polErr)
+	}
+}
+
 func TestSecretsDelete_MissingKeyIsNotFound(t *testing.T) {
 	v, _ := newTestVault(t)
 	_, err := secretsDeleteHandler(Deps{Vault: v})(context.Background(), secretsDeleteRequest{Key: "nope"}, dashcontract.Principal{})
@@ -687,6 +716,11 @@ func TestNoWireTypeHasAValueField(t *testing.T) {
 		reflect.TypeOf(secretsCreateResponse{}),
 		reflect.TypeOf(secretsUpdateResponse{}),
 		reflect.TypeOf(secretsDeleteResponse{}),
+		reflect.TypeOf(rotationPoliciesResponse{}),
+		reflect.TypeOf(rotationDetailResponse{}),
+		reflect.TypeOf(rotationSavePolicyResponse{}),
+		reflect.TypeOf(rotationDeletePolicyResponse{}),
+		reflect.TypeOf(rotationRotateNowResponse{}),
 	}
 	visited := map[reflect.Type]bool{}
 	for _, rt := range responseTypes {

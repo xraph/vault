@@ -20,7 +20,12 @@ intents:
   - { name: secrets.versions, kind: query, version: 1, capability: read }
   - { name: secrets.create,   kind: command, version: 1, capability: write, invalidates: [secrets.list] }
   - { name: secrets.update,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
-  - { name: secrets.delete,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
+  - { name: secrets.delete,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions, rotation.policies, rotation.detail] }
+  - { name: rotation.policies,     kind: query, version: 1, capability: read }
+  - { name: rotation.detail,       kind: query, version: 1, capability: read }
+  - { name: rotation.savePolicy,   kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }
+  - { name: rotation.deletePolicy, kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }
+  - { name: rotation.rotateNow,    kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.list, secrets.detail, secrets.versions] }
 
 queries:
   secretsList:
@@ -31,4 +36,10 @@ queries:
     cache: { staleTime: 30s }
   secretsVersions:
     intent: secrets.versions
+    cache: { staleTime: 30s }
+  rotationPolicies:
+    intent: rotation.policies
+    cache: { staleTime: 30s }
+  rotationDetail:
+    intent: rotation.detail
     cache: { staleTime: 30s }

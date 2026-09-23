@@ -345,6 +345,13 @@ type secretsDeleteResponse struct {
 // It also removes the secret's rotation policy, if any: an orphaned policy
 // left behind would make the rotation loop fail on a missing secret every
 // minute, forever.
+//
+// That cleanup runs even when the secret itself is already gone. A delete
+// whose policy cleanup failed previously leaves an orphaned policy that a
+// retry can never reach, because the retry stops at the secret's own
+// NOT_FOUND before ever trying DeleteRotationPolicy again. So a
+// vault.ErrSecretNotFound from Secrets().Delete still gets a best-effort
+// DeleteRotationPolicy attempt before this returns NOT_FOUND.
 func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteRequest, p contract.Principal) (secretsDeleteResponse, error) {
 	return func(ctx context.Context, in secretsDeleteRequest, _ contract.Principal) (secretsDeleteResponse, error) {
 		appID := deps.Vault.AppID()
@@ -354,6 +361,15 @@ func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteR
 		}
 
 		if err := deps.Vault.Secrets().Delete(ctx, key, appID); err != nil {
+			if errors.Is(err, vault.ErrSecretNotFound) {
+				// Best-effort: this is the retry path for a policy an
+				// earlier delete's own cleanup failed to remove. NOT_FOUND
+				// for the secret is still the answer below regardless of
+				// how this turns out; a real failure here gets another
+				// chance on the next retry.
+				//nolint:errcheck // best-effort cleanup, see comment above
+				deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID)
+			}
 			return secretsDeleteResponse{}, mapError(err)
 		}
 

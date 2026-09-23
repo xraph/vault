@@ -52,6 +52,16 @@ type RotationPolicySummary struct {
 	UpdatedAt      string  `json:"updatedAt"`
 }
 
+// RotationRecordSummary is the wire projection of one completed rotation
+// event.
+type RotationRecordSummary struct {
+	ID         string `json:"id"`
+	OldVersion int64  `json:"oldVersion"`
+	NewVersion int64  `json:"newVersion"`
+	RotatedBy  string `json:"rotatedBy,omitempty"`
+	RotatedAt  string `json:"rotatedAt"`
+}
+
 // AuditSummary is the wire projection of one audit log entry, trimmed to
 // what a secret or rotation detail page shows.
 type AuditSummary struct {
@@ -123,6 +133,17 @@ func projectRotationPolicy(p *rotation.Policy, rotatable bool) RotationPolicySum
 		NextRotationAt:  next,
 		CreatedAt:       formatTime(p.CreatedAt),
 		UpdatedAt:       formatTime(p.UpdatedAt),
+	}
+}
+
+// projectRotationRecord projects a rotation.Record onto its wire type.
+func projectRotationRecord(r *rotation.Record) RotationRecordSummary {
+	return RotationRecordSummary{
+		ID:         r.ID.String(),
+		OldVersion: r.OldVersion,
+		NewVersion: r.NewVersion,
+		RotatedBy:  r.RotatedBy,
+		RotatedAt:  formatTime(r.RotatedAt),
 	}
 }
 
