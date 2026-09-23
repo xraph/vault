@@ -1,0 +1,31 @@
+schemaVersion: 1
+contributor:
+  name: vault
+  envelope:
+    supports: [v1]
+    preferred: v1
+  capabilities: [vault.read, vault.write]
+
+# No app block and no graph here: the React plugin owns routes, this
+# manifest only declares intents and their cache hints.
+#
+# No intent below, or added by a later task in this file, ever takes an
+# app id on the request. Every handler reads deps.Vault.AppID() and answers
+# for that app alone. Evaluate and resolve are a later slice and are
+# deliberately excluded; when they land, they still won't inherit tenant or
+# user from the request context.
+intents:
+  - { name: secrets.list,     kind: query, version: 1, capability: read }
+  - { name: secrets.detail,   kind: query, version: 1, capability: read }
+  - { name: secrets.versions, kind: query, version: 1, capability: read }
+
+queries:
+  secretsList:
+    intent: secrets.list
+    cache: { staleTime: 30s }
+  secretsDetail:
+    intent: secrets.detail
+    cache: { staleTime: 30s }
+  secretsVersions:
+    intent: secrets.versions
+    cache: { staleTime: 30s }

@@ -15,6 +15,8 @@ import (
 
 	"github.com/xraph/forge"
 	dashboard "github.com/xraph/forge/extensions/dashboard"
+	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
@@ -24,6 +26,7 @@ import (
 	"github.com/xraph/vault"
 	vaultconfy "github.com/xraph/vault/confy"
 	vaultdash "github.com/xraph/vault/dashboard"
+	vaultcontract "github.com/xraph/vault/extension/contract"
 	"github.com/xraph/vault/store"
 	mongostore "github.com/xraph/vault/store/mongo"
 	pgstore "github.com/xraph/vault/store/postgres"
@@ -39,10 +42,12 @@ const ExtensionDescription = "Composable secrets management, feature flags, and 
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension and dashboard.DashboardAware at compile time.
+// Ensure Extension implements forge.Extension and the dashboard awareness
+// interfaces at compile time.
 var (
-	_ forge.Extension          = (*Extension)(nil)
-	_ dashboard.DashboardAware = (*Extension)(nil)
+	_ forge.Extension                    = (*Extension)(nil)
+	_ dashboard.DashboardAware           = (*Extension)(nil)
+	_ dashboard.ContractContributorAware = (*Extension)(nil)
 )
 
 // Extension adapts Vault as a Forge extension.
@@ -230,6 +235,30 @@ func (e *Extension) Stop(ctx context.Context) error {
 func (e *Extension) Health(ctx context.Context) error {
 	if e.store != nil {
 		return e.store.Ping(ctx)
+	}
+	return nil
+}
+
+// RegisterContractContributor implements dashboard.ContractContributorAware.
+// It registers the vault contract contributor, which is what the React
+// shell reads. The templ LocalContributor below is unaffected, and both run
+// side by side until the templ dashboard is retired.
+func (e *Extension) RegisterContractContributor(
+	disp *dispatcher.Dispatcher,
+	reg dashcontract.Registry,
+	wreg dashcontract.WardenRegistry,
+) error {
+	if e.v == nil {
+		// Nothing to wire yet. A quiet skip, not a panic that takes the
+		// dashboard down with it. The logger may not exist either on an
+		// extension that was never registered.
+		if logger := e.Logger(); logger != nil {
+			logger.Warn("vault: not initialised; skipping contract contributor registration")
+		}
+		return nil
+	}
+	if err := vaultcontract.Register(disp, reg, wreg, vaultcontract.Deps{Vault: e.v}); err != nil {
+		return fmt.Errorf("vault: register contract contributor: %w", err)
 	}
 	return nil
 }
