@@ -94,12 +94,14 @@ func TestBuildVaultWithoutAStoreSaysHowToConfigureOne(t *testing.T) {
 	}
 }
 
-// TestStartStopRunsTheRotationLoopWithoutHanging pins that the extension's
-// Start begins the rotation manager's loop and Stop stops it cleanly.
-// Nothing in the repository ever called rotation.Manager.Start before this
-// fix, so a policy's scheduled rotation never ran. The test is bounded so a
+// TestStartAndStopReturnPromptly proves only what it says: the extension's
+// Start and Stop, which now delegate to the rotation manager's loop,
+// return without hanging. It does not and cannot prove the loop ever runs
+// a rotation, since it passes whether or not that loop actually starts;
+// rotation.TestScheduledRotationRunsWhileStarted is the test that proves
+// scheduled rotation really fires. The test here is bounded so a
 // regression that makes Stop hang fails the test instead of the suite.
-func TestStartStopRunsTheRotationLoopWithoutHanging(t *testing.T) {
+func TestStartAndStopReturnPromptly(t *testing.T) {
 	e := &Extension{
 		BaseExtension: forge.NewBaseExtension(ExtensionName, ExtensionVersion, ExtensionDescription),
 		store:         memory.New(),

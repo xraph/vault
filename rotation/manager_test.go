@@ -285,6 +285,48 @@ func TestScheduledRotationFires(t *testing.T) {
 	}
 }
 
+// TestScheduledRotationRunsWhileStarted is the Manager-level proof that
+// Start actually runs the rotation loop, not just that Start and Stop
+// return without hanging. It polls up to 2s for the secret's version to
+// increment rather than sleeping a fixed duration, so it fails cleanly if
+// the loop never runs instead of only being fast when it does.
+func TestScheduledRotationRunsWhileStarted(t *testing.T) {
+	s := memory.New()
+	svc := setupSecretService(t, s)
+	seedSecret(t, svc, "loop-key", []byte("v1"))
+
+	past := time.Now().UTC().Add(-1 * time.Hour)
+	seedPolicy(t, s, "loop-key", 1*time.Hour, past)
+
+	mgr := rotation.NewManager(s, svc,
+		rotation.WithAppID(testApp),
+		rotation.WithCheckInterval(5*time.Millisecond),
+	)
+	mgr.RegisterRotator("loop-key", func(_ context.Context, _ []byte) ([]byte, error) {
+		return []byte("v2"), nil
+	})
+
+	if err := mgr.Start(bg()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Stop(bg()) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		sec, err := svc.Get(bg(), "loop-key", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sec.Version == 2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scheduled rotation did not run within 2s; version is still %d", sec.Version)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestStopCancelsGoroutineCleanly(t *testing.T) {
 	s := memory.New()
 	svc := setupSecretService(t, s)

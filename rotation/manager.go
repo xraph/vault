@@ -45,8 +45,13 @@ type Manager struct {
 	mu       sync.RWMutex
 	rotators map[string]Rotator // secretKey → rotator
 
-	cancel context.CancelFunc
-	done   chan struct{}
+	// lifecycleMu guards running, cancel and done. It is separate from mu,
+	// which only ever guards the rotators map, so a Start or Stop call
+	// never contends with a RegisterRotator or RotateNow lookup.
+	lifecycleMu sync.Mutex
+	running     bool
+	cancel      context.CancelFunc
+	done        chan struct{}
 }
 
 // NewManager creates a rotation manager.
@@ -90,25 +95,49 @@ func (m *Manager) RotatorKeys() []string {
 	return keys
 }
 
-// Start begins the background rotation check loop.
-// The loop runs until Stop is called or the context is cancelled.
+// Start begins the background rotation check loop. The loop runs until
+// Stop is called or the context is cancelled.
+//
+// Start is idempotent: calling it while a loop is already running is a
+// no-op, because starting a second loop would overwrite the cancel func
+// and done channel that reach the first one, orphaning its goroutine with
+// nothing left able to cancel it. Call Stop first to restart the loop.
 func (m *Manager) Start(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	m.cancel = cancel
-	m.done = make(chan struct{})
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 
-	go m.loop(ctx)
+	if m.running {
+		return nil
+	}
+
+	loopCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	m.cancel = cancel
+	m.done = done
+	m.running = true
+
+	go m.loop(loopCtx, done)
 	return nil
 }
 
-// Stop cancels the background loop and waits for it to finish.
+// Stop cancels the background loop and waits for it to finish. It is safe
+// to call without a prior Start, and safe to call more than once: the
+// second call sees running already false and returns immediately.
 func (m *Manager) Stop(_ context.Context) error {
-	if m.cancel != nil {
-		m.cancel()
+	m.lifecycleMu.Lock()
+	if !m.running {
+		m.lifecycleMu.Unlock()
+		return nil
 	}
-	if m.done != nil {
-		<-m.done
-	}
+	cancel := m.cancel
+	done := m.done
+	m.running = false
+	m.cancel = nil
+	m.done = nil
+	m.lifecycleMu.Unlock()
+
+	cancel()
+	<-done
 	return nil
 }
 
@@ -185,9 +214,12 @@ func (m *Manager) RotateNow(ctx context.Context, secretKey, appID string) error 
 	return nil
 }
 
-// loop periodically checks for due rotations.
-func (m *Manager) loop(ctx context.Context) {
-	defer close(m.done)
+// loop periodically checks for due rotations. done is the channel Start
+// created for this run; it is passed in rather than read from the Manager
+// field so that closing it can never race with a later Start or Stop
+// reassigning that field.
+func (m *Manager) loop(ctx context.Context, done chan struct{}) {
+	defer close(done)
 
 	ticker := time.NewTicker(m.checkInterval)
 	defer ticker.Stop()
