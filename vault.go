@@ -3,7 +3,6 @@ package vault
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	log "github.com/xraph/go-utils/log"
 
@@ -43,7 +42,9 @@ type Vault struct {
 // as given, which is the documented behaviour for development. A key that is
 // present but cannot be decoded IS an error, because silently falling back
 // there would store secrets in the clear while the caller believes they are
-// encrypted.
+// encrypted. The same holds for a named key env var that is missing or
+// empty: naming the variable is a statement of intent, so New refuses to
+// start rather than writing plaintext the caller thinks is encrypted.
 func New(opts ...Option) (*Vault, error) {
 	v := &Vault{
 		config: DefaultConfig(),
@@ -64,7 +65,7 @@ func New(opts ...Option) (*Vault, error) {
 	v.encryptor = enc
 	if enc == nil {
 		// Library callers get no other signal that secrets are about to be
-		// stored in the clear, including one whose key env var is unset.
+		// stored in the clear when no key is configured at all.
 		v.logger.Warn("vault: no encryption key configured; secrets will be stored unencrypted",
 			log.String("encryption_key_env", v.config.EncryptionKeyEnv))
 	}
@@ -110,13 +111,10 @@ func buildEncryptor(cfg Config) (*crypto.Encryptor, error) {
 		provider := crypto.NewEnvKeyProvider(cfg.EncryptionKeyEnv)
 		fromEnv, err := provider.GetKey(context.Background())
 		if err != nil {
-			// An unset variable means "no key configured", which is the
-			// fallback. Anything else means the operator meant to configure
-			// one and it is broken, which must not be silent.
-			if isUnsetEnv(err) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("vault: encryption key from %s: %w", cfg.EncryptionKeyEnv, err)
+			// Naming the variable is a statement of intent: a missing,
+			// empty, or undecodable value is a deployment mistake to
+			// surface now, not permission to fall back to plaintext.
+			return nil, fmt.Errorf("vault: encryption_key_env names %s but it holds no usable key: %w", cfg.EncryptionKeyEnv, err)
 		}
 		key = fromEnv
 	}
@@ -130,13 +128,6 @@ func buildEncryptor(cfg Config) (*crypto.Encryptor, error) {
 		return nil, fmt.Errorf("vault: encryption key: %w", err)
 	}
 	return enc, nil
-}
-
-// isUnsetEnv reports whether err is EnvKeyProvider's "empty or not set".
-// The provider returns a formatted error rather than a sentinel, so this
-// matches on the text it produces.
-func isUnsetEnv(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "is empty or not set")
 }
 
 // EncryptionEnabled reports whether secrets are encrypted at rest.

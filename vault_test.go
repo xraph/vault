@@ -111,17 +111,30 @@ func TestNewWithAnUndecodableKeyEnvIsAnError(t *testing.T) {
 	}
 }
 
-// An env var that is not set at all is the same case as no key: fall back.
-func TestNewWithAnUnsetKeyEnvFallsBack(t *testing.T) {
-	v, err := vault.New(
+// Naming an env var is a statement of intent, so a variable that is named
+// but never set must refuse to start rather than fall back to plaintext.
+func TestNewWithANamedButUnsetKeyEnvIsAnError(t *testing.T) {
+	if _, err := vault.New(
 		vault.WithStore(memory.New()),
 		vault.WithEncryptionKeyEnv("VAULT_TEST_KEY_DEFINITELY_UNSET"),
-	)
-	if err != nil {
-		t.Fatalf("an unset env var should fall back, not error: %v", err)
+	); err == nil {
+		t.Error("expected an error for a named but unset key env, got nil")
+	} else if !strings.Contains(err.Error(), "VAULT_TEST_KEY_DEFINITELY_UNSET") {
+		t.Errorf("error does not name the variable: %v", err)
 	}
-	if v.EncryptionEnabled() {
-		t.Error("EncryptionEnabled() is true with an unset env var")
+}
+
+// An env var that is named but set to the empty string is the same
+// deployment mistake as leaving it unset: it must also error.
+func TestNewWithANamedButEmptyKeyEnvIsAnError(t *testing.T) {
+	t.Setenv("VAULT_TEST_KEY_EMPTY", "")
+	if _, err := vault.New(
+		vault.WithStore(memory.New()),
+		vault.WithEncryptionKeyEnv("VAULT_TEST_KEY_EMPTY"),
+	); err == nil {
+		t.Error("expected an error for a named but empty key env, got nil")
+	} else if !strings.Contains(err.Error(), "VAULT_TEST_KEY_EMPTY") {
+		t.Errorf("error does not name the variable: %v", err)
 	}
 }
 
@@ -383,7 +396,7 @@ func TestSecretsAreCiphertextAtRest(t *testing.T) {
 }
 
 // A library caller who passes a logger must hear about the plaintext
-// fallback, including when the env var they named is unset.
+// fallback when no key is configured at all.
 func TestNewWarnsWhenItFallsBackToPlaintext(t *testing.T) {
 	logger, ok := log.NewTestLogger().(*log.TestLogger)
 	if !ok {
@@ -392,7 +405,6 @@ func TestNewWarnsWhenItFallsBackToPlaintext(t *testing.T) {
 	if _, err := vault.New(
 		vault.WithStore(memory.New()),
 		vault.WithLogger(logger),
-		vault.WithEncryptionKeyEnv("VAULT_TEST_KEY_DEFINITELY_UNSET"),
 	); err != nil {
 		t.Fatal(err)
 	}
