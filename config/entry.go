@@ -4,13 +4,13 @@ package config
 import (
 	"time"
 
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 )
 
 // Entry represents a runtime configuration entry.
 type Entry struct {
-	vault.Entity
+	core.Entity
 	ID          id.ID             `json:"id"`
 	Key         string            `json:"key"`
 	Value       any               `json:"value"`

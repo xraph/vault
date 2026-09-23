@@ -3,7 +3,7 @@ package flag
 import (
 	"time"
 
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 )
 
@@ -23,7 +23,7 @@ const (
 // Rule represents a targeting rule for a feature flag.
 // Rules are evaluated in priority order (lower number = higher priority).
 type Rule struct {
-	vault.Entity
+	core.Entity
 	ID          id.ID      `json:"id"`
 	FlagKey     string     `json:"flag_key"`
 	AppID       string     `json:"app_id"`
@@ -59,7 +59,7 @@ type RuleConfig struct {
 
 // TenantOverride represents a direct per-tenant flag value override.
 type TenantOverride struct {
-	vault.Entity
+	core.Entity
 	ID       id.ID  `json:"id"`
 	FlagKey  string `json:"flag_key"`
 	AppID    string `json:"app_id"`
@@ -74,7 +74,7 @@ type TenantOverride struct {
 // WhenTenant creates a rule that matches specific tenant IDs.
 func WhenTenant(tenantIDs ...string) *Rule {
 	return &Rule{
-		Entity: vault.NewEntity(),
+		Entity: core.NewEntity(),
 		ID:     id.NewRuleID(),
 		Type:   RuleWhenTenant,
 		Config: RuleConfig{TenantIDs: tenantIDs},
@@ -84,7 +84,7 @@ func WhenTenant(tenantIDs ...string) *Rule {
 // WhenTenantTag creates a rule that matches tenants with a specific tag.
 func WhenTenantTag(key, value string) *Rule {
 	return &Rule{
-		Entity: vault.NewEntity(),
+		Entity: core.NewEntity(),
 		ID:     id.NewRuleID(),
 		Type:   RuleWhenTenantTag,
 		Config: RuleConfig{TagKey: key, TagValue: value},
@@ -94,7 +94,7 @@ func WhenTenantTag(key, value string) *Rule {
 // WhenUser creates a rule that matches specific user IDs.
 func WhenUser(userIDs ...string) *Rule {
 	return &Rule{
-		Entity: vault.NewEntity(),
+		Entity: core.NewEntity(),
 		ID:     id.NewRuleID(),
 		Type:   RuleWhenUser,
 		Config: RuleConfig{UserIDs: userIDs},
@@ -104,7 +104,7 @@ func WhenUser(userIDs ...string) *Rule {
 // Rollout creates a rule for percentage-based rollout (0-100).
 func Rollout(percentage int) *Rule {
 	return &Rule{
-		Entity: vault.NewEntity(),
+		Entity: core.NewEntity(),
 		ID:     id.NewRuleID(),
 		Type:   RuleRollout,
 		Config: RuleConfig{Percentage: percentage},
@@ -114,7 +114,7 @@ func Rollout(percentage int) *Rule {
 // Schedule creates a rule active only within a time window.
 func Schedule(start, end time.Time) *Rule {
 	return &Rule{
-		Entity: vault.NewEntity(),
+		Entity: core.NewEntity(),
 		ID:     id.NewRuleID(),
 		Type:   RuleSchedule,
 		Config: RuleConfig{StartAt: &start, EndAt: &end},

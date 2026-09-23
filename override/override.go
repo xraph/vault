@@ -2,13 +2,13 @@
 package override
 
 import (
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 )
 
 // Override represents a per-tenant override for a config entry.
 type Override struct {
-	vault.Entity
+	core.Entity
 	ID       id.ID             `json:"id"`
 	Key      string            `json:"key"`
 	Value    any               `json:"value"`

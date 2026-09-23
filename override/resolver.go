@@ -8,8 +8,8 @@ import (
 
 	log "github.com/xraph/go-utils/log"
 
-	"github.com/xraph/vault"
 	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/core"
 )
 
 // contextKey is the type for context value keys used by the resolver.
@@ -81,7 +81,7 @@ func (r *Resolver) Resolve(ctx context.Context, key, appID string) (any, error) 
 			return ov.Value, nil
 		}
 		// Ignore "not found" — fall through to app default.
-		if !errors.Is(err, vault.ErrOverrideNotFound) {
+		if !errors.Is(err, core.ErrOverrideNotFound) {
 			return nil, err
 		}
 	}

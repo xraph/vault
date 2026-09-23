@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/crypto"
 	"github.com/xraph/vault/id"
 )
@@ -127,7 +127,7 @@ func (s *Service) Set(ctx context.Context, key string, value []byte, appID strin
 	}
 
 	sec := &Secret{
-		Entity: vault.NewEntity(),
+		Entity: core.NewEntity(),
 		ID:     id.NewSecretID(),
 		Key:    key,
 		Value:  value,

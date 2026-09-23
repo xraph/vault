@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 )
 
 // ContextKey is the type for context value keys used by the flag engine.
@@ -129,7 +129,7 @@ func (e *Engine) evaluate(ctx context.Context, key, appID string, withTrace bool
 		if oErr == nil {
 			return Detail{Value: overrideVal, Reason: ReasonTenantOverride}, nil
 		}
-		if !errors.Is(oErr, vault.ErrOverrideNotFound) {
+		if !errors.Is(oErr, core.ErrOverrideNotFound) {
 			return Detail{}, oErr
 		}
 	}

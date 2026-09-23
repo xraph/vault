@@ -2,7 +2,7 @@
 package flag
 
 import (
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 )
 
@@ -20,7 +20,7 @@ const (
 
 // Definition represents a feature flag definition.
 type Definition struct {
-	vault.Entity
+	core.Entity
 	ID           id.ID             `json:"id"`
 	Key          string            `json:"key"`
 	Type         Type              `json:"type"`

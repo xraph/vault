@@ -4,13 +4,13 @@ package secret
 import (
 	"time"
 
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 )
 
 // Secret represents a stored secret with its encrypted value.
 type Secret struct {
-	vault.Entity
+	core.Entity
 	ID              id.ID             `json:"id"`
 	Key             string            `json:"key"`
 	Value           []byte            `json:"-"` // decrypted value — never serialized

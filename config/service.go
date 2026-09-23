@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 )
 
@@ -233,7 +233,7 @@ func (s *Service) Set(ctx context.Context, key string, value any, appID string, 
 	}
 
 	entry := &Entry{
-		Entity:      vault.NewEntity(),
+		Entity:      core.NewEntity(),
 		ID:          id.NewConfigID(),
 		Key:         key,
 		Value:       value,

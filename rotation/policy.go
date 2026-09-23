@@ -4,13 +4,13 @@ package rotation
 import (
 	"time"
 
-	"github.com/xraph/vault"
+	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 )
 
 // Policy represents a secret rotation policy.
 type Policy struct {
-	vault.Entity
+	core.Entity
 	ID             id.ID         `json:"id"`
 	SecretKey      string        `json:"secret_key"`
 	AppID          string        `json:"app_id"`
