@@ -9,9 +9,9 @@ import "context"
 type ContextKey string
 
 // Standard scope context keys.
-// These intentionally match the keys used by flag.ContextKeyTenantID ("vault.tenant_id")
-// and flag.ContextKeyUserID ("vault.user_id") so that values set by scope helpers
-// are automatically visible to the flag engine and override resolver.
+// flag.ContextKey and override.contextKey are aliases of ContextKey, so a
+// value set through the scope helpers below is the same context entry the
+// flag engine and override resolver read under their own key names.
 const (
 	KeyAppID    ContextKey = "vault.app_id"
 	KeyTenantID ContextKey = "vault.tenant_id"

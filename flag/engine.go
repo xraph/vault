@@ -9,10 +9,13 @@ import (
 	"time"
 
 	"github.com/xraph/vault/core"
+	"github.com/xraph/vault/scope"
 )
 
-// ContextKey is the type for context value keys used by the flag engine.
-type ContextKey string
+// ContextKey is the context key type for flag evaluation. It is the same type
+// as scope.ContextKey, so a tenant or user set with the scope helpers is the
+// one the engine reads.
+type ContextKey = scope.ContextKey
 
 const (
 	// ContextKeyTenantID is the context key for tenant ID.

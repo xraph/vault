@@ -10,10 +10,13 @@ import (
 
 	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/core"
+	"github.com/xraph/vault/scope"
 )
 
-// contextKey is the type for context value keys used by the resolver.
-type contextKey string
+// contextKey is the context key type for the resolver. It is the same type
+// as scope.ContextKey, so a tenant set with the scope helpers is the one the
+// resolver reads.
+type contextKey = scope.ContextKey
 
 const (
 	// ContextKeyTenantID is the context key for tenant ID (matches flag.ContextKeyTenantID).
