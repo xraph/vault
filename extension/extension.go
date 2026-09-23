@@ -112,30 +112,17 @@ func (e *Extension) Register(fapp forge.App) error {
 		}
 	}
 
-	// Build vault options from merged config.
-	if e.config.AppID != "" {
-		e.vaultOpts = append(e.vaultOpts, vault.WithAppID(e.config.AppID))
-	}
-	if e.config.EncryptionKeyEnv != "" {
-		e.vaultOpts = append(e.vaultOpts, vault.WithEncryptionKeyEnv(e.config.EncryptionKeyEnv))
-	}
-	if e.config.FlagCacheTTL != 0 {
-		e.vaultOpts = append(e.vaultOpts, vault.WithConfig(vault.Config{
-			AppID:              e.config.AppID,
-			EncryptionKeyEnv:   e.config.EncryptionKeyEnv,
-			FlagCacheTTL:       e.config.FlagCacheTTL,
-			SourcePollInterval: e.config.SourcePollInterval,
-		}))
-	}
-
-	if e.store != nil {
-		e.vaultOpts = append(e.vaultOpts, vault.WithStore(e.store))
-	}
-	v, err := vault.New(e.vaultOpts...)
+	v, err := e.buildVault()
 	if err != nil {
-		return fmt.Errorf("vault: %w", err)
+		return err
 	}
 	e.v = v
+
+	if !e.v.EncryptionEnabled() {
+		e.Logger().Warn("vault: no encryption key configured; secrets are stored unencrypted",
+			forge.F("encryption_key_env", e.config.EncryptionKeyEnv),
+		)
+	}
 
 	// Register the Vault instance in the DI container.
 	if err := vessel.Provide(fapp.Container(), func() (*vault.Vault, error) {
@@ -167,6 +154,41 @@ func (e *Extension) Register(fapp forge.App) error {
 	)
 
 	return nil
+}
+
+// buildVault assembles the vault options from the extension's merged
+// configuration and constructs the underlying [vault.Vault]. It does not
+// touch the forge app or logger, so it can be exercised in tests without a
+// live forge.App.
+func (e *Extension) buildVault() (*vault.Vault, error) {
+	// Build vault options from merged config.
+	if e.config.AppID != "" {
+		e.vaultOpts = append(e.vaultOpts, vault.WithAppID(e.config.AppID))
+	}
+	if e.config.EncryptionKeyEnv != "" {
+		e.vaultOpts = append(e.vaultOpts, vault.WithEncryptionKeyEnv(e.config.EncryptionKeyEnv))
+	}
+	if e.config.FlagCacheTTL != 0 {
+		e.vaultOpts = append(e.vaultOpts, vault.WithConfig(vault.Config{
+			AppID:              e.config.AppID,
+			EncryptionKeyEnv:   e.config.EncryptionKeyEnv,
+			FlagCacheTTL:       e.config.FlagCacheTTL,
+			SourcePollInterval: e.config.SourcePollInterval,
+		}))
+	}
+
+	if e.store != nil {
+		e.vaultOpts = append(e.vaultOpts, vault.WithStore(e.store))
+	}
+
+	v, err := vault.New(e.vaultOpts...)
+	if err != nil {
+		if errors.Is(err, vault.ErrNoStore) {
+			return nil, fmt.Errorf("%w: pass extension.WithStore, set extension.WithGroveDatabase or grove_database in config, or register a *grove.DB in the DI container", vault.ErrNoStore)
+		}
+		return nil, err
+	}
+	return v, nil
 }
 
 // Start implements [forge.Extension].

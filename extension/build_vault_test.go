@@ -1,0 +1,92 @@
+package extension
+
+import (
+	"encoding/hex"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/xraph/vault"
+	"github.com/xraph/vault/store/memory"
+)
+
+// testKeyHex is a valid 32-byte AES-256-GCM key, matching the fixture the
+// vault package itself uses in vault_test.go.
+const testKeyHex = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+
+func mustTestKey(t *testing.T) []byte {
+	t.Helper()
+	key, err := hex.DecodeString(testKeyHex)
+	if err != nil {
+		t.Fatalf("decode test key: %v", err)
+	}
+	return key
+}
+
+// TestBuildVaultKeepsAKeyPassedAsAVaultOption pins the regression that
+// vault.WithConfig's overlay semantics fixed: a key passed through
+// extension.WithVaultOption(vault.WithEncryptionKey(...)) must survive the
+// extension's own WithConfig call, which runs later in buildVault's option
+// sequence whenever FlagCacheTTL is set. Before the overlay fix, WithConfig
+// clobbered the key with a zero value and this test would fail with
+// EncryptionEnabled() == false.
+func TestBuildVaultKeepsAKeyPassedAsAVaultOption(t *testing.T) {
+	key := mustTestKey(t)
+	e := &Extension{
+		config: Config{
+			FlagCacheTTL: 30 * time.Second,
+		},
+		store:     memory.New(),
+		vaultOpts: []vault.Option{vault.WithEncryptionKey(key)},
+	}
+
+	v, err := e.buildVault()
+	if err != nil {
+		t.Fatalf("buildVault() returned an error: %v", err)
+	}
+	if !v.EncryptionEnabled() {
+		t.Error("EncryptionEnabled() is false: the extension's WithConfig call dropped the key passed via WithVaultOption")
+	}
+}
+
+// TestBuildVaultWithoutAKeyIsUnencryptedNotAnError confirms the documented
+// keyless fallback: no encryption key anywhere still produces a usable
+// Vault, just an unencrypted one. buildVault itself must not error or warn;
+// the warning is Register's job.
+func TestBuildVaultWithoutAKeyIsUnencryptedNotAnError(t *testing.T) {
+	e := &Extension{
+		store: memory.New(),
+	}
+
+	v, err := e.buildVault()
+	if err != nil {
+		t.Fatalf("buildVault() returned an error: %v", err)
+	}
+	if v.EncryptionEnabled() {
+		t.Error("EncryptionEnabled() is true with no key configured anywhere")
+	}
+}
+
+// TestBuildVaultWithoutAStoreSaysHowToConfigureOne checks the error a
+// missing store now produces: it still satisfies errors.Is(err,
+// vault.ErrNoStore) for callers that check the sentinel, but its text
+// names the three ways to supply a store instead of the doubled-up
+// "vault: vault: no store configured" that a naive %w wrap produced.
+func TestBuildVaultWithoutAStoreSaysHowToConfigureOne(t *testing.T) {
+	e := &Extension{}
+
+	_, err := e.buildVault()
+	if err == nil {
+		t.Fatal("expected an error with no store configured")
+	}
+	if !errors.Is(err, vault.ErrNoStore) {
+		t.Errorf("error does not satisfy errors.Is(err, vault.ErrNoStore): %v", err)
+	}
+	if !strings.Contains(err.Error(), "WithStore") {
+		t.Errorf("error does not mention WithStore: %q", err)
+	}
+	if strings.Contains(err.Error(), "vault: vault:") {
+		t.Errorf("error has a doubled-up prefix: %q", err)
+	}
+}
