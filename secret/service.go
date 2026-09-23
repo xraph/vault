@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -72,12 +73,8 @@ func (s *Service) Get(ctx context.Context, key, appID string) (*Secret, error) {
 		return nil, err
 	}
 
-	if s.encryptor != nil && len(sec.EncryptedValue) > 0 {
-		plaintext, decErr := s.encryptor.Decrypt(sec.EncryptedValue)
-		if decErr != nil {
-			return nil, fmt.Errorf("secret: decrypt %q: %w", key, decErr)
-		}
-		sec.Value = plaintext
+	if err := s.reveal(sec, key, 0); err != nil {
+		return nil, err
 	}
 
 	if s.onAccess != nil {
@@ -85,6 +82,36 @@ func (s *Service) Get(ctx context.Context, key, appID string) (*Secret, error) {
 	}
 
 	return sec, nil
+}
+
+// reveal fills sec.Value from the stored bytes, going by the row's own
+// EncryptionAlg rather than by whether this service has a key. No real
+// backend persists Value, only EncryptedValue, so this is the only place a
+// read gets its plaintext.
+//
+// An empty EncryptionAlg means the row was written without a key and the
+// stored bytes are the plaintext, whatever key this service has now. An
+// encrypted row with no key configured is an error, never an empty value.
+// version is only used to name the version in a decrypt error; 0 means the
+// current one.
+func (s *Service) reveal(sec *Secret, key string, version int64) error {
+	if sec.EncryptionAlg == "" {
+		sec.Value = bytes.Clone(sec.EncryptedValue)
+		return nil
+	}
+	if s.encryptor == nil {
+		return fmt.Errorf("secret: %q is encrypted with %s but no encryption key is configured: %w",
+			key, sec.EncryptionAlg, core.ErrDecryptionFailed)
+	}
+	plaintext, err := s.encryptor.Decrypt(sec.EncryptedValue)
+	if err != nil {
+		if version > 0 {
+			return fmt.Errorf("secret: decrypt %q v%d: %w", key, version, err)
+		}
+		return fmt.Errorf("secret: decrypt %q: %w", key, err)
+	}
+	sec.Value = plaintext
+	return nil
 }
 
 // GetMeta retrieves secret metadata without the value.
@@ -187,6 +214,11 @@ func (s *Service) List(ctx context.Context, appID string, opts ListOpts) ([]*Met
 }
 
 // GetVersion retrieves a specific version of a secret and decrypts it.
+//
+// Version rows carry no algorithm of their own, so the secret's CURRENT
+// algorithm is applied to every version. If the secret's history spans a
+// change of encryption configuration, reading an older version fails loudly
+// rather than returning the wrong bytes, until a version-level column exists.
 func (s *Service) GetVersion(ctx context.Context, key, appID string, version int64) (*Secret, error) {
 	appID = s.resolveAppID(appID)
 
@@ -195,12 +227,8 @@ func (s *Service) GetVersion(ctx context.Context, key, appID string, version int
 		return nil, err
 	}
 
-	if s.encryptor != nil && len(sec.EncryptedValue) > 0 {
-		plaintext, decErr := s.encryptor.Decrypt(sec.EncryptedValue)
-		if decErr != nil {
-			return nil, fmt.Errorf("secret: decrypt %q v%d: %w", key, version, decErr)
-		}
-		sec.Value = plaintext
+	if err := s.reveal(sec, key, version); err != nil {
+		return nil, err
 	}
 
 	if s.onAccess != nil {

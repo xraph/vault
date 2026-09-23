@@ -1,13 +1,16 @@
 package vault_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/secret"
 	"github.com/xraph/vault/store/memory"
 )
 
@@ -247,5 +250,128 @@ func TestWithConfigStillOverridesWithNonZeroValues(t *testing.T) {
 	}
 	if gotB != 1 {
 		t.Errorf("CountSecrets(%q) = %d, want 1: WithConfig should still override AppID with a non-zero value", "b", gotB)
+	}
+}
+
+// prodLikeStore behaves like postgres, sqlite and mongo: it persists only
+// EncryptedValue and never keeps Value. The bare memory store keeps Value,
+// which hid a keyless read bug from every test in the repository.
+type prodLikeStore struct{ *memory.Store }
+
+func (p prodLikeStore) SetSecret(ctx context.Context, s *secret.Secret) error {
+	cp := *s
+	cp.Value = nil
+	err := p.Store.SetSecret(ctx, &cp)
+	// Real backends assign the version on the caller's secret; keep that.
+	s.Version = cp.Version
+	return err
+}
+
+func TestKeylessRoundTripReturnsThePlaintext(t *testing.T) {
+	v, err := vault.New(vault.WithStore(prodLikeStore{memory.New()}), vault.WithAppID("app1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, setErr := v.Secrets().Set(ctx, "k", []byte("v"), "app1"); setErr != nil {
+		t.Fatal(setErr)
+	}
+	got, err := v.Secrets().Get(ctx, "k", "app1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Value) != "v" {
+		t.Errorf("keyless round trip: got %q, want %q", got.Value, "v")
+	}
+}
+
+func TestAKeyAddedLaterStillReadsOlderPlaintextRows(t *testing.T) {
+	key, _ := hex.DecodeString(testKeyHex)
+	s := prodLikeStore{memory.New()}
+	ctx := context.Background()
+
+	keyless, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, setErr := keyless.Secrets().Set(ctx, "first", []byte("old"), "app1"); setErr != nil {
+		t.Fatal(setErr)
+	}
+
+	keyed, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"), vault.WithEncryptionKey(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, setErr := keyed.Secrets().Set(ctx, "second", []byte("new"), "app1"); setErr != nil {
+		t.Fatal(setErr)
+	}
+
+	first, err := keyed.Secrets().Get(ctx, "first", "app1")
+	if err != nil {
+		t.Fatalf("reading a row written before the key existed: %v", err)
+	}
+	if string(first.Value) != "old" {
+		t.Errorf("first: got %q, want %q", first.Value, "old")
+	}
+	second, err := keyed.Secrets().Get(ctx, "second", "app1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second.Value) != "new" {
+		t.Errorf("second: got %q, want %q", second.Value, "new")
+	}
+}
+
+func TestAnEncryptedRowWithNoKeyIsAnErrorNotAnEmptyValue(t *testing.T) {
+	key, _ := hex.DecodeString(testKeyHex)
+	s := prodLikeStore{memory.New()}
+	ctx := context.Background()
+
+	keyed, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"), vault.WithEncryptionKey(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, setErr := keyed.Secrets().Set(ctx, "k", []byte("s3cret"), "app1"); setErr != nil {
+		t.Fatal(setErr)
+	}
+
+	keyless, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := keyless.Secrets().Get(ctx, "k", "app1")
+	if !errors.Is(err, vault.ErrDecryptionFailed) {
+		t.Errorf("err = %v, want one wrapping ErrDecryptionFailed", err)
+	}
+	if got != nil {
+		t.Errorf("got a secret %+v, want nil alongside the error", got)
+	}
+}
+
+func TestSecretsAreCiphertextAtRest(t *testing.T) {
+	key, _ := hex.DecodeString(testKeyHex)
+	s := prodLikeStore{memory.New()}
+	ctx := context.Background()
+
+	v, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"), vault.WithEncryptionKey(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, setErr := v.Secrets().Set(ctx, "k", []byte("s3cret"), "app1"); setErr != nil {
+		t.Fatal(setErr)
+	}
+
+	raw, err := s.GetSecret(ctx, "k", "app1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(raw.EncryptedValue, []byte("s3cret")) {
+		t.Error("EncryptedValue at rest is the plaintext")
+	}
+	if bytes.Contains(raw.EncryptedValue, []byte("s3cret")) {
+		t.Error("EncryptedValue at rest contains the plaintext")
+	}
+	if raw.EncryptionAlg != "AES-256-GCM" {
+		t.Errorf("EncryptionAlg = %q, want %q", raw.EncryptionAlg, "AES-256-GCM")
 	}
 }
