@@ -25,14 +25,20 @@ type Secret struct {
 
 // Meta is the public metadata for a secret (never includes the value).
 type Meta struct {
-	ID        id.ID             `json:"id"`
-	Key       string            `json:"key"`
-	Version   int64             `json:"version"`
-	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
-	AppID     string            `json:"app_id"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID      id.ID  `json:"id"`
+	Key     string `json:"key"`
+	Version int64  `json:"version"`
+	// EncryptionAlg names the algorithm the stored value was encrypted with.
+	// Empty means the value is NOT encrypted: it was written while no
+	// encryption key was configured and is stored as given. A caller that
+	// displays secrets must treat empty as "not encrypted" rather than as
+	// "unknown", because it is the state every unconfigured Vault produces.
+	EncryptionAlg string            `json:"encryption_alg,omitempty"`
+	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
+	AppID         string            `json:"app_id"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	UpdatedAt     time.Time         `json:"updated_at"`
 }
 
 // Version represents a historical version of a secret.
@@ -56,13 +62,14 @@ type ListOpts struct {
 // ToMeta creates a Meta from a Secret.
 func (s *Secret) ToMeta() *Meta {
 	return &Meta{
-		ID:        s.ID,
-		Key:       s.Key,
-		Version:   s.Version,
-		ExpiresAt: s.ExpiresAt,
-		AppID:     s.AppID,
-		Metadata:  s.Metadata,
-		CreatedAt: s.CreatedAt,
-		UpdatedAt: s.UpdatedAt,
+		ID:            s.ID,
+		Key:           s.Key,
+		Version:       s.Version,
+		EncryptionAlg: s.EncryptionAlg,
+		ExpiresAt:     s.ExpiresAt,
+		AppID:         s.AppID,
+		Metadata:      s.Metadata,
+		CreatedAt:     s.CreatedAt,
+		UpdatedAt:     s.UpdatedAt,
 	}
 }

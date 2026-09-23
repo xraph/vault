@@ -72,7 +72,8 @@ func (m *SecretModel) toEntity() *secret.Secret {
 func (m *SecretModel) toMeta() *secret.Meta {
 	meta := &secret.Meta{
 		ID: mustParseID(m.ID), Key: m.Key, Version: m.Version,
-		ExpiresAt: m.ExpiresAt, AppID: m.AppID,
+		EncryptionAlg: m.EncryptionAlg,
+		ExpiresAt:     m.ExpiresAt, AppID: m.AppID,
 	}
 	meta.CreatedAt = m.CreatedAt
 	meta.UpdatedAt = m.UpdatedAt
