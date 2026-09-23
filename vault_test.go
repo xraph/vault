@@ -16,7 +16,6 @@ import (
 	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/override"
-	"github.com/xraph/vault/secret"
 	"github.com/xraph/vault/store/memory"
 )
 
@@ -272,22 +271,8 @@ func TestWithConfigStillOverridesWithNonZeroValues(t *testing.T) {
 	}
 }
 
-// prodLikeStore behaves like postgres, sqlite and mongo: it persists only
-// EncryptedValue and never keeps Value. The bare memory store keeps Value,
-// which hid a keyless read bug from every test in the repository.
-type prodLikeStore struct{ *memory.Store }
-
-func (p prodLikeStore) SetSecret(ctx context.Context, s *secret.Secret) error {
-	cp := *s
-	cp.Value = nil
-	err := p.Store.SetSecret(ctx, &cp)
-	// Real backends assign the version on the caller's secret; keep that.
-	s.Version = cp.Version
-	return err
-}
-
 func TestKeylessRoundTripReturnsThePlaintext(t *testing.T) {
-	v, err := vault.New(vault.WithStore(prodLikeStore{memory.New()}), vault.WithAppID("app1"))
+	v, err := vault.New(vault.WithStore(memory.New()), vault.WithAppID("app1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +291,7 @@ func TestKeylessRoundTripReturnsThePlaintext(t *testing.T) {
 
 func TestAKeyAddedLaterStillReadsOlderPlaintextRows(t *testing.T) {
 	key, _ := hex.DecodeString(testKeyHex)
-	s := prodLikeStore{memory.New()}
+	s := memory.New()
 	ctx := context.Background()
 
 	keyless, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"))
@@ -343,7 +328,7 @@ func TestAKeyAddedLaterStillReadsOlderPlaintextRows(t *testing.T) {
 
 func TestAnEncryptedRowWithNoKeyIsAnErrorNotAnEmptyValue(t *testing.T) {
 	key, _ := hex.DecodeString(testKeyHex)
-	s := prodLikeStore{memory.New()}
+	s := memory.New()
 	ctx := context.Background()
 
 	keyed, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"), vault.WithEncryptionKey(key))
@@ -369,7 +354,7 @@ func TestAnEncryptedRowWithNoKeyIsAnErrorNotAnEmptyValue(t *testing.T) {
 
 func TestSecretsAreCiphertextAtRest(t *testing.T) {
 	key, _ := hex.DecodeString(testKeyHex)
-	s := prodLikeStore{memory.New()}
+	s := memory.New()
 	ctx := context.Background()
 
 	v, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"), vault.WithEncryptionKey(key))

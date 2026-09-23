@@ -16,6 +16,13 @@ import (
 
 func bg() context.Context { return context.Background() }
 
+// newSecretsReader wraps store in a keyless secret.Service so tests that
+// don't care about encryption can pass a SecretReader to
+// NewVaultConfigSource.
+func newSecretsReader(store *memory.Store) *secret.Service {
+	return secret.NewService(store, nil)
+}
+
 func TestVaultConfigSourceLoad(t *testing.T) {
 	store := memory.New()
 	for _, kv := range []struct{ k, v string }{
@@ -32,7 +39,7 @@ func TestVaultConfigSourceLoad(t *testing.T) {
 		})
 	}
 
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1")
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1")
 	data, err := src.Load(bg())
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +63,7 @@ func TestVaultConfigSourceWatch(t *testing.T) {
 		AppID:  "app1",
 	})
 
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithSourcePollInterval(50*time.Millisecond),
 	)
 
@@ -90,7 +97,7 @@ func TestVaultConfigSourceWatch(t *testing.T) {
 
 func TestVaultConfigSourceStopWatch(t *testing.T) {
 	store := memory.New()
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithSourcePollInterval(50*time.Millisecond),
 	)
 
@@ -113,15 +120,12 @@ func TestVaultConfigSourceStopWatch(t *testing.T) {
 
 func TestVaultConfigSourceGetSecret(t *testing.T) {
 	store := memory.New()
-	_ = store.SetSecret(bg(), &secret.Secret{
-		Entity: vault.NewEntity(),
-		ID:     id.NewSecretID(),
-		Key:    "db_password",
-		Value:  []byte("s3cret"),
-		AppID:  "app1",
-	})
+	secrets := newSecretsReader(store)
+	if _, err := secrets.Set(bg(), "db_password", []byte("s3cret"), "app1"); err != nil {
+		t.Fatal(err)
+	}
 
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1")
+	src := vaultconfy.NewVaultConfigSource(store, secrets, "app1")
 	val, err := src.GetSecret(bg(), "db_password")
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +137,7 @@ func TestVaultConfigSourceGetSecret(t *testing.T) {
 
 func TestVaultConfigSourceReload(t *testing.T) {
 	store := memory.New()
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1")
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1")
 
 	// Reload on empty store should work.
 	if err := src.Reload(bg()); err != nil {
@@ -143,7 +147,7 @@ func TestVaultConfigSourceReload(t *testing.T) {
 
 func TestVaultConfigSourceMetadata(t *testing.T) {
 	store := memory.New()
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithSourceName("vault:config"),
 		vaultconfy.WithSourcePriority(200),
 	)
@@ -170,7 +174,7 @@ func TestVaultConfigSourceMetadata(t *testing.T) {
 
 func TestVaultConfigSourceIsAvailable(t *testing.T) {
 	store := memory.New()
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1")
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1")
 	if !src.IsAvailable(bg()) {
 		t.Error("IsAvailable = false, want true")
 	}
@@ -193,7 +197,7 @@ func TestVaultConfigSourceKeyPrefix(t *testing.T) {
 	store := memory.New()
 	seedConfigs(t, store, []string{"db.host", "db.port"})
 
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithKeyPrefix("vault."),
 	)
 	data, err := src.Load(bg())
@@ -216,7 +220,7 @@ func TestVaultConfigSourceWithKeys(t *testing.T) {
 	store := memory.New()
 	seedConfigs(t, store, []string{"db.host", "db.port", "app.name", "app.version"})
 
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithKeys("db.host", "app.name"),
 	)
 	data, err := src.Load(bg())
@@ -242,7 +246,7 @@ func TestVaultConfigSourceWithPatterns(t *testing.T) {
 	store := memory.New()
 	seedConfigs(t, store, []string{"db.host", "db.port", "app.name", "cache.ttl"})
 
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithKeyPatterns("db.*"),
 	)
 	data, err := src.Load(bg())
@@ -266,7 +270,7 @@ func TestVaultConfigSourceKeysAndPatternsCombined(t *testing.T) {
 	seedConfigs(t, store, []string{"db.host", "db.port", "app.name", "cache.ttl", "auth.token"})
 
 	// Whitelist "cache.ttl" explicitly + pattern "db.*" — should include both.
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithKeys("cache.ttl"),
 		vaultconfy.WithKeyPatterns("db.*"),
 	)
@@ -292,7 +296,7 @@ func TestVaultConfigSourcePrefixWithFilters(t *testing.T) {
 	store := memory.New()
 	seedConfigs(t, store, []string{"db.host", "db.port", "app.name"})
 
-	src := vaultconfy.NewVaultConfigSource(store, store, "app1",
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1",
 		vaultconfy.WithKeyPrefix("secrets."),
 		vaultconfy.WithKeys("db.host"),
 	)

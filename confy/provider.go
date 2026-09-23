@@ -6,36 +6,50 @@ import (
 
 	confypkg "github.com/xraph/confy"
 
-	"github.com/xraph/vault"
-	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/secret"
 )
 
 // Compile-time interface check.
 var _ confypkg.SecretProvider = (*VaultSecretProvider)(nil)
 
-// VaultSecretProvider is a confy SecretProvider backed by vault's secret store.
-type VaultSecretProvider struct {
-	name  string
-	store secret.Store
-	appID string
+// secretWriter is the write and list surface VaultSecretProvider needs
+// beyond SecretReader, so confy's SecretProvider contract (set, delete,
+// list, health check) keeps working. *secret.Service satisfies it too.
+type secretWriter interface {
+	Set(ctx context.Context, key string, value []byte, appID string, opts ...secret.SetOption) (*secret.Meta, error)
+	Delete(ctx context.Context, key, appID string) error
+	List(ctx context.Context, appID string, opts secret.ListOpts) ([]*secret.Meta, error)
 }
 
-// NewVaultSecretProvider creates a new VaultSecretProvider.
-func NewVaultSecretProvider(store secret.Store, appID string) *VaultSecretProvider {
-	return &VaultSecretProvider{
-		name:  "vault",
-		store: store,
-		appID: appID,
+// VaultSecretProvider is a confy SecretProvider backed by vault's secret service.
+type VaultSecretProvider struct {
+	name    string
+	secrets SecretReader
+	writer  secretWriter // set when secrets also satisfies secretWriter, e.g. *secret.Service
+	appID   string
+}
+
+// NewVaultSecretProvider creates a new VaultSecretProvider. secrets reads
+// through vault's secret service rather than a raw secret.Store, because no
+// store backend keeps a decrypted value.
+func NewVaultSecretProvider(secrets SecretReader, appID string) *VaultSecretProvider {
+	p := &VaultSecretProvider{
+		name:    "vault",
+		secrets: secrets,
+		appID:   appID,
 	}
+	if w, ok := secrets.(secretWriter); ok {
+		p.writer = w
+	}
+	return p
 }
 
 // Name returns the provider name.
 func (p *VaultSecretProvider) Name() string { return p.name }
 
-// GetSecret retrieves a decrypted secret value as a string.
+// GetSecret retrieves and decrypts a secret value as a string.
 func (p *VaultSecretProvider) GetSecret(ctx context.Context, key string) (string, error) {
-	sec, err := p.store.GetSecret(ctx, key, p.appID)
+	sec, err := p.secrets.Get(ctx, key, p.appID)
 	if err != nil {
 		return "", fmt.Errorf("vault secret provider: get: %w", err)
 	}
@@ -44,14 +58,10 @@ func (p *VaultSecretProvider) GetSecret(ctx context.Context, key string) (string
 
 // SetSecret creates or updates a secret.
 func (p *VaultSecretProvider) SetSecret(ctx context.Context, key, value string) error {
-	s := &secret.Secret{
-		Entity: vault.NewEntity(),
-		ID:     id.NewSecretID(),
-		Key:    key,
-		Value:  []byte(value),
-		AppID:  p.appID,
+	if p.writer == nil {
+		return fmt.Errorf("vault secret provider: secrets reader does not support writes")
 	}
-	if err := p.store.SetSecret(ctx, s); err != nil {
+	if _, err := p.writer.Set(ctx, key, []byte(value), p.appID); err != nil {
 		return fmt.Errorf("vault secret provider: set: %w", err)
 	}
 	return nil
@@ -59,7 +69,10 @@ func (p *VaultSecretProvider) SetSecret(ctx context.Context, key, value string) 
 
 // DeleteSecret removes a secret.
 func (p *VaultSecretProvider) DeleteSecret(ctx context.Context, key string) error {
-	if err := p.store.DeleteSecret(ctx, key, p.appID); err != nil {
+	if p.writer == nil {
+		return fmt.Errorf("vault secret provider: secrets reader does not support deletes")
+	}
+	if err := p.writer.Delete(ctx, key, p.appID); err != nil {
 		return fmt.Errorf("vault secret provider: delete: %w", err)
 	}
 	return nil
@@ -67,7 +80,10 @@ func (p *VaultSecretProvider) DeleteSecret(ctx context.Context, key string) erro
 
 // ListSecrets returns all secret keys for the app.
 func (p *VaultSecretProvider) ListSecrets(ctx context.Context) ([]string, error) {
-	metas, err := p.store.ListSecrets(ctx, p.appID, secret.ListOpts{})
+	if p.writer == nil {
+		return nil, fmt.Errorf("vault secret provider: secrets reader does not support listing")
+	}
+	metas, err := p.writer.List(ctx, p.appID, secret.ListOpts{})
 	if err != nil {
 		return nil, fmt.Errorf("vault secret provider: list: %w", err)
 	}
@@ -79,9 +95,12 @@ func (p *VaultSecretProvider) ListSecrets(ctx context.Context) ([]string, error)
 	return keys, nil
 }
 
-// HealthCheck verifies the secret store is accessible.
+// HealthCheck verifies the secret service is accessible.
 func (p *VaultSecretProvider) HealthCheck(ctx context.Context) error {
-	_, err := p.store.ListSecrets(ctx, p.appID, secret.ListOpts{Limit: 1})
+	if p.writer == nil {
+		return fmt.Errorf("vault secret provider: secrets reader does not support listing")
+	}
+	_, err := p.writer.List(ctx, p.appID, secret.ListOpts{Limit: 1})
 	return err
 }
 

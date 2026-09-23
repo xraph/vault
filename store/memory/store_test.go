@@ -103,6 +103,37 @@ func TestSecretCRUD(t *testing.T) {
 	}
 }
 
+// TestMemoryStoreDoesNotPersistValue pins the memory store to the same
+// contract as postgres, sqlite and mongo: only EncryptedValue survives a
+// round trip. Value is decrypted plaintext, and only secret.Service.Get
+// ever produces it; no store backend should hand it back.
+func TestMemoryStoreDoesNotPersistValue(t *testing.T) {
+	s := newStore()
+
+	sec := &secret.Secret{
+		Entity:         vault.NewEntity(),
+		ID:             id.NewSecretID(),
+		Key:            "db-password",
+		Value:          []byte("plaintext"),
+		EncryptedValue: []byte("encrypted-data"),
+		AppID:          testApp,
+	}
+	if err := s.SetSecret(bg(), sec); err != nil {
+		t.Fatalf("SetSecret: %v", err)
+	}
+
+	got, err := s.GetSecret(bg(), "db-password", testApp)
+	if err != nil {
+		t.Fatalf("GetSecret: %v", err)
+	}
+	if got.Value != nil {
+		t.Errorf("Value = %q, want nil: the store must not keep a decrypted value", got.Value)
+	}
+	if string(got.EncryptedValue) != "encrypted-data" {
+		t.Errorf("EncryptedValue = %q, want %q", got.EncryptedValue, "encrypted-data")
+	}
+}
+
 func TestSecretAutoVersioning(t *testing.T) {
 	s := newStore()
 

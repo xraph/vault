@@ -19,6 +19,13 @@ import (
 // Compile-time interface check.
 var _ confypkg.ConfigSource = (*VaultConfigSource)(nil)
 
+// SecretReader reads and decrypts a secret. *secret.Service satisfies it.
+// confy reads through the service rather than the store because no store
+// backend keeps a decrypted value: only the service can produce one.
+type SecretReader interface {
+	Get(ctx context.Context, key, appID string) (*secret.Secret, error)
+}
+
 // VaultSourceOption configures a VaultConfigSource.
 type VaultSourceOption func(*VaultConfigSource)
 
@@ -72,7 +79,7 @@ type VaultConfigSource struct {
 	priority     int
 	appID        string
 	configStore  config.Store
-	secretStore  secret.Store
+	secrets      SecretReader
 	pollInterval time.Duration
 
 	// Mounting / filtering options.
@@ -86,14 +93,16 @@ type VaultConfigSource struct {
 	lastSnapshot map[string]int64 // vault key -> version for change detection
 }
 
-// NewVaultConfigSource creates a new VaultConfigSource.
-func NewVaultConfigSource(configStore config.Store, secretStore secret.Store, appID string, opts ...VaultSourceOption) *VaultConfigSource {
+// NewVaultConfigSource creates a new VaultConfigSource. secrets reads
+// through vault's secret service rather than a raw secret.Store, because no
+// store backend keeps a decrypted value.
+func NewVaultConfigSource(configStore config.Store, secrets SecretReader, appID string, opts ...VaultSourceOption) *VaultConfigSource {
 	s := &VaultConfigSource{
 		name:         "vault",
 		priority:     100,
 		appID:        appID,
 		configStore:  configStore,
-		secretStore:  secretStore,
+		secrets:      secrets,
 		pollInterval: 30 * time.Second,
 		lastSnapshot: make(map[string]int64),
 	}
@@ -118,8 +127,8 @@ func (s *VaultConfigSource) Priority() int { return s.priority }
 // IsWatchable returns true — vault config source supports polling-based watch.
 func (s *VaultConfigSource) IsWatchable() bool { return true }
 
-// SupportsSecrets returns true if a secret store is configured.
-func (s *VaultConfigSource) SupportsSecrets() bool { return s.secretStore != nil }
+// SupportsSecrets returns true if a secret reader is configured.
+func (s *VaultConfigSource) SupportsSecrets() bool { return s.secrets != nil }
 
 // IsAvailable checks if the vault config store is reachable.
 func (s *VaultConfigSource) IsAvailable(ctx context.Context) bool {
@@ -189,13 +198,13 @@ func (s *VaultConfigSource) Reload(ctx context.Context) error {
 	return err
 }
 
-// GetSecret retrieves a secret from the vault secret store.
+// GetSecret retrieves and decrypts a secret through the vault secret service.
 func (s *VaultConfigSource) GetSecret(ctx context.Context, key string) (string, error) {
-	if s.secretStore == nil {
-		return "", fmt.Errorf("vault config source: secret store not configured")
+	if s.secrets == nil {
+		return "", fmt.Errorf("vault config source: secret reader not configured")
 	}
 
-	sec, err := s.secretStore.GetSecret(ctx, key, s.appID)
+	sec, err := s.secrets.Get(ctx, key, s.appID)
 	if err != nil {
 		return "", fmt.Errorf("vault config source: get secret: %w", err)
 	}

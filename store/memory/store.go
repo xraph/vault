@@ -130,9 +130,12 @@ func (m *Store) SetSecret(_ context.Context, s *secret.Secret) error {
 	}
 	m.secretVersions[k] = append(m.secretVersions[k], ver)
 
+	// Real backends persist only EncryptedValue, never the decrypted Value,
+	// so the stored copy drops it too: only secret.Service.Get produces a
+	// plaintext Value, by decrypting EncryptedValue on the way out.
 	cp := *s
 	cp.EncryptedValue = copyBytes(s.EncryptedValue)
-	cp.Value = copyBytes(s.Value)
+	cp.Value = nil
 	m.secrets[k] = &cp
 	return nil
 }

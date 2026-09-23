@@ -255,7 +255,7 @@ func (e *Extension) mountToConfy(fapp forge.App) {
 	}
 
 	src := vaultconfy.NewVaultConfigSource(
-		e.store, e.store, e.config.AppID,
+		e.store, e.v.Secrets(), e.config.AppID,
 		sourceOpts...,
 	)
 
@@ -269,7 +269,7 @@ func (e *Extension) mountToConfy(fapp forge.App) {
 	// Register secret provider if confy has a secrets manager.
 	sm := cm.SecretsManager()
 	if sm != nil {
-		provider := vaultconfy.NewVaultSecretProvider(e.store, e.config.AppID)
+		provider := vaultconfy.NewVaultSecretProvider(e.v.Secrets(), e.config.AppID)
 		if err := sm.RegisterProvider("vault", provider); err != nil {
 			e.Logger().Warn("vault: failed to register secret provider with confy",
 				forge.F("error", err.Error()),
