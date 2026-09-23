@@ -613,19 +613,37 @@ func assertNoCanary(t *testing.T, err error, canary string) {
 	}
 }
 
-// --- secrets.create / secrets.update / secrets.detail report the real alg ---
+// --- secrets.create / secrets.update / secrets.list / secrets.detail all report the real alg ---
 
 // TestSecretsListAndDetail_ReportAES256GCMForKeyedVault checks the other
 // half of the encryptionAlg contract: newTestVault is configured with an
 // encryption key, so a secret written through it must report the real
 // algorithm, not just an empty string the way an unkeyed vault's rows do
 // (covered by TestSecretsListAndDetail_ReportUnencryptedAlg above).
+//
+// It checks all four handlers that can return a SecretSummary: the
+// secrets.create and secrets.update responses themselves (their own
+// return value, not a re-read through list/detail), plus secrets.list and
+// secrets.detail reading the row back afterward.
 func TestSecretsListAndDetail_ReportAES256GCMForKeyedVault(t *testing.T) {
 	v, _ := newTestVault(t)
 	ctx := context.Background()
 	const key = "encrypted-secret"
-	if _, err := v.Secrets().Set(ctx, key, []byte("value"), testAppID); err != nil {
-		t.Fatalf("seed: %v", err)
+
+	createOut, err := secretsCreateHandler(Deps{Vault: v})(ctx, secretsCreateRequest{Key: key, Value: "value"}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if createOut.Secret.EncryptionAlg != "AES-256-GCM" {
+		t.Errorf("create response encryptionAlg = %q, want AES-256-GCM", createOut.Secret.EncryptionAlg)
+	}
+
+	updateOut, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: key, Value: "value2"}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updateOut.Secret.EncryptionAlg != "AES-256-GCM" {
+		t.Errorf("update response encryptionAlg = %q, want AES-256-GCM", updateOut.Secret.EncryptionAlg)
 	}
 
 	listOut, err := secretsListHandler(Deps{Vault: v})(ctx, secretsListRequest{}, dashcontract.Principal{})

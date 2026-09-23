@@ -175,6 +175,16 @@ func secretsVersionsHandler(deps Deps) func(ctx context.Context, in secretsVersi
 // parseFutureExpiry parses raw as an RFC3339 timestamp and rejects one that
 // is not in the future. Shared by secrets.create and secrets.update, since
 // both reject a past expiry the same way.
+//
+// The returned time is always normalized to UTC. A caller's non-UTC offset
+// (e.g. "+02:00") round-trips through the sqlite store's upsert as a
+// literal Go-formatted string carrying that offset, which the store's own
+// read path cannot parse back; the failure isn't confined to the one row
+// either, since it breaks the scan for the whole result set on any query
+// that touches it, such as secrets.list. Normalizing here, before the
+// value ever reaches Secrets().Set, keeps every stored expiry in the one
+// format the store can always read back, the same reason it also strips
+// any monotonic clock reading.
 func parseFutureExpiry(raw string) (time.Time, error) {
 	t, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
@@ -183,7 +193,7 @@ func parseFutureExpiry(raw string) (time.Time, error) {
 	if !t.After(time.Now()) {
 		return time.Time{}, badRequest("expiresAt must be in the future")
 	}
-	return t, nil
+	return t.UTC(), nil
 }
 
 // secretsCreateRequest is the wire request for secrets.create. value is

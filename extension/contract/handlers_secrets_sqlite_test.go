@@ -173,3 +173,121 @@ func TestSecretsUpdate_SQLite_NewTimestampChangesExpiry(t *testing.T) {
 		t.Errorf("expiresAt = %v, want %v (sqlite)", *fresh.ExpiresAt, next)
 	}
 }
+
+// TestSecretsCreateAndUpdate_SQLite_NonUTCOffsetExpiryIsReadable is the
+// regression test for the "keeps the caller's UTC offset" bug:
+// parseFutureExpiry used to return the parsed time.Time exactly as given,
+// offset and all, and that value went straight into Secrets().Set. The
+// sqlite store's own read path cannot parse its own Go-formatted time
+// string back when it carries a non-UTC offset (e.g. "+02:00" round-trips
+// as "... +0200 +0200"), and the failure isn't confined to the one row:
+// GetSecret/GetMeta's scan fails for that row, which then fails
+// secrets.list too, because list scans every row for the app in a single
+// query and one bad row poisons the whole result set.
+//
+// This was confirmed to FAIL, for both the create flow and the update
+// flow below, with parseFutureExpiry returning the parsed time as-is
+// instead of t.UTC(), and to pass once .UTC() was restored; see the fix
+// report for the record of that run.
+func TestSecretsCreateAndUpdate_SQLite_NonUTCOffsetExpiryIsReadable(t *testing.T) {
+	v := newSQLiteTestVault(t)
+	ctx := context.Background()
+	const key = "offset-expiry"
+
+	// +02:00: deliberately not UTC, and not whatever offset the test host
+	// itself happens to run in.
+	createZone := time.FixedZone("+0200", 2*60*60)
+	createExpiry := time.Now().In(createZone).Add(24 * time.Hour).Truncate(time.Second)
+	createOut, err := secretsCreateHandler(Deps{Vault: v})(ctx, secretsCreateRequest{
+		Key: key, Value: "v1", ExpiresAt: createExpiry.Format(time.RFC3339),
+	}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("create with a +02:00 expiresAt: %v", err)
+	}
+	if createOut.Secret.ExpiresAt == nil {
+		t.Fatal("create response expiresAt = nil, want the parsed instant")
+	}
+	if gotCreate, perr := time.Parse(time.RFC3339, *createOut.Secret.ExpiresAt); perr != nil {
+		t.Fatalf("parse create response expiresAt: %v", perr)
+	} else if !gotCreate.Equal(createExpiry) {
+		t.Errorf("create response expiresAt = %v, want the same instant as %v", gotCreate, createExpiry)
+	}
+
+	// The row must still be readable afterward: not just GetMeta for this
+	// one key, but secrets.list, which scans every row for the app in one
+	// query and fails outright if even one row's expires_at can't be
+	// parsed back.
+	listOut, err := secretsListHandler(Deps{Vault: v})(ctx, secretsListRequest{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("secrets.list after a +02:00 create: %v", err)
+	}
+	found := false
+	for _, s := range listOut.Secrets {
+		if s.Key == key {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("secrets.list did not include %q: %+v", key, listOut.Secrets)
+	}
+
+	detailOut, err := secretsDetailHandler(Deps{Vault: v})(ctx, secretsDetailRequest{Key: key}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("secrets.detail after a +02:00 create: %v", err)
+	}
+	if detailOut.Secret.ExpiresAt == nil {
+		t.Fatal("detail expiresAt = nil, want the stored instant")
+	}
+	if gotDetail, perr := time.Parse(time.RFC3339, *detailOut.Secret.ExpiresAt); perr != nil {
+		t.Fatalf("parse detail expiresAt: %v", perr)
+	} else if !gotDetail.Equal(createExpiry) {
+		t.Errorf("detail expiresAt = %v, want the same instant as %v", gotDetail, createExpiry)
+	}
+
+	// Now update with a DIFFERENT non-UTC offset, -05:00, and prove the
+	// same thing holds for the update path, not just create.
+	updateZone := time.FixedZone("-0500", -5*60*60)
+	updateExpiry := time.Now().In(updateZone).Add(48 * time.Hour).Truncate(time.Second)
+	updateExpiryStr := updateExpiry.Format(time.RFC3339)
+	updateOut, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{
+		Key: key, Value: "v2", ExpiresAt: &updateExpiryStr,
+	}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("update with a -05:00 expiresAt: %v", err)
+	}
+	if updateOut.Secret.ExpiresAt == nil {
+		t.Fatal("update response expiresAt = nil, want the parsed instant")
+	}
+	if gotUpdate, perr := time.Parse(time.RFC3339, *updateOut.Secret.ExpiresAt); perr != nil {
+		t.Fatalf("parse update response expiresAt: %v", perr)
+	} else if !gotUpdate.Equal(updateExpiry) {
+		t.Errorf("update response expiresAt = %v, want the same instant as %v", gotUpdate, updateExpiry)
+	}
+
+	listOut2, err := secretsListHandler(Deps{Vault: v})(ctx, secretsListRequest{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("secrets.list after a -05:00 update: %v", err)
+	}
+	found2 := false
+	for _, s := range listOut2.Secrets {
+		if s.Key == key {
+			found2 = true
+		}
+	}
+	if !found2 {
+		t.Fatalf("secrets.list did not include %q after update: %+v", key, listOut2.Secrets)
+	}
+
+	detailOut2, err := secretsDetailHandler(Deps{Vault: v})(ctx, secretsDetailRequest{Key: key}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("secrets.detail after a -05:00 update: %v", err)
+	}
+	if detailOut2.Secret.ExpiresAt == nil {
+		t.Fatal("detail expiresAt = nil after update, want the stored instant")
+	}
+	if gotDetail2, perr := time.Parse(time.RFC3339, *detailOut2.Secret.ExpiresAt); perr != nil {
+		t.Fatalf("parse detail expiresAt after update: %v", perr)
+	} else if !gotDetail2.Equal(updateExpiry) {
+		t.Errorf("detail expiresAt after update = %v, want the same instant as %v", gotDetail2, updateExpiry)
+	}
+}
