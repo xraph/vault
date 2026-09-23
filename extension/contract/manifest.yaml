@@ -18,6 +18,9 @@ intents:
   - { name: secrets.list,     kind: query, version: 1, capability: read }
   - { name: secrets.detail,   kind: query, version: 1, capability: read }
   - { name: secrets.versions, kind: query, version: 1, capability: read }
+  - { name: secrets.create,   kind: command, version: 1, capability: write, invalidates: [secrets.list] }
+  - { name: secrets.update,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
+  - { name: secrets.delete,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
 
 queries:
   secretsList:

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -323,60 +324,389 @@ func TestSecretsVersions_MissingKeyIsNotFound(t *testing.T) {
 	}
 }
 
-// --- no response type in this file ever carries a raw value ---
+// --- secrets.create ---
 
-func TestNoResponseTypeCarriesAValueField(t *testing.T) {
-	next := "2026-01-01T00:00:00Z"
-	samples := map[string]any{
-		"secretsListResponse": secretsListResponse{
-			Secrets: []SecretSummary{{ID: "id", Key: "k", Version: 1, EncryptionAlg: "AES-256-GCM", AppID: testAppID}},
-			Total:   1,
-		},
-		"secretsDetailResponse": secretsDetailResponse{
-			Secret: SecretSummary{ID: "id", Key: "k", Version: 1, AppID: testAppID},
-			Rotation: &RotationPolicySummary{
-				ID: "rid", SecretKey: "k", Enabled: true, NextRotationAt: &next,
-			},
-			RecentAudit: []AuditSummary{{ID: "aid", Action: "secret.set", Outcome: "success"}},
-		},
-		"secretsVersionsResponse": secretsVersionsResponse{
-			Versions: []SecretVersionSummary{{ID: "vid", Version: 1, CreatedBy: "tester"}},
-		},
+func TestSecretsCreate_ConflictOnExistingKey(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	if _, err := v.Secrets().Set(ctx, "exists", []byte("original"), testAppID); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
-	for name, sample := range samples {
-		raw, err := json.Marshal(sample)
-		if err != nil {
-			t.Fatalf("%s: marshal: %v", name, err)
+
+	_, err := secretsCreateHandler(Deps{Vault: v})(ctx, secretsCreateRequest{Key: "exists", Value: "new-value"}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeConflict {
+		t.Fatalf("create over an existing key: code %q, err %v; want CONFLICT", code, err)
+	}
+}
+
+func TestSecretsCreate_ThenListShowsIt(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+
+	out, err := secretsCreateHandler(Deps{Vault: v})(ctx, secretsCreateRequest{Key: "fresh", Value: "value"}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if out.Secret.Key != "fresh" {
+		t.Errorf("created secret key = %q, want fresh", out.Secret.Key)
+	}
+
+	list, err := secretsListHandler(Deps{Vault: v})(ctx, secretsListRequest{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	found := false
+	for _, s := range list.Secrets {
+		if s.Key == "fresh" {
+			found = true
 		}
-		var m map[string]any
-		if err := json.Unmarshal(raw, &m); err != nil {
-			t.Fatalf("%s: unmarshal: %v", name, err)
+	}
+	if !found {
+		t.Fatalf("list after create did not include %q: %+v", "fresh", list.Secrets)
+	}
+}
+
+func TestSecretsCreate_PastExpiryIsRejectedAndCreatesNothing(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
+
+	_, err := secretsCreateHandler(Deps{Vault: v})(ctx, secretsCreateRequest{Key: "past", Value: "value", ExpiresAt: past}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeBadRequest {
+		t.Fatalf("create with a past expiresAt: code %q, err %v; want BAD_REQUEST", code, err)
+	}
+	if _, getErr := v.Secrets().GetMeta(ctx, "past", testAppID); !errors.Is(getErr, vault.ErrSecretNotFound) {
+		t.Errorf("a rejected create must not create anything; GetMeta err = %v", getErr)
+	}
+}
+
+func TestSecretsCreate_EmptyValueIsBadRequest(t *testing.T) {
+	v, _ := newTestVault(t)
+	_, err := secretsCreateHandler(Deps{Vault: v})(context.Background(), secretsCreateRequest{Key: "k"}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeBadRequest {
+		t.Fatalf("create with no value: code %q, err %v; want BAD_REQUEST", code, err)
+	}
+}
+
+// --- secrets.update ---
+
+func TestSecretsUpdate_MissingKeyIsNotFoundAndCreatesNothing(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+
+	_, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "nope", Value: "value"}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeNotFound {
+		t.Fatalf("update of a missing key: code %q, err %v; want NOT_FOUND", code, err)
+	}
+	if _, getErr := v.Secrets().GetMeta(ctx, "nope", testAppID); !errors.Is(getErr, vault.ErrSecretNotFound) {
+		t.Errorf("a NOT_FOUND update must not create the key; GetMeta err = %v", getErr)
+	}
+}
+
+func TestSecretsUpdate_NoExpiryFieldKeepsExpiryAndMetadata(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	future := time.Now().Add(24 * time.Hour)
+	if _, err := v.Secrets().Set(ctx, "keep-me", []byte("v1"), testAppID,
+		secret.WithExpiresAt(future), secret.WithMetadata(map[string]string{"env": "prod"})); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "keep-me", Value: "v2"}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if out.Secret.ExpiresAt == nil {
+		t.Fatal("expiresAt = nil after an update with no expiresAt field, want it kept")
+	}
+	got, err := time.Parse(time.RFC3339, *out.Secret.ExpiresAt)
+	if err != nil {
+		t.Fatalf("parse expiresAt: %v", err)
+	}
+	if !got.Equal(future.UTC().Truncate(time.Second)) {
+		t.Errorf("expiresAt = %v, want %v", got, future)
+	}
+	if out.Secret.Metadata["env"] != "prod" {
+		t.Errorf("metadata = %+v, want env=prod kept", out.Secret.Metadata)
+	}
+}
+
+func TestSecretsUpdate_EmptyExpiryClears(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	future := time.Now().Add(24 * time.Hour)
+	if _, err := v.Secrets().Set(ctx, "clear-me", []byte("v1"), testAppID, secret.WithExpiresAt(future)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	empty := ""
+	out, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "clear-me", Value: "v2", ExpiresAt: &empty}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if out.Secret.ExpiresAt != nil {
+		t.Errorf("expiresAt = %v after clearing, want nil", *out.Secret.ExpiresAt)
+	}
+}
+
+func TestSecretsUpdate_NewTimestampChangesExpiry(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	if _, err := v.Secrets().Set(ctx, "reset-me", []byte("v1"), testAppID); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	next := time.Now().Add(48 * time.Hour)
+	nextStr := next.Format(time.RFC3339)
+	out, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "reset-me", Value: "v2", ExpiresAt: &nextStr}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if out.Secret.ExpiresAt == nil {
+		t.Fatal("expiresAt = nil, want the new timestamp")
+	}
+	got, err := time.Parse(time.RFC3339, *out.Secret.ExpiresAt)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !got.Equal(next.UTC().Truncate(time.Second)) {
+		t.Errorf("expiresAt = %v, want %v", got, next)
+	}
+}
+
+func TestSecretsUpdate_PastExpiryIsRejected(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	if _, err := v.Secrets().Set(ctx, "reject-me", []byte("v1"), testAppID); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	_, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "reject-me", Value: "v2", ExpiresAt: &past}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeBadRequest {
+		t.Fatalf("update with a past expiresAt: code %q, err %v; want BAD_REQUEST", code, err)
+	}
+}
+
+func TestSecretsUpdate_MetadataPresentReplaces(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	if _, err := v.Secrets().Set(ctx, "meta-me", []byte("v1"), testAppID, secret.WithMetadata(map[string]string{"env": "prod"})); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	newMeta := map[string]string{"env": "staging", "owner": "team-x"}
+	out, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "meta-me", Value: "v2", Metadata: &newMeta}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if out.Secret.Metadata["env"] != "staging" || out.Secret.Metadata["owner"] != "team-x" {
+		t.Errorf("metadata = %+v, want the replacement map", out.Secret.Metadata)
+	}
+}
+
+func TestSecretsUpdate_EmptyValueIsBadRequest(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	if _, err := v.Secrets().Set(ctx, "novalue", []byte("v1"), testAppID); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, err := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "novalue"}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeBadRequest {
+		t.Fatalf("update with no value: code %q, err %v; want BAD_REQUEST", code, err)
+	}
+}
+
+// --- secrets.delete ---
+
+func TestSecretsDelete_RemovesPolicyToo(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	const key = "rotatable"
+	if _, err := v.Secrets().Set(ctx, key, []byte("v1"), testAppID); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	policy := &rotation.Policy{
+		Entity: vault.NewEntity(), ID: id.NewRotationID(), SecretKey: key, AppID: testAppID,
+		Interval: 24 * time.Hour, Enabled: true,
+	}
+	if err := st.SaveRotationPolicy(ctx, policy); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+
+	out, err := secretsDeleteHandler(Deps{Vault: v})(ctx, secretsDeleteRequest{Key: key}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !out.OK || out.Key != key {
+		t.Errorf("delete response = %+v, want ok=true key=%q", out, key)
+	}
+	if _, getErr := v.Secrets().GetMeta(ctx, key, testAppID); !errors.Is(getErr, vault.ErrSecretNotFound) {
+		t.Errorf("secret still exists after delete: %v", getErr)
+	}
+	if _, polErr := st.GetRotationPolicy(ctx, key, testAppID); !errors.Is(polErr, vault.ErrRotationNotFound) {
+		t.Errorf("rotation policy still exists after delete: %v", polErr)
+	}
+}
+
+func TestSecretsDelete_NoPolicyIsFine(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	if _, err := v.Secrets().Set(ctx, "no-policy-del", []byte("v1"), testAppID); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := secretsDeleteHandler(Deps{Vault: v})(ctx, secretsDeleteRequest{Key: "no-policy-del"}, dashcontract.Principal{}); err != nil {
+		t.Fatalf("delete without a policy: %v", err)
+	}
+}
+
+func TestSecretsDelete_MissingKeyIsNotFound(t *testing.T) {
+	v, _ := newTestVault(t)
+	_, err := secretsDeleteHandler(Deps{Vault: v})(context.Background(), secretsDeleteRequest{Key: "nope"}, dashcontract.Principal{})
+	if code := codeOf(err); code != dashcontract.CodeNotFound {
+		t.Fatalf("delete of a missing key: code %q, err %v; want NOT_FOUND", code, err)
+	}
+}
+
+// --- value never leaks ---
+
+// TestSecretValueNeverLeaksIntoErrors sends a distinctive value on a
+// failing create and a failing update and asserts it appears nowhere in the
+// resulting error: not in Error(), not in the message, not in details.
+func TestSecretValueNeverLeaksIntoErrors(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	const canary = "hunter2-canary"
+
+	if _, err := v.Secrets().Set(ctx, "already-exists", []byte("orig"), testAppID); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	_, createErr := secretsCreateHandler(Deps{Vault: v})(ctx, secretsCreateRequest{Key: "already-exists", Value: canary}, dashcontract.Principal{})
+	if createErr == nil {
+		t.Fatal("expected create over an existing key to fail")
+	}
+	assertNoCanary(t, createErr, canary)
+
+	_, updateErr := secretsUpdateHandler(Deps{Vault: v})(ctx, secretsUpdateRequest{Key: "does-not-exist", Value: canary}, dashcontract.Principal{})
+	if updateErr == nil {
+		t.Fatal("expected update of a missing key to fail")
+	}
+	assertNoCanary(t, updateErr, canary)
+}
+
+// assertNoCanary fails t if canary appears anywhere in err's text or in any
+// field of a wrapped *contract.Error.
+func assertNoCanary(t *testing.T, err error, canary string) {
+	t.Helper()
+	if strings.Contains(err.Error(), canary) {
+		t.Fatalf("err.Error() contains the submitted value: %v", err)
+	}
+	var ce *dashcontract.Error
+	if errors.As(err, &ce) {
+		if strings.Contains(ce.Message, canary) {
+			t.Fatalf("contract.Error.Message contains the submitted value: %q", ce.Message)
 		}
-		if containsValueField(m) {
-			t.Errorf("%s JSON contains a field named \"value\": %s", name, raw)
+		for k, v := range ce.Details {
+			if s, ok := v.(string); ok && strings.Contains(s, canary) {
+				t.Fatalf("contract.Error.Details[%q] contains the submitted value: %q", k, s)
+			}
 		}
 	}
 }
 
-// containsValueField walks a decoded JSON document looking for any object
-// key literally named "value", at any depth.
-func containsValueField(v any) bool {
-	switch t := v.(type) {
-	case map[string]any:
-		if _, ok := t["value"]; ok {
-			return true
-		}
-		for _, child := range t {
-			if containsValueField(child) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range t {
-			if containsValueField(child) {
-				return true
-			}
+// --- secrets.create / secrets.update / secrets.detail report the real alg ---
+
+// TestSecretsListAndDetail_ReportAES256GCMForKeyedVault checks the other
+// half of the encryptionAlg contract: newTestVault is configured with an
+// encryption key, so a secret written through it must report the real
+// algorithm, not just an empty string the way an unkeyed vault's rows do
+// (covered by TestSecretsListAndDetail_ReportUnencryptedAlg above).
+func TestSecretsListAndDetail_ReportAES256GCMForKeyedVault(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	const key = "encrypted-secret"
+	if _, err := v.Secrets().Set(ctx, key, []byte("value"), testAppID); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	listOut, err := secretsListHandler(Deps{Vault: v})(ctx, secretsListRequest{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found *SecretSummary
+	for i := range listOut.Secrets {
+		if listOut.Secrets[i].Key == key {
+			found = &listOut.Secrets[i]
 		}
 	}
-	return false
+	if found == nil {
+		t.Fatalf("list did not include %q: %+v", key, listOut.Secrets)
+	}
+	if found.EncryptionAlg != "AES-256-GCM" {
+		t.Errorf("list encryptionAlg = %q, want AES-256-GCM", found.EncryptionAlg)
+	}
+
+	detailOut, err := secretsDetailHandler(Deps{Vault: v})(ctx, secretsDetailRequest{Key: key}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	if detailOut.Secret.EncryptionAlg != "AES-256-GCM" {
+		t.Errorf("detail encryptionAlg = %q, want AES-256-GCM", detailOut.Secret.EncryptionAlg)
+	}
+}
+
+// --- no wire TYPE reachable from any response type ever has a field named "value" ---
+//
+// This walks the response TYPES with reflection rather than inspecting a
+// marshalled sample. A sample only shows fields that were actually set: a
+// future Value field tagged json:"value,omitempty" left zero-valued on the
+// sample would marshal to nothing and pass a JSON-based check anyway.
+// Walking the type catches it regardless of what any one instance sets.
+func TestNoWireTypeHasAValueField(t *testing.T) {
+	responseTypes := []reflect.Type{
+		reflect.TypeOf(secretsListResponse{}),
+		reflect.TypeOf(secretsDetailResponse{}),
+		reflect.TypeOf(secretsVersionsResponse{}),
+		reflect.TypeOf(secretsCreateResponse{}),
+		reflect.TypeOf(secretsUpdateResponse{}),
+		reflect.TypeOf(secretsDeleteResponse{}),
+	}
+	visited := map[reflect.Type]bool{}
+	for _, rt := range responseTypes {
+		walkWireType(t, rt, visited)
+	}
+}
+
+// walkWireType recursively visits typ and every type reachable from it
+// through pointers, slices, arrays and maps, failing t if any struct
+// field's JSON name is literally "value".
+func walkWireType(t *testing.T, typ reflect.Type, visited map[reflect.Type]bool) {
+	t.Helper()
+	for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array {
+		typ = typ.Elem()
+	}
+	if typ.Kind() == reflect.Map {
+		walkWireType(t, typ.Elem(), visited)
+		return
+	}
+	if typ.Kind() != reflect.Struct {
+		return
+	}
+	if visited[typ] {
+		return
+	}
+	visited[typ] = true
+
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		name := f.Name
+		if tag, ok := f.Tag.Lookup("json"); ok {
+			if parts := strings.Split(tag, ","); parts[0] != "" {
+				name = parts[0]
+			}
+		}
+		if name == "value" {
+			t.Errorf("%s.%s has JSON name %q: a wire type must never carry a raw secret value", typ.Name(), f.Name, name)
+		}
+		walkWireType(t, f.Type, visited)
+	}
 }

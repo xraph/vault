@@ -72,6 +72,15 @@ func Register(
 		{"secrets.versions", func() error {
 			return dispatcher.RegisterQuery(d, c, "secrets.versions", 1, secretsVersionsHandler(deps))
 		}},
+		{"secrets.create", func() error {
+			return dispatcher.RegisterCommand(d, c, "secrets.create", 1, secretsCreateHandler(deps))
+		}},
+		{"secrets.update", func() error {
+			return dispatcher.RegisterCommand(d, c, "secrets.update", 1, secretsUpdateHandler(deps))
+		}},
+		{"secrets.delete", func() error {
+			return dispatcher.RegisterCommand(d, c, "secrets.delete", 1, secretsDeleteHandler(deps))
+		}},
 	} {
 		if err := bind.fn(); err != nil {
 			return fmt.Errorf("vault/contract: register %s: %w", bind.intent, err)
