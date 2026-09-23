@@ -1,9 +1,9 @@
 package vault
 
 import (
-	"context"
-
 	log "github.com/xraph/go-utils/log"
+
+	"github.com/xraph/vault/store"
 )
 
 // Option configures a Vault instance.
@@ -44,35 +44,8 @@ func WithConfig(cfg Config) Option {
 	}
 }
 
-// Storer is the interface that store backends must implement.
-// It is defined here to avoid import cycles — the store package
-// composes subsystem store interfaces into a concrete type.
-type Storer interface {
-	Ping(ctx interface{ Deadline() (interface{}, bool) }) error
-	Close() error
-}
-
-// Vault is the central type. It is defined here as a forward declaration
-// so that options can reference it. The full implementation is in vault.go
-// (created in a later phase).
-type Vault struct {
-	config Config
-	logger log.Logger
-}
-
-// Health checks the health of the Vault.
-func (v *Vault) Health(_ context.Context) error {
-	return nil
-}
-
-// NewVault creates a new Vault instance with the given options.
-func NewVault(opts ...Option) *Vault {
-	v := &Vault{
-		config: DefaultConfig(),
-		logger: log.NewNoopLogger(),
-	}
-	for _, opt := range opts {
-		opt(v)
-	}
-	return v
+// WithStore sets the store backend. Required: New cannot compose the
+// subsystem services without one.
+func WithStore(s store.Store) Option {
+	return func(v *Vault) { v.store = s }
 }

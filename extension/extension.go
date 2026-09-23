@@ -128,7 +128,13 @@ func (e *Extension) Register(fapp forge.App) error {
 		}))
 	}
 
-	v := vault.NewVault(e.vaultOpts...)
+	if e.store != nil {
+		e.vaultOpts = append(e.vaultOpts, vault.WithStore(e.store))
+	}
+	v, err := vault.New(e.vaultOpts...)
+	if err != nil {
+		return fmt.Errorf("vault: %w", err)
+	}
 	e.v = v
 
 	// Register the Vault instance in the DI container.
