@@ -3,7 +3,7 @@ title: Confy Integration
 description: Mount vault config and secrets into forge's confy-backed ConfigManager.
 ---
 
-The `confy` package provides adapters that expose vault's config and secret stores as [confy](https://github.com/xraph/confy) sources. This allows forge applications to access vault-managed configuration and secrets through the standard `ConfigManager` API, with support for watching, selective key mounting, and key prefixing.
+The `confy` package provides adapters that expose vault's config store and secret service as [confy](https://github.com/xraph/confy) sources. This allows forge applications to access vault-managed configuration and secrets through the standard `ConfigManager` API, with support for watching, selective key mounting, and key prefixing.
 
 ## Installation
 
@@ -17,14 +17,33 @@ Implements `confy.ConfigSource`. Loads all (or filtered) vault config entries as
 
 ### Creating a config source
 
+You build the source from a Vault you got from `vault.New`:
+
 ```go
-src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp")
+v, err := vault.New(
+    vault.WithStore(store),
+    vault.WithAppID("myapp"),
+    vault.WithEncryptionKeyEnv("VAULT_ENCRYPTION_KEY"),
+)
+if err != nil {
+    return err
+}
+
+src := vaultconfy.NewVaultConfigSource(v.Store(), v.Secrets(), "myapp")
 ```
+
+The signature is:
+
+```go
+func NewVaultConfigSource(configStore config.Store, secrets SecretReader, appID string, opts ...VaultSourceOption) *VaultConfigSource
+```
+
+`configStore` is where the source reads config entries from, and `v.Store()` works because every vault store is also a `config.Store`. `secrets` is a `vaultconfy.SecretReader`, which only needs `Get(ctx, key, appID)`. Pass `v.Secrets()`, the secret service. Don't pass a raw `secret.Store`: no store backend keeps a decrypted value, so only the service can hand you the plaintext.
 
 Pass any combination of options to customise behaviour:
 
 ```go
-src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp",
+src := vaultconfy.NewVaultConfigSource(v.Store(), v.Secrets(), "myapp",
     vaultconfy.WithSourceName("vault:config"),
     vaultconfy.WithSourcePriority(200),
     vaultconfy.WithSourcePollInterval(15 * time.Second),
@@ -81,7 +100,7 @@ vaultconfy.WithKeyPatterns("db.*", "auth.*")
 Whitelist and patterns are OR-ed: a key passes if it is in the whitelist **or** matches any pattern. The prefix is applied after filtering.
 
 ```go
-src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp",
+src := vaultconfy.NewVaultConfigSource(v.Store(), v.Secrets(), "myapp",
     vaultconfy.WithKeys("cache.ttl"),            // explicit whitelist
     vaultconfy.WithKeyPatterns("db.*"),           // glob pattern
     vaultconfy.WithKeyPrefix("secrets."),         // prefix all surviving keys
@@ -97,7 +116,7 @@ src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp",
 
 ```go
 cm := confy.New()
-src := vaultconfy.NewVaultConfigSource(configStore, secretStore, "myapp")
+src := vaultconfy.NewVaultConfigSource(v.Store(), v.Secrets(), "myapp")
 
 if err := cm.LoadFrom(src); err != nil {
     log.Fatal(err)
@@ -126,7 +145,7 @@ cm.WatchWithCallback("db.host", func(key string, value any) {
 
 ### Secret access via confy
 
-If a secret store is provided, the source also supports `GetSecret`:
+When you pass a secret reader, the source also supports `GetSecret`, which returns the decrypted value:
 
 ```go
 password, err := src.GetSecret(ctx, "db_password")
@@ -139,17 +158,25 @@ password, err := src.GetSecret(ctx, "db_password")
 | `Name()` | Configurable (default `"vault"`) |
 | `GetType()` | `"vault"` |
 | `IsWatchable()` | `true` |
-| `SupportsSecrets()` | `true` (when secret store provided) |
+| `SupportsSecrets()` | `true` (when you pass a secret reader) |
 
 ## VaultSecretProvider
 
-Implements `confy.SecretProvider`. Wraps vault's secret store for use with confy's secrets management system.
+Implements `confy.SecretProvider`. Wraps vault's secret service for use with confy's secrets management system.
 
 ### Creating a secret provider
 
 ```go
-provider := vaultconfy.NewVaultSecretProvider(secretStore, "myapp")
+provider := vaultconfy.NewVaultSecretProvider(v.Secrets(), "myapp")
 ```
+
+The signature is:
+
+```go
+func NewVaultSecretProvider(secrets SecretService, appID string) *VaultSecretProvider
+```
+
+The provider reads, writes, deletes and lists secrets, so it takes a `vaultconfy.SecretService`: a `SecretReader` plus `Set`, `Delete` and `List`. The `*secret.Service` you get from `v.Secrets()` satisfies it. If you pass something that can only read, your code won't compile, which beats a provider that fails its health check at runtime. confy reports the first provider error it sees, so one provider like that would mark its whole secrets manager unhealthy.
 
 ### Usage with confy SecretsManager
 
@@ -169,7 +196,7 @@ secret, err := sm.GetSecret(ctx, "db_password")
 | `SetSecret(ctx, key, value)` | Creates or updates a secret |
 | `DeleteSecret(ctx, key)` | Removes a secret and all versions |
 | `ListSecrets(ctx)` | Returns all secret keys for the app |
-| `HealthCheck(ctx)` | Verifies the secret store is accessible |
+| `HealthCheck(ctx)` | Verifies the secret service can list secrets |
 
 ### Properties
 
@@ -272,6 +299,16 @@ func main() {
     ctx := context.Background()
     store := memory.New()
 
+    // No key here, so secrets are stored unencrypted. That's fine for a
+    // local example. Give New a key for anything real.
+    v, err := vault.New(
+        vault.WithStore(store),
+        vault.WithAppID("myapp"),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
     // Seed some config entries.
     store.SetConfig(ctx, &config.Entry{
         Entity: vault.NewEntity(), ID: id.NewConfigID(),
@@ -288,7 +325,7 @@ func main() {
 
     // Create a vault confy source that only mounts "db.*" keys
     // under the "vault." prefix.
-    src := vaultconfy.NewVaultConfigSource(store, store, "myapp",
+    src := vaultconfy.NewVaultConfigSource(v.Store(), v.Secrets(), "myapp",
         vaultconfy.WithKeyPrefix("vault."),
         vaultconfy.WithKeyPatterns("db.*"),
         vaultconfy.WithSourcePollInterval(5 * time.Second),
@@ -311,7 +348,7 @@ func main() {
     })
     cm.Watch(ctx)
 
-    // Update a vault config entry -- the watcher fires on next poll.
+    // Update a vault config entry. The watcher fires on the next poll.
     store.SetConfig(ctx, &config.Entry{
         Entity: vault.NewEntity(), ID: id.NewConfigID(),
         Key: "db.host", Value: "prod-db.example.com", AppID: "myapp",

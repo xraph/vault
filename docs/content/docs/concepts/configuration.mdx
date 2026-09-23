@@ -24,11 +24,12 @@ type Config struct {
     AppID string `json:"app_id" yaml:"app_id"`
 
     // EncryptionKey is the master encryption key (32 bytes for AES-256-GCM).
-    // If empty, encryption is disabled (not recommended for production).
+    // It wins over EncryptionKeyEnv when both are set.
     EncryptionKey []byte `json:"-" yaml:"-"`
 
-    // EncryptionKeyEnv is the environment variable name for the encryption key.
-    // Used as a fallback if EncryptionKey is not set directly.
+    // EncryptionKeyEnv names an environment variable that holds the key.
+    // It's read only when EncryptionKey is empty, and New fails if the
+    // variable is unset, empty or can't be decoded.
     EncryptionKeyEnv string `json:"encryption_key_env" yaml:"encryption_key_env"`
 
     // FlagCacheTTL is the TTL for the flag evaluation cache.
@@ -46,8 +47,8 @@ type Config struct {
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `AppID` | `string` | `""` | Application identifier used for scoping all entities. |
-| `EncryptionKey` | `[]byte` | `nil` | 32-byte AES-256-GCM master key. Excluded from JSON/YAML serialization. |
-| `EncryptionKeyEnv` | `string` | `""` | Environment variable name for the encryption key (fallback). |
+| `EncryptionKey` | `[]byte` | `nil` | 32-byte AES-256-GCM master key. Wins over `EncryptionKeyEnv`. Excluded from JSON/YAML serialization. |
+| `EncryptionKeyEnv` | `string` | `""` | Environment variable that holds the key, read when `EncryptionKey` is empty. `New` fails if you name it and it's unset, empty or undecodable. |
 | `FlagCacheTTL` | `time.Duration` | `30s` | TTL for the flag evaluation cache. |
 | `SourcePollInterval` | `time.Duration` | `30s` | Interval for polling database configuration sources. |
 
@@ -98,7 +99,17 @@ if err != nil {
 }
 ```
 
-`New` fails if you leave out the store, or if you give it a key that isn't a valid 32-byte key. It doesn't fail when no key is configured at all. In that case secrets are stored unencrypted and `New` logs a warning through your logger, so you'll want a key in anything past local development.
+`New` picks the key like this:
+
+1. If you set `EncryptionKey`, that's the key. `EncryptionKeyEnv` is ignored.
+2. Otherwise, if you name a variable with `EncryptionKeyEnv`, that variable must hold a valid key. `New` won't quietly carry on without one.
+3. Only when you configure neither does vault store secrets unencrypted. `New` logs a warning through your logger when that happens, so you'll want a key in anything past local development.
+
+`New` fails when:
+
+- you leave out the store (`ErrNoStore`);
+- you give it a key that isn't a valid 32-byte key;
+- you name a variable with `EncryptionKeyEnv` and it's unset, empty or can't be decoded. Naming the variable tells vault you expect encryption, so it refuses to start rather than write plaintext you think is encrypted.
 
 ### Combining WithConfig with other options
 
@@ -116,7 +127,7 @@ This also means `WithConfig` can't clear a field. Passing an empty `AppID` leave
 
 ### Loading the encryption key from an environment variable
 
-When `EncryptionKey` is not set directly, use `WithEncryptionKeyEnv` to specify an environment variable. The `crypto.EnvKeyProvider` reads and decodes the key at runtime:
+If you'd rather not put the key in code, use `WithEncryptionKeyEnv` to name an environment variable. `New` reads it only when `EncryptionKey` is empty, and fails if the variable is unset, empty or can't be decoded. You can read the same variable yourself with `crypto.EnvKeyProvider`:
 
 ```go
 import "github.com/xraph/vault/crypto"
