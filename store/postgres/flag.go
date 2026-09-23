@@ -257,3 +257,10 @@ func (s *Store) ListFlagTenantOverrides(ctx context.Context, key, appID string) 
 	}
 	return result, nil
 }
+
+// CountFlagDefinitions returns the number of flag definitions belonging to appID.
+func (s *Store) CountFlagDefinitions(ctx context.Context, appID string) (int64, error) {
+	return s.pgdb().NewSelect((*FlagModel)(nil)).
+		Where("app_id = ?", appID).
+		Count(ctx)
+}

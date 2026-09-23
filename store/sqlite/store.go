@@ -985,3 +985,37 @@ func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audi
 	}
 	return result, nil
 }
+
+// ──────────────────────────────────────────────────
+// Counts
+// ──────────────────────────────────────────────────
+
+// CountSecrets returns the number of secrets belonging to appID.
+func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
+	return s.sdb.NewSelect((*SecretModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// CountFlagDefinitions returns the number of flag definitions belonging to appID.
+func (s *Store) CountFlagDefinitions(ctx context.Context, appID string) (int64, error) {
+	return s.sdb.NewSelect((*FlagModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// CountConfig returns the number of config entries belonging to appID.
+func (s *Store) CountConfig(ctx context.Context, appID string) (int64, error) {
+	return s.sdb.NewSelect((*ConfigModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// CountOverrides returns the number of tenant overrides belonging to appID.
+func (s *Store) CountOverrides(ctx context.Context, appID string) (int64, error) {
+	return s.sdb.NewSelect((*OverrideModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// CountRotationPolicies returns the number of rotation policies belonging to appID.
+func (s *Store) CountRotationPolicies(ctx context.Context, appID string) (int64, error) {
+	return s.sdb.NewSelect((*RotationPolicyModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// CountAudit returns the number of audit entries belonging to appID.
+func (s *Store) CountAudit(ctx context.Context, appID string) (int64, error) {
+	return s.sdb.NewSelect((*AuditModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}

@@ -18,4 +18,8 @@ type Store interface {
 
 	// ListOverridesByKey returns all tenant overrides for a specific config key.
 	ListOverridesByKey(ctx context.Context, key, appID string) ([]*Override, error)
+
+	// CountOverrides returns the total number of tenant overrides for an app,
+	// across every key and tenant.
+	CountOverrides(ctx context.Context, appID string) (int64, error)
 }

@@ -21,4 +21,8 @@ type Store interface {
 
 	// ListSecretVersions returns all versions of a secret.
 	ListSecretVersions(ctx context.Context, key, appID string) ([]*Version, error)
+
+	// CountSecrets returns the total number of secrets for an app,
+	// independent of any paging.
+	CountSecrets(ctx context.Context, appID string) (int64, error)
 }

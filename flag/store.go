@@ -33,4 +33,8 @@ type Store interface {
 
 	// ListFlagTenantOverrides returns all tenant overrides for a flag.
 	ListFlagTenantOverrides(ctx context.Context, key, appID string) ([]*TenantOverride, error)
+
+	// CountFlagDefinitions returns the total number of flag definitions for
+	// an app, independent of any paging.
+	CountFlagDefinitions(ctx context.Context, appID string) (int64, error)
 }

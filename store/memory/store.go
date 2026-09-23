@@ -825,3 +825,92 @@ func applyPaginationCfg(result []*config.Entry, offset, limit int) []*config.Ent
 	}
 	return result
 }
+
+// ──────────────────────────────────────────────────
+// Counts
+// ──────────────────────────────────────────────────
+
+// CountSecrets returns the number of secrets belonging to appID.
+func (m *Store) CountSecrets(_ context.Context, appID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, s := range m.secrets {
+		if s.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountFlagDefinitions returns the number of flag definitions belonging to appID.
+func (m *Store) CountFlagDefinitions(_ context.Context, appID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, f := range m.flags {
+		if f.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountConfig returns the number of config entries belonging to appID.
+func (m *Store) CountConfig(_ context.Context, appID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, e := range m.configs {
+		if e.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountOverrides returns the number of tenant overrides belonging to appID,
+// across every key and tenant.
+func (m *Store) CountOverrides(_ context.Context, appID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, o := range m.overrides {
+		if o.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountRotationPolicies returns the number of rotation policies belonging to appID.
+func (m *Store) CountRotationPolicies(_ context.Context, appID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, p := range m.rotationPolicies {
+		if p.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountAudit returns the number of audit entries belonging to appID.
+func (m *Store) CountAudit(_ context.Context, appID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, e := range m.auditEntries {
+		if e.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}

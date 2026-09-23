@@ -12,4 +12,8 @@ type Store interface {
 
 	// ListAuditByKey returns audit entries for a specific key within an app.
 	ListAuditByKey(ctx context.Context, key, appID string, opts ListOpts) ([]*Entry, error)
+
+	// CountAudit returns the total number of audit entries for an app,
+	// independent of any paging.
+	CountAudit(ctx context.Context, appID string) (int64, error)
 }

@@ -63,3 +63,10 @@ func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audi
 	}
 	return result, nil
 }
+
+// CountAudit returns the number of audit entries belonging to appID.
+func (s *Store) CountAudit(ctx context.Context, appID string) (int64, error) {
+	return s.pgdb().NewSelect((*AuditModel)(nil)).
+		Where("app_id = ?", appID).
+		Count(ctx)
+}

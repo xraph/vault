@@ -21,4 +21,8 @@ type Store interface {
 
 	// ListConfigVersions returns all versions of a config entry.
 	ListConfigVersions(ctx context.Context, key, appID string) ([]*EntryVersion, error)
+
+	// CountConfig returns the total number of config entries for an app,
+	// independent of any paging.
+	CountConfig(ctx context.Context, appID string) (int64, error)
 }

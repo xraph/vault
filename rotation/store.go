@@ -21,4 +21,8 @@ type Store interface {
 
 	// ListRotationRecords returns rotation history for a secret.
 	ListRotationRecords(ctx context.Context, key, appID string, opts ListOpts) ([]*Record, error)
+
+	// CountRotationPolicies returns the total number of rotation policies for
+	// an app, independent of any paging.
+	CountRotationPolicies(ctx context.Context, appID string) (int64, error)
 }

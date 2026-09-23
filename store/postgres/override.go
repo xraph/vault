@@ -111,3 +111,10 @@ func (s *Store) ListOverridesByKey(ctx context.Context, key, appID string) ([]*o
 	}
 	return result, nil
 }
+
+// CountOverrides returns the number of tenant overrides belonging to appID.
+func (s *Store) CountOverrides(ctx context.Context, appID string) (int64, error) {
+	return s.pgdb().NewSelect((*OverrideModel)(nil)).
+		Where("app_id = ?", appID).
+		Count(ctx)
+}

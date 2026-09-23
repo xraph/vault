@@ -197,3 +197,10 @@ func (s *Store) ListConfigVersions(ctx context.Context, key, appID string) ([]*c
 	}
 	return result, nil
 }
+
+// CountConfig returns the number of config entries belonging to appID.
+func (s *Store) CountConfig(ctx context.Context, appID string) (int64, error) {
+	return s.pgdb().NewSelect((*ConfigModel)(nil)).
+		Where("app_id = ?", appID).
+		Count(ctx)
+}

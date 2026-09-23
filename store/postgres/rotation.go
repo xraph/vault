@@ -117,3 +117,10 @@ func (s *Store) ListRotationRecords(ctx context.Context, key, appID string, opts
 	}
 	return result, nil
 }
+
+// CountRotationPolicies returns the number of rotation policies belonging to appID.
+func (s *Store) CountRotationPolicies(ctx context.Context, appID string) (int64, error) {
+	return s.pgdb().NewSelect((*RotationPolicyModel)(nil)).
+		Where("app_id = ?", appID).
+		Count(ctx)
+}

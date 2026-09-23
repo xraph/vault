@@ -192,3 +192,10 @@ func (s *Store) ListSecretVersions(ctx context.Context, key, appID string) ([]*s
 	}
 	return result, nil
 }
+
+// CountSecrets returns the number of secrets belonging to appID.
+func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
+	return s.pgdb().NewSelect((*SecretModel)(nil)).
+		Where("app_id = ?", appID).
+		Count(ctx)
+}
