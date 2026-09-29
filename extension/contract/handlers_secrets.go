@@ -10,6 +10,7 @@ import (
 
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/audit"
+	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/secret"
 )
 
@@ -115,7 +116,7 @@ func secretsDetailHandler(deps Deps) func(ctx context.Context, in secretsDetailR
 			return secretsDetailResponse{}, deps.mapError("secrets.detail", err)
 		}
 
-		entries, err := deps.Vault.Store().ListAuditByKey(ctx, key, appID, audit.ListOpts{Limit: recentAuditLimit})
+		entries, err := deps.Vault.Store().ListAuditByKey(ctx, key, appID, audit.ListOpts{Limit: recentAuditLimit, Resource: audithook.ResourceSecret})
 		if err != nil {
 			return secretsDetailResponse{}, deps.mapError("secrets.detail", err)
 		}

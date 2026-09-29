@@ -26,4 +26,8 @@ type Entry struct {
 type ListOpts struct {
 	Limit  int
 	Offset int
+
+	// Resource restricts the result to entries whose Resource matches
+	// exactly. Empty means every resource.
+	Resource string
 }

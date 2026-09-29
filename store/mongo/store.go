@@ -892,7 +892,7 @@ func (s *Store) RecordAudit(ctx context.Context, e *audit.Entry) error {
 func (s *Store) ListAudit(ctx context.Context, appID string, opts audit.ListOpts) ([]*audit.Entry, error) {
 	var models []AuditModel
 	q := s.mdb.NewFind(&models).
-		Filter(bson.M{"app_id": appID}).
+		Filter(auditFilter(bson.M{"app_id": appID}, opts)).
 		Sort(bson.D{{Key: "created_at", Value: -1}})
 
 	if opts.Limit > 0 {
@@ -917,7 +917,7 @@ func (s *Store) ListAudit(ctx context.Context, appID string, opts audit.ListOpts
 func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audit.ListOpts) ([]*audit.Entry, error) {
 	var models []AuditModel
 	q := s.mdb.NewFind(&models).
-		Filter(bson.M{"key": key, "app_id": appID}).
+		Filter(auditFilter(bson.M{"key": key, "app_id": appID}, opts)).
 		Sort(bson.D{{Key: "created_at", Value: -1}})
 
 	if opts.Limit > 0 {
@@ -970,4 +970,21 @@ func (s *Store) CountRotationPolicies(ctx context.Context, appID string) (int64,
 // CountAudit returns the number of audit entries belonging to appID.
 func (s *Store) CountAudit(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*AuditModel)(nil)).Filter(bson.M{"app_id": appID}).Count(ctx)
+}
+
+// CountAuditMatching returns the number of audit entries belonging to appID
+// that match opts. Limit and Offset are ignored.
+func (s *Store) CountAuditMatching(ctx context.Context, appID string, opts audit.ListOpts) (int64, error) {
+	return s.mdb.NewFind((*AuditModel)(nil)).
+		Filter(auditFilter(bson.M{"app_id": appID}, opts)).
+		Count(ctx)
+}
+
+// auditFilter adds the resource equality to an audit filter when opts asks
+// for one.
+func auditFilter(f bson.M, opts audit.ListOpts) bson.M {
+	if opts.Resource != "" {
+		f["resource"] = opts.Resource
+	}
+	return f
 }

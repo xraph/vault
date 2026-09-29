@@ -13,6 +13,8 @@ import (
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/audit"
+	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/rotation"
 	"github.com/xraph/vault/secret"
@@ -284,6 +286,57 @@ func TestSecretsDetail_RotationPresentAndNextRotationAtAbsentWhenDisabled(t *tes
 	}
 	if strings.Contains(string(raw), `"nextRotationAt"`) {
 		t.Errorf("JSON has a nextRotationAt field for a disabled policy (omitempty should drop it): %s", raw)
+	}
+}
+
+// A flag audit row on the same key must not show up as a secret's history.
+func TestSecretsDetail_RecentAuditIsSecretRowsOnly(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	const key = "shared-key"
+	if _, err := v.Secrets().Set(ctx, key, []byte("value"), testAppID); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	base := time.Now().UTC()
+	rows := []struct{ resource, action string }{
+		{audithook.ResourceSecret, audithook.ActionSecretSet},
+		{audithook.ResourceFlag, audithook.ActionFlagUpdated},
+		{audithook.ResourceSecret, audithook.ActionSecretAccessed},
+	}
+	for i, r := range rows {
+		if err := st.RecordAudit(ctx, &audit.Entry{
+			ID:        id.NewAuditID(),
+			Action:    r.action,
+			Resource:  r.resource,
+			Key:       key,
+			AppID:     testAppID,
+			Outcome:   "success",
+			CreatedAt: base.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("RecordAudit: %v", err)
+		}
+	}
+
+	out, err := secretsDetailHandler(Deps{Vault: v})(ctx, secretsDetailRequest{Key: key}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	for _, e := range out.RecentAudit {
+		if e.Action == audithook.ActionFlagUpdated {
+			t.Errorf("recentAudit carries a flag row: %+v", e)
+		}
+	}
+	// The secret rows recorded here, plus whatever the vault's own Set
+	// recorded for the seed, are all secret rows; the flag row is the only
+	// one that must be missing.
+	var seen int
+	for _, e := range out.RecentAudit {
+		if e.Action == audithook.ActionSecretSet || e.Action == audithook.ActionSecretAccessed {
+			seen++
+		}
+	}
+	if seen < 2 {
+		t.Errorf("recentAudit has %d of the 2 secret rows recorded: %+v", seen, out.RecentAudit)
 	}
 }
 

@@ -943,6 +943,9 @@ func (s *Store) ListAudit(ctx context.Context, appID string, opts audit.ListOpts
 	q := s.sdb.NewSelect(&models).
 		Where("app_id = ?", appID).
 		OrderExpr("created_at DESC")
+	if opts.Resource != "" {
+		q = q.Where("resource = ?", opts.Resource)
+	}
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -969,6 +972,9 @@ func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audi
 		Where("key = ?", key).
 		Where("app_id = ?", appID).
 		OrderExpr("created_at DESC")
+	if opts.Resource != "" {
+		q = q.Where("resource = ?", opts.Resource)
+	}
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -1020,4 +1026,14 @@ func (s *Store) CountRotationPolicies(ctx context.Context, appID string) (int64,
 // CountAudit returns the number of audit entries belonging to appID.
 func (s *Store) CountAudit(ctx context.Context, appID string) (int64, error) {
 	return s.sdb.NewSelect((*AuditModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// CountAuditMatching returns the number of audit entries belonging to appID
+// that match opts. Limit and Offset are ignored.
+func (s *Store) CountAuditMatching(ctx context.Context, appID string, opts audit.ListOpts) (int64, error) {
+	q := s.sdb.NewSelect((*AuditModel)(nil)).Where("app_id = ?", appID)
+	if opts.Resource != "" {
+		q = q.Where("resource = ?", opts.Resource)
+	}
+	return q.Count(ctx)
 }

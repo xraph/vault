@@ -741,7 +741,7 @@ func (m *Store) ListAudit(_ context.Context, appID string, opts audit.ListOpts) 
 
 	result := make([]*audit.Entry, 0, len(m.auditEntries))
 	for _, e := range m.auditEntries {
-		if e.AppID != appID {
+		if e.AppID != appID || !matchesResource(e, opts) {
 			continue
 		}
 		cp := *e
@@ -769,7 +769,7 @@ func (m *Store) ListAuditByKey(_ context.Context, key, appID string, opts audit.
 
 	result := make([]*audit.Entry, 0, len(m.auditEntries))
 	for _, e := range m.auditEntries {
-		if e.AppID != appID || e.Key != key {
+		if e.AppID != appID || e.Key != key || !matchesResource(e, opts) {
 			continue
 		}
 		cp := *e
@@ -941,4 +941,25 @@ func (m *Store) CountAudit(_ context.Context, appID string) (int64, error) {
 		}
 	}
 	return n, nil
+}
+
+// CountAuditMatching returns the number of audit entries belonging to appID
+// that match opts. Limit and Offset are ignored.
+func (m *Store) CountAuditMatching(_ context.Context, appID string, opts audit.ListOpts) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, e := range m.auditEntries {
+		if e.AppID == appID && matchesResource(e, opts) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// matchesResource reports whether e passes opts.Resource. An empty Resource
+// matches every entry.
+func matchesResource(e *audit.Entry, opts audit.ListOpts) bool {
+	return opts.Resource == "" || e.Resource == opts.Resource
 }
