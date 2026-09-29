@@ -7,6 +7,7 @@ import (
 	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/vault/audit"
+	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/crypto"
 	"github.com/xraph/vault/flag"
@@ -29,6 +30,7 @@ type Vault struct {
 
 	secrets   *secret.Service
 	engine    *flag.Engine
+	flagMgr   *flag.Manager
 	flags     *flag.Service
 	resolver  *override.Resolver
 	configSvc *config.Service
@@ -85,6 +87,12 @@ func New(opts ...Option) (*Vault, error) {
 
 	v.engine = flag.NewEngine(v.store, flag.WithCacheTTL(v.config.FlagCacheTTL))
 	v.flags = flag.NewService(v.engine, flag.WithAppID(v.config.AppID))
+	v.flagMgr = flag.NewManager(v.store, v.engine,
+		flag.WithManagerAppID(v.config.AppID),
+		flag.WithOnFlagMutate(func(ctx context.Context, action, key, appID string) {
+			v.auditLog.LogAccess(scope.WithAppID(ctx, appID), key, action, audithook.ResourceFlag)
+		}),
+	)
 
 	v.resolver = override.NewResolver(v.store, v.store,
 		override.WithLogger(v.logger),
@@ -148,6 +156,10 @@ func (v *Vault) Flags() *flag.Service { return v.flags }
 // FlagEngine returns the underlying flag engine, which is what a caller
 // needs for EvaluateDetail. Flags() covers the typed read path.
 func (v *Vault) FlagEngine() *flag.Engine { return v.engine }
+
+// FlagManager returns the flag write service: the one path that creates,
+// changes and deletes flags with validation, cache invalidation and audit.
+func (v *Vault) FlagManager() *flag.Manager { return v.flagMgr }
 
 // Config returns the runtime config service.
 func (v *Vault) Config() *config.Service { return v.configSvc }

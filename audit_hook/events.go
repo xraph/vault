@@ -21,6 +21,16 @@ const (
 	ActionFlagDeleted   = "flag.deleted"
 	ActionFlagToggled   = "flag.toggled"
 
+	// ActionFlagRulesSet records a whole-list replacement of a flag's
+	// targeting rules.
+	ActionFlagRulesSet = "flag.rules_set"
+
+	// ActionFlagOverrideSet records a per-tenant override being written.
+	ActionFlagOverrideSet = "flag.override_set"
+
+	// ActionFlagOverrideDeleted records a per-tenant override being removed.
+	ActionFlagOverrideDeleted = "flag.override_deleted"
+
 	// Config actions.
 	ActionConfigSet     = "config.set"
 	ActionConfigDeleted = "config.deleted"
@@ -35,6 +45,7 @@ func AllActions() []string {
 	return []string{
 		ActionSecretAccessed, ActionSecretSet, ActionSecretDeleted, ActionSecretRotated,
 		ActionFlagEvaluated, ActionFlagCreated, ActionFlagUpdated, ActionFlagDeleted, ActionFlagToggled,
+		ActionFlagRulesSet, ActionFlagOverrideSet, ActionFlagOverrideDeleted,
 		ActionConfigSet, ActionConfigDeleted,
 		ActionOverrideSet, ActionOverrideDeleted,
 	}
