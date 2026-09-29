@@ -44,4 +44,8 @@ type ListOpts struct {
 	Limit  int
 	Offset int
 	AppID  string
+
+	// Type restricts the list to flags of one value type. Empty means every
+	// type.
+	Type Type
 }

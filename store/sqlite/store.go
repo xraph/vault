@@ -322,6 +322,9 @@ func (s *Store) ListFlagDefinitions(ctx context.Context, appID string, opts flag
 	q := s.sdb.NewSelect(&models).
 		Where("app_id = ?", appID).
 		OrderExpr("key ASC")
+	if opts.Type != "" {
+		q = q.Where("type = ?", string(opts.Type))
+	}
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -1006,6 +1009,16 @@ func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 // CountFlagDefinitions returns the number of flag definitions belonging to appID.
 func (s *Store) CountFlagDefinitions(ctx context.Context, appID string) (int64, error) {
 	return s.sdb.NewSelect((*FlagModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// CountFlagDefinitionsMatching returns the number of flag definitions belonging
+// to appID that match opts. Limit and Offset are ignored.
+func (s *Store) CountFlagDefinitionsMatching(ctx context.Context, appID string, opts flag.ListOpts) (int64, error) {
+	q := s.sdb.NewSelect((*FlagModel)(nil)).Where("app_id = ?", appID)
+	if opts.Type != "" {
+		q = q.Where("type = ?", string(opts.Type))
+	}
+	return q.Count(ctx)
 }
 
 // CountConfig returns the number of config entries belonging to appID.

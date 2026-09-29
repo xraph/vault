@@ -10,7 +10,9 @@ type Store interface {
 	// GetFlagDefinition retrieves a flag definition by key and app ID.
 	GetFlagDefinition(ctx context.Context, key, appID string) (*Definition, error)
 
-	// ListFlagDefinitions returns all flag definitions for an app.
+	// ListFlagDefinitions returns the flag definitions for an app in key
+	// order, filtered by opts.Type and then paged. An empty result is an
+	// empty slice, never nil.
 	ListFlagDefinitions(ctx context.Context, appID string, opts ListOpts) ([]*Definition, error)
 
 	// DeleteFlagDefinition removes a flag definition and its rules.
@@ -37,4 +39,9 @@ type Store interface {
 	// CountFlagDefinitions returns the total number of flag definitions for
 	// an app, independent of any paging.
 	CountFlagDefinitions(ctx context.Context, appID string) (int64, error)
+
+	// CountFlagDefinitionsMatching returns the number of flag definitions for
+	// an app that match opts.Type. Limit and Offset are ignored, so it is the
+	// total behind a page returned by ListFlagDefinitions with the same opts.
+	CountFlagDefinitionsMatching(ctx context.Context, appID string, opts ListOpts) (int64, error)
 }

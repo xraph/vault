@@ -363,7 +363,7 @@ func (s *Store) GetFlagDefinition(ctx context.Context, key, appID string) (*flag
 func (s *Store) ListFlagDefinitions(ctx context.Context, appID string, opts flag.ListOpts) ([]*flag.Definition, error) {
 	var models []FlagModel
 	q := s.mdb.NewFind(&models).
-		Filter(bson.M{"app_id": appID}).
+		Filter(flagFilter(bson.M{"app_id": appID}, opts)).
 		Sort(bson.D{{Key: "key", Value: 1}})
 
 	if opts.Limit > 0 {
@@ -959,6 +959,22 @@ func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 // CountFlagDefinitions returns the number of flag definitions belonging to appID.
 func (s *Store) CountFlagDefinitions(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*FlagModel)(nil)).Filter(bson.M{"app_id": appID}).Count(ctx)
+}
+
+// CountFlagDefinitionsMatching returns the number of flag definitions belonging
+// to appID that match opts. Limit and Offset are ignored.
+func (s *Store) CountFlagDefinitionsMatching(ctx context.Context, appID string, opts flag.ListOpts) (int64, error) {
+	return s.mdb.NewFind((*FlagModel)(nil)).
+		Filter(flagFilter(bson.M{"app_id": appID}, opts)).
+		Count(ctx)
+}
+
+// flagFilter adds the type equality to a flag filter when opts asks for one.
+func flagFilter(f bson.M, opts flag.ListOpts) bson.M {
+	if opts.Type != "" {
+		f["type"] = string(opts.Type)
+	}
+	return f
 }
 
 // CountConfig returns the number of config entries belonging to appID.

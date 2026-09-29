@@ -55,6 +55,9 @@ func (s *Store) ListFlagDefinitions(ctx context.Context, appID string, opts flag
 	q := s.pgdb().NewSelect(&models).
 		Where("app_id = ?", appID).
 		OrderExpr("key ASC")
+	if opts.Type != "" {
+		q = q.Where("type = ?", string(opts.Type))
+	}
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -263,4 +266,14 @@ func (s *Store) CountFlagDefinitions(ctx context.Context, appID string) (int64, 
 	return s.pgdb().NewSelect((*FlagModel)(nil)).
 		Where("app_id = ?", appID).
 		Count(ctx)
+}
+
+// CountFlagDefinitionsMatching returns the number of flag definitions belonging
+// to appID that match opts. Limit and Offset are ignored.
+func (s *Store) CountFlagDefinitionsMatching(ctx context.Context, appID string, opts flag.ListOpts) (int64, error) {
+	q := s.pgdb().NewSelect((*FlagModel)(nil)).Where("app_id = ?", appID)
+	if opts.Type != "" {
+		q = q.Where("type = ?", string(opts.Type))
+	}
+	return q.Count(ctx)
 }

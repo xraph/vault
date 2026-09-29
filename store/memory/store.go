@@ -247,14 +247,15 @@ func (m *Store) GetFlagDefinition(_ context.Context, key, appID string) (*flag.D
 	return &cp, nil
 }
 
-// ListFlagDefinitions returns all flag definitions for an app.
+// ListFlagDefinitions returns the flag definitions for an app in key order,
+// filtered by opts.Type before paging. An empty result is an empty slice.
 func (m *Store) ListFlagDefinitions(_ context.Context, appID string, opts flag.ListOpts) ([]*flag.Definition, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	result := make([]*flag.Definition, 0, len(m.flags))
 	for _, f := range m.flags {
-		if f.AppID != appID {
+		if f.AppID != appID || !matchesFlagType(f, opts) {
 			continue
 		}
 		cp := *f
@@ -834,7 +835,7 @@ func applyPaginationDef(result []*flag.Definition, offset, limit int) []*flag.De
 	if offset > 0 && offset < len(result) {
 		result = result[offset:]
 	} else if offset >= len(result) {
-		return nil
+		return []*flag.Definition{}
 	}
 	if limit > 0 && limit < len(result) {
 		result = result[:limit]
@@ -884,6 +885,27 @@ func (m *Store) CountFlagDefinitions(_ context.Context, appID string) (int64, er
 		}
 	}
 	return n, nil
+}
+
+// CountFlagDefinitionsMatching returns the number of flag definitions belonging
+// to appID that match opts. Limit and Offset are ignored.
+func (m *Store) CountFlagDefinitionsMatching(_ context.Context, appID string, opts flag.ListOpts) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, f := range m.flags {
+		if f.AppID == appID && matchesFlagType(f, opts) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// matchesFlagType reports whether f passes opts.Type. An empty Type matches
+// every flag.
+func matchesFlagType(f *flag.Definition, opts flag.ListOpts) bool {
+	return opts.Type == "" || f.Type == opts.Type
 }
 
 // CountConfig returns the number of config entries belonging to appID.
