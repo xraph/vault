@@ -81,6 +81,34 @@ func (s *Store) DeleteRotationPolicy(ctx context.Context, key, appID string) err
 	return nil
 }
 
+// ClaimDueRotation claims a due policy for one rotation run. It is a single
+// conditional UPDATE, so the row lock Postgres takes for it lets only one of
+// several concurrent callers match a given due time: the others re-check the
+// condition after the winner commits and find next_rotation_at already moved
+// to until. A missing policy returns false and a nil error.
+func (s *Store) ClaimDueRotation(ctx context.Context, key, appID string, now, until time.Time) (bool, error) {
+	now = now.UTC()
+	until = until.UTC()
+
+	res, err := s.pgdb().NewUpdate((*RotationPolicyModel)(nil)).
+		Set("next_rotation_at = ?", until).
+		Set("updated_at = ?", now).
+		Where("secret_key = ?", key).
+		Where("app_id = ?", appID).
+		Where("enabled").
+		Where("next_rotation_at IS NOT NULL").
+		Where("next_rotation_at < ?", now).
+		Exec(ctx)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 // RecordRotation records a completed rotation event.
 func (s *Store) RecordRotation(ctx context.Context, r *rotation.Record) error {
 	m := &RotationRecordModel{

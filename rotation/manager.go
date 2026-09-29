@@ -34,6 +34,31 @@ func WithAppID(appID string) ManagerOption {
 	return func(m *Manager) { m.appID = appID }
 }
 
+// defaultClaimLease is how long a scheduled rotation's claim holds a policy
+// when WithClaimLease is not given.
+const defaultClaimLease = 5 * time.Minute
+
+// WithClaimLease sets how long the scheduled loop's claim on a due policy
+// lasts. Before rotating a due policy the loop claims it by moving its next
+// rotation time to now plus the lease, so another replica running the same
+// loop finds it not due and leaves it alone. A d of zero or less keeps the
+// default of five minutes.
+//
+// A successful rotation moves the next rotation time on to now plus the
+// policy's interval, which replaces the lease. A failed rotation leaves the
+// lease in place, so the next attempt comes once the lease runs out rather
+// than on every tick. A rotation must finish inside the lease: once it runs
+// out, another replica may claim the same policy and rotate it again.
+//
+// Manual rotation through RotateNow does not claim.
+func WithClaimLease(d time.Duration) ManagerOption {
+	return func(m *Manager) {
+		if d > 0 {
+			m.claimLease = d
+		}
+	}
+}
+
 // Manager handles scheduled secret rotation with registered rotator functions.
 type Manager struct {
 	store         Store
@@ -41,6 +66,7 @@ type Manager struct {
 	appID         string
 	logger        log.Logger
 	checkInterval time.Duration
+	claimLease    time.Duration
 
 	mu       sync.RWMutex
 	rotators map[string]Rotator // secretKey → rotator
@@ -61,6 +87,7 @@ func NewManager(store Store, secretSvc *secret.Service, opts ...ManagerOption) *
 		secretService: secretSvc,
 		logger:        log.NewNoopLogger(),
 		checkInterval: 1 * time.Minute,
+		claimLease:    defaultClaimLease,
 		rotators:      make(map[string]Rotator),
 	}
 	for _, o := range opts {
@@ -235,6 +262,10 @@ func (m *Manager) loop(ctx context.Context, done chan struct{}) {
 }
 
 // checkDuePolicies lists all enabled policies and rotates any that are due.
+// It claims each due policy in the store before rotating it, so that when
+// several replicas run this loop over one store, only one of them rotates a
+// given due time. A policy another replica has already claimed is skipped
+// without logging.
 func (m *Manager) checkDuePolicies(ctx context.Context) {
 	appID := m.appID
 	if appID == "" {
@@ -253,6 +284,16 @@ func (m *Manager) checkDuePolicies(ctx context.Context) {
 			continue
 		}
 		if p.NextRotationAt == nil || !now.After(*p.NextRotationAt) {
+			continue
+		}
+
+		claimed, err := m.store.ClaimDueRotation(ctx, p.SecretKey, p.AppID, now, now.Add(m.claimLease))
+		if err != nil {
+			m.logger.Error("rotation: claim due policy failed",
+				log.String("key", p.SecretKey), log.Any("error", err))
+			continue
+		}
+		if !claimed {
 			continue
 		}
 

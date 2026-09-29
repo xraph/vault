@@ -653,6 +653,31 @@ func (m *Store) DeleteRotationPolicy(_ context.Context, key, appID string) error
 	return nil
 }
 
+// ClaimDueRotation claims a due policy for one rotation run. The check and
+// the write happen under the store's write lock, so only one caller can see
+// a given due time. A missing policy returns false and a nil error.
+func (m *Store) ClaimDueRotation(_ context.Context, key, appID string, now, until time.Time) (bool, error) {
+	now = now.UTC()
+	until = until.UTC()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	p, ok := m.rotationPolicies[rKey(key, appID)]
+	if !ok || !p.Enabled || p.NextRotationAt == nil || !now.After(*p.NextRotationAt) {
+		return false, nil
+	}
+
+	// Replace the stored policy rather than writing through its pointers:
+	// SaveRotationPolicy keeps a shallow copy, so NextRotationAt may still
+	// point at the caller's variable.
+	cp := *p
+	cp.NextRotationAt = &until
+	cp.UpdatedAt = now
+	m.rotationPolicies[rKey(key, appID)] = &cp
+	return true, nil
+}
+
 // RecordRotation records a completed rotation event.
 func (m *Store) RecordRotation(_ context.Context, r *rotation.Record) error {
 	m.mu.Lock()

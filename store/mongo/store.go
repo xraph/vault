@@ -818,6 +818,31 @@ func (s *Store) DeleteRotationPolicy(ctx context.Context, key, appID string) err
 	return nil
 }
 
+// ClaimDueRotation claims a due policy for one rotation run. It is a single
+// UpdateOne whose filter carries the whole due test, and MongoDB applies a
+// single-document update atomically, so only one of several concurrent
+// callers can match a given due time. $lt never matches a missing or null
+// next_rotation_at. A missing policy returns false and a nil error.
+func (s *Store) ClaimDueRotation(ctx context.Context, key, appID string, now, until time.Time) (bool, error) {
+	now = now.UTC()
+	until = until.UTC()
+
+	res, err := s.mdb.NewUpdate((*RotationPolicyModel)(nil)).
+		Filter(bson.M{
+			"secret_key":       key,
+			"app_id":           appID,
+			"enabled":          true,
+			"next_rotation_at": bson.M{"$lt": now},
+		}).
+		Set("next_rotation_at", until).
+		Set("updated_at", now).
+		Exec(ctx)
+	if err != nil {
+		return false, err
+	}
+	return res.ModifiedCount() == 1, nil
+}
+
 // RecordRotation records a completed rotation event.
 func (s *Store) RecordRotation(ctx context.Context, r *rotation.Record) error {
 	m := &RotationRecordModel{
