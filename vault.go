@@ -3,6 +3,7 @@ package vault
 import (
 	"context"
 	"fmt"
+	"time"
 
 	log "github.com/xraph/go-utils/log"
 
@@ -160,6 +161,11 @@ func (v *Vault) FlagEngine() *flag.Engine { return v.engine }
 // FlagManager returns the flag write service: the one path that creates,
 // changes and deletes flags with validation, cache invalidation and audit.
 func (v *Vault) FlagManager() *flag.Manager { return v.flagMgr }
+
+// FlagCacheTTL returns how long the flag engine keeps an evaluation in its
+// cache. A flag write invalidates it in this process at once; another
+// replica serves the old value for up to this long.
+func (v *Vault) FlagCacheTTL() time.Duration { return v.config.FlagCacheTTL }
 
 // Config returns the runtime config service.
 func (v *Vault) Config() *config.Service { return v.configSvc }

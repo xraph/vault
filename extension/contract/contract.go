@@ -87,6 +87,15 @@ func Register(
 		{"secrets.delete", func() error {
 			return dispatcher.RegisterCommand(d, c, "secrets.delete", 1, secretsDeleteHandler(deps))
 		}},
+		{"flags.list", func() error {
+			return dispatcher.RegisterQuery(d, c, "flags.list", 1, flagsListHandler(deps))
+		}},
+		{"flags.detail", func() error {
+			return dispatcher.RegisterQuery(d, c, "flags.detail", 1, flagsDetailHandler(deps))
+		}},
+		{"flags.evaluate", func() error {
+			return dispatcher.RegisterQuery(d, c, "flags.evaluate", 1, flagsEvaluateHandler(deps))
+		}},
 		{"rotation.policies", func() error {
 			return dispatcher.RegisterQuery(d, c, "rotation.policies", 1, rotationPoliciesHandler(deps))
 		}},

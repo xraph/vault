@@ -11,9 +11,9 @@ contributor:
 #
 # No intent below, or added by a later task in this file, ever takes an
 # app id on the request. Every handler reads deps.Vault.AppID() and answers
-# for that app alone. Evaluate and resolve are a later slice and are
-# deliberately excluded; when they land, they still won't inherit tenant or
-# user from the request context.
+# for that app alone. flags.evaluate takes a tenantId and userId of its own
+# and never inherits either from the request context; config resolve is a
+# later slice and will follow the same rule.
 intents:
   - { name: secrets.list,     kind: query, version: 1, capability: read }
   - { name: secrets.detail,   kind: query, version: 1, capability: read }
@@ -21,6 +21,9 @@ intents:
   - { name: secrets.create,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
   - { name: secrets.update,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
   - { name: secrets.delete,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions, rotation.policies, rotation.detail] }
+  - { name: flags.list,     kind: query, version: 1, capability: read }
+  - { name: flags.detail,   kind: query, version: 1, capability: read }
+  - { name: flags.evaluate, kind: query, version: 1, capability: read }
   - { name: rotation.policies,     kind: query, version: 1, capability: read }
   - { name: rotation.detail,       kind: query, version: 1, capability: read }
   - { name: rotation.savePolicy,   kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }
@@ -43,3 +46,12 @@ queries:
   rotationDetail:
     intent: rotation.detail
     cache: { staleTime: 30s }
+  flagsList:
+    intent: flags.list
+    cache: { staleTime: 30s }
+  flagsDetail:
+    intent: flags.detail
+    cache: { staleTime: 30s }
+  flagsEvaluate:
+    intent: flags.evaluate
+    cache: { staleTime: 0s }

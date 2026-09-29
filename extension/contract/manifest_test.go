@@ -18,9 +18,10 @@ func TestManifest_Loads(t *testing.T) {
 	}
 	// secrets.list, secrets.detail, secrets.versions, secrets.create,
 	// secrets.update, secrets.delete, rotation.policies, rotation.detail,
-	// rotation.savePolicy, rotation.deletePolicy, rotation.rotateNow.
-	if got := len(m.Intents); got != 11 {
-		t.Errorf("intents = %d, want 11", got)
+	// rotation.savePolicy, rotation.deletePolicy, rotation.rotateNow, flags.list,
+	// flags.detail, flags.evaluate.
+	if got := len(m.Intents); got != 14 {
+		t.Errorf("intents = %d, want 14", got)
 	}
 }
 
@@ -43,7 +44,7 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 	if err := reg.Register(m); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	queries := []string{"secrets.list", "secrets.detail", "secrets.versions", "rotation.policies", "rotation.detail"}
+	queries := []string{"secrets.list", "secrets.detail", "secrets.versions", "rotation.policies", "rotation.detail", "flags.list", "flags.detail", "flags.evaluate"}
 	commands := []string{"secrets.create", "secrets.update", "secrets.delete", "rotation.savePolicy", "rotation.deletePolicy", "rotation.rotateNow"}
 	for _, name := range queries {
 		intent, ok := reg.Intent("vault", name, 1)
