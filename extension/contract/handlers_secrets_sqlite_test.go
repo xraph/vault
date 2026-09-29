@@ -119,6 +119,9 @@ func TestSecretsUpdate_SQLite_NoExpiryFieldKeepsExpiryAndMetadata(t *testing.T) 
 	if fresh.ExpiresAt == nil {
 		t.Fatal("a fresh GetMeta shows expiresAt = nil after update, want it kept (sqlite)")
 	}
+	if !fresh.ExpiresAt.UTC().Truncate(time.Second).Equal(future.UTC().Truncate(time.Second)) {
+		t.Errorf("a fresh GetMeta shows expiresAt = %v, want %v kept (sqlite)", fresh.ExpiresAt, future)
+	}
 	if fresh.Metadata["env"] != "prod" {
 		t.Errorf("a fresh GetMeta shows metadata = %+v, want env=prod kept (sqlite)", fresh.Metadata)
 	}

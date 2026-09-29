@@ -156,8 +156,9 @@ type rotationSavePolicyResponse struct {
 // rotationSavePolicyHandler answers rotation.savePolicy for
 // deps.Vault.AppID() alone. The secret must already exist. NextRotationAt
 // is set to now+interval when the policy is new, when its interval
-// changed, or when it goes from disabled to enabled; every other save
-// keeps the stored value, including LastRotatedAt, unchanged.
+// changed, when it goes from disabled to enabled, or when it is saved
+// enabled with no due time at all; every other save keeps the stored
+// value, including LastRotatedAt, unchanged.
 func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationSavePolicyRequest, p contract.Principal) (rotationSavePolicyResponse, error) {
 	return func(ctx context.Context, in rotationSavePolicyRequest, _ contract.Principal) (rotationSavePolicyResponse, error) {
 		appID := deps.Vault.AppID()
@@ -187,7 +188,11 @@ func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationS
 			policy = existing
 			intervalChanged := policy.Interval != interval
 			reenabled := !policy.Enabled && in.Enabled
-			giveNextDueTime = intervalChanged || reenabled
+			// A policy saved through the Go API never gets a
+			// NextRotationAt, so an enabled one without it would never
+			// fall due however many times it is saved here.
+			enabledWithoutDueTime := in.Enabled && policy.NextRotationAt == nil
+			giveNextDueTime = intervalChanged || reenabled || enabledWithoutDueTime
 			policy.Interval = interval
 			policy.Enabled = in.Enabled
 			policy.Touch()

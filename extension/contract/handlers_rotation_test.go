@@ -255,6 +255,28 @@ func TestRotationSavePolicy_NextRotationAtRules(t *testing.T) {
 			wantNextChanges: false,
 		},
 		{
+			// A policy created through the Go API never gets a
+			// NextRotationAt, so without this it would never fall due.
+			name:            "enabled with no due time gets one when saved unchanged",
+			seedPolicy:      true,
+			seedInterval:    time.Hour,
+			seedEnabled:     true,
+			seedNext:        nil,
+			reqInterval:     3600,
+			reqEnabled:      true,
+			wantNextChanges: true,
+		},
+		{
+			name:            "disabled with no due time stays unset when saved disabled",
+			seedPolicy:      true,
+			seedInterval:    time.Hour,
+			seedEnabled:     false,
+			seedNext:        nil,
+			reqInterval:     3600,
+			reqEnabled:      false,
+			wantNextChanges: false,
+		},
+		{
 			name:            "unchanged: enabled to disabled keeps the stored value",
 			seedPolicy:      true,
 			seedInterval:    time.Hour,
