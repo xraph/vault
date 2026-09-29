@@ -8,6 +8,7 @@ import (
 	"github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/flag"
 )
 
 // mapError translates a Vault domain error into a *contract.Error the
@@ -20,7 +21,16 @@ func mapError(err error) error {
 	if err == nil {
 		return nil
 	}
+	var invalid *flag.ValidationError
 	switch {
+	case errors.As(err, &invalid):
+		// A ValidationError describes the caller's own bad input and carries
+		// no stored data, so its text goes back to the caller as written.
+		return &contract.Error{Code: contract.CodeBadRequest, Message: invalid.Error()}
+	case errors.Is(err, vault.ErrFlagNotFound):
+		return &contract.Error{Code: contract.CodeNotFound, Message: "flag not found"}
+	case errors.Is(err, vault.ErrFlagExists):
+		return &contract.Error{Code: contract.CodeConflict, Message: "a flag with this key already exists"}
 	case errors.Is(err, vault.ErrSecretNotFound):
 		return &contract.Error{Code: contract.CodeNotFound, Message: "secret not found"}
 	case errors.Is(err, vault.ErrRotationNotFound):

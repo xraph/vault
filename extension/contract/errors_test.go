@@ -2,11 +2,13 @@ package contract
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/flag"
 )
 
 func TestMapError(t *testing.T) {
@@ -83,5 +85,48 @@ func TestRequireKey(t *testing.T) {
 	}
 	if _, err := requireKey(""); codeOf(err) != dashcontract.CodeBadRequest {
 		t.Errorf("requireKey(empty) code = %q, want BAD_REQUEST", codeOf(err))
+	}
+}
+
+func TestMapError_FlagErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		code    dashcontract.ErrorCode
+		message string
+	}{
+		{"flag not found", vault.ErrFlagNotFound, dashcontract.CodeNotFound, "flag not found"},
+		{"flag exists", vault.ErrFlagExists, dashcontract.CodeConflict, "a flag with this key already exists"},
+		{
+			"validation",
+			&flag.ValidationError{Field: "rules[0].returnValue", Message: "must be a boolean, got a string"},
+			dashcontract.CodeBadRequest,
+			"flag: rules[0].returnValue: must be a boolean, got a string",
+		},
+		{
+			"wrapped validation",
+			fmt.Errorf("outer: %w", &flag.ValidationError{Field: "key", Message: "is required"}),
+			dashcontract.CodeBadRequest,
+			"flag: key: is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ce *dashcontract.Error
+			if !errors.As(mapError(tc.err), &ce) {
+				t.Fatalf("mapError(%v) is not a *contract.Error", tc.err)
+			}
+			if ce.Code != tc.code || ce.Message != tc.message {
+				t.Errorf("mapError = %s %q, want %s %q", ce.Code, ce.Message, tc.code, tc.message)
+			}
+		})
+	}
+}
+
+// The override sentinel is shared with config overrides, so the global map
+// must not claim it: the flag override handler maps it itself.
+func TestMapError_OverrideNotFoundIsNotMappedGlobally(t *testing.T) {
+	if got := codeOf(mapError(vault.ErrOverrideNotFound)); got != dashcontract.CodeInternal {
+		t.Errorf("ErrOverrideNotFound code = %q, want INTERNAL (mapped by the flag handler, not globally)", got)
 	}
 }
