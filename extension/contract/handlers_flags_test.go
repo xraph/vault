@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -443,32 +444,51 @@ func TestFlagsDetail_RulesKeepTheOrderGetFlagRulesReturns(t *testing.T) {
 	}
 }
 
+// recordAuditRows writes one audit row per action for key, oldest first,
+// starting at first and one second apart. Every row is a success in testAppID.
+func recordAuditRows(t *testing.T, st store.Store, key, resource string, first time.Time, actions ...string) {
+	t.Helper()
+	for i, action := range actions {
+		if err := st.RecordAudit(context.Background(), &audit.Entry{
+			ID: id.NewAuditID(), Action: action, Resource: resource, Key: key, AppID: testAppID,
+			Outcome: "success", CreatedAt: first.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("RecordAudit: %v", err)
+		}
+	}
+}
+
+func repeatAction(action string, n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = action
+	}
+	return out
+}
+
+// assertNoSecretActions fails for any recent-audit row whose action is a
+// secret one.
+func assertNoSecretActions(t *testing.T, rows []AuditSummary) {
+	t.Helper()
+	for _, e := range rows {
+		if strings.HasPrefix(e.Action, "secret.") {
+			t.Errorf("recentAudit carries a secret row: %+v", e)
+		}
+	}
+}
+
+// The secret rows are the NEWEST on the key, so a handler that lost its
+// Resource filter would fill the page with them and this test would fail.
 func TestFlagsDetail_RecentAuditIsFlagRowsOnlyAndBounded(t *testing.T) {
 	v, st := newTestVault(t)
 	ctx := context.Background()
 	const key = "shared-key"
 	seedFlag(t, v, key, flag.TypeBool, true, true)
-	if _, err := v.Secrets().Set(ctx, key, []byte("value"), testAppID); err != nil {
-		t.Fatalf("seed secret: %v", err)
-	}
-	base := time.Now().UTC()
-	type auditRow struct{ resource, action string }
-	rows := make([]auditRow, 0, 16)
-	rows = append(rows,
-		auditRow{audithook.ResourceSecret, audithook.ActionSecretSet},
-		auditRow{audithook.ResourceSecret, audithook.ActionSecretAccessed},
-	)
-	for range 14 {
-		rows = append(rows, auditRow{audithook.ResourceFlag, audithook.ActionFlagUpdated})
-	}
-	for i, r := range rows {
-		if err := st.RecordAudit(ctx, &audit.Entry{
-			ID: id.NewAuditID(), Action: r.action, Resource: r.resource, Key: key, AppID: testAppID,
-			Outcome: "success", CreatedAt: base.Add(time.Duration(i) * time.Second),
-		}); err != nil {
-			t.Fatalf("RecordAudit: %v", err)
-		}
-	}
+
+	// Well after anything the seeding above recorded.
+	base := time.Now().UTC().Add(time.Hour)
+	recordAuditRows(t, st, key, audithook.ResourceFlag, base, repeatAction(audithook.ActionFlagUpdated, 14)...)
+	recordAuditRows(t, st, key, audithook.ResourceSecret, base.Add(time.Minute), audithook.ActionSecretSet, audithook.ActionSecretAccessed)
 
 	out, err := flagsDetailHandler(Deps{Vault: v})(ctx, flagsDetailRequest{Key: key}, flagPrincipal)
 	if err != nil {
@@ -477,9 +497,38 @@ func TestFlagsDetail_RecentAuditIsFlagRowsOnlyAndBounded(t *testing.T) {
 	if len(out.RecentAudit) != 10 {
 		t.Errorf("recentAudit = %d rows, want the limit of 10", len(out.RecentAudit))
 	}
+	assertNoSecretActions(t, out.RecentAudit)
 	for _, e := range out.RecentAudit {
-		if strings.HasPrefix(e.Action, "secret") {
-			t.Errorf("recentAudit carries a secret row: %+v", e)
+		if e.Action != audithook.ActionFlagUpdated {
+			t.Errorf("recentAudit row %+v is not one of the 14 newest flag rows", e)
+		}
+	}
+}
+
+// Fewer flag rows than the limit, and newer secret rows to fill the page if
+// the filter were gone: the flag rows must all come back and nothing else.
+func TestFlagsDetail_RecentAuditIsNotFilledWithNewerSecretRows(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	const key = "shared-key"
+	seedFlag(t, v, key, flag.TypeBool, true, true)
+
+	base := time.Now().UTC().Add(time.Hour)
+	recordAuditRows(t, st, key, audithook.ResourceFlag, base, audithook.ActionFlagToggled, audithook.ActionFlagRulesSet)
+	recordAuditRows(t, st, key, audithook.ResourceSecret, base.Add(time.Minute), repeatAction(audithook.ActionSecretAccessed, 12)...)
+
+	out, err := flagsDetailHandler(Deps{Vault: v})(ctx, flagsDetailRequest{Key: key}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("detail: %v", err)
+	}
+	assertNoSecretActions(t, out.RecentAudit)
+	seen := map[string]bool{}
+	for _, e := range out.RecentAudit {
+		seen[e.Action] = true
+	}
+	for _, want := range []string{audithook.ActionFlagToggled, audithook.ActionFlagRulesSet, audithook.ActionFlagCreated} {
+		if !seen[want] {
+			t.Errorf("recentAudit lacks a %s row: %+v", want, out.RecentAudit)
 		}
 	}
 }
@@ -759,8 +808,24 @@ func TestFlags_SQLite_ListDetailEvaluate(t *testing.T) {
 	if len(det.Overrides) != 1 || det.Overrides[0].TenantID != "zed" || det.Overrides[0].Value != float64(99) || !det.Overrides[0].ValueMatchesType {
 		t.Errorf("overrides = %+v", det.Overrides)
 	}
-	if len(det.RecentAudit) == 0 {
-		t.Errorf("recentAudit is empty, want the manager's flag rows")
+	// The manager wrote a created, a rules_set and an override_set row for
+	// this flag. A newer secret row on the same key must not displace or join
+	// them.
+	recordAuditRows(t, v.Store(), "limit", audithook.ResourceSecret, time.Now().UTC().Add(time.Hour),
+		audithook.ActionSecretSet, audithook.ActionSecretAccessed)
+	det, err = flagsDetailHandler(deps)(ctx, flagsDetailRequest{Key: "limit"}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("detail after secret rows: %v", err)
+	}
+	assertNoSecretActions(t, det.RecentAudit)
+	actions := make([]string, 0, len(det.RecentAudit))
+	for _, e := range det.RecentAudit {
+		actions = append(actions, e.Action)
+	}
+	sort.Strings(actions)
+	wantActions := []string{audithook.ActionFlagCreated, audithook.ActionFlagOverrideSet, audithook.ActionFlagRulesSet}
+	if !reflect.DeepEqual(actions, wantActions) {
+		t.Errorf("recentAudit actions = %v, want %v", actions, wantActions)
 	}
 
 	// Scope the request context to a tenant that has a rule: the explicit
