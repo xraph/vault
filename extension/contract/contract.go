@@ -12,6 +12,7 @@ import (
 	_ "embed"
 	"fmt"
 
+	"github.com/xraph/forge"
 	"github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
 	"github.com/xraph/forge/extensions/dashboard/contract/loader"
@@ -33,6 +34,11 @@ type Deps struct {
 	// Vault is the composed vault. Required. Every handler operates on
 	// Vault.AppID() and nothing else: no request carries an app id.
 	Vault *vault.Vault
+
+	// Logger receives an Error-level entry for every error a handler maps
+	// to CodeInternal, so an operator can find out why a dashboard request
+	// failed. Optional: nil means nothing is logged.
+	Logger forge.Logger
 }
 
 // Register loads the embedded manifest, validates it, registers the `vault`

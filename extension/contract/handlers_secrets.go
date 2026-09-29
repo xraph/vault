@@ -59,11 +59,11 @@ func secretsListHandler(deps Deps) func(ctx context.Context, in secretsListReque
 
 		metas, err := deps.Vault.Secrets().List(ctx, appID, secret.ListOpts{Limit: limit, Offset: offset})
 		if err != nil {
-			return secretsListResponse{}, mapError(err)
+			return secretsListResponse{}, deps.mapError("secrets.list", err)
 		}
 		total, err := deps.Vault.Store().CountSecrets(ctx, appID)
 		if err != nil {
-			return secretsListResponse{}, mapError(err)
+			return secretsListResponse{}, deps.mapError("secrets.list", err)
 		}
 
 		summaries := make([]SecretSummary, 0, len(metas))
@@ -100,7 +100,7 @@ func secretsDetailHandler(deps Deps) func(ctx context.Context, in secretsDetailR
 
 		meta, err := deps.Vault.Secrets().GetMeta(ctx, key, appID)
 		if err != nil {
-			return secretsDetailResponse{}, mapError(err)
+			return secretsDetailResponse{}, deps.mapError("secrets.detail", err)
 		}
 
 		var rotationSummary *RotationPolicySummary
@@ -112,12 +112,12 @@ func secretsDetailHandler(deps Deps) func(ctx context.Context, in secretsDetailR
 		case errors.Is(err, vault.ErrRotationNotFound):
 			// No policy for this secret: rotation stays nil, not an error.
 		default:
-			return secretsDetailResponse{}, mapError(err)
+			return secretsDetailResponse{}, deps.mapError("secrets.detail", err)
 		}
 
 		entries, err := deps.Vault.Store().ListAuditByKey(ctx, key, appID, audit.ListOpts{Limit: recentAuditLimit})
 		if err != nil {
-			return secretsDetailResponse{}, mapError(err)
+			return secretsDetailResponse{}, deps.mapError("secrets.detail", err)
 		}
 		recentAudit := make([]AuditSummary, 0, len(entries))
 		for _, e := range entries {
@@ -155,12 +155,12 @@ func secretsVersionsHandler(deps Deps) func(ctx context.Context, in secretsVersi
 		}
 
 		if _, metaErr := deps.Vault.Secrets().GetMeta(ctx, key, appID); metaErr != nil {
-			return secretsVersionsResponse{}, mapError(metaErr)
+			return secretsVersionsResponse{}, deps.mapError("secrets.versions", metaErr)
 		}
 
 		versions, err := deps.Vault.Secrets().ListVersions(ctx, key, appID)
 		if err != nil {
-			return secretsVersionsResponse{}, mapError(err)
+			return secretsVersionsResponse{}, deps.mapError("secrets.versions", err)
 		}
 		sort.Slice(versions, func(i, j int) bool { return versions[i].Version > versions[j].Version })
 
@@ -229,7 +229,7 @@ func secretsCreateHandler(deps Deps) func(ctx context.Context, in secretsCreateR
 		case metaErr == nil:
 			return secretsCreateResponse{}, conflict("a secret with this key already exists; update it instead")
 		case !errors.Is(metaErr, vault.ErrSecretNotFound):
-			return secretsCreateResponse{}, mapError(metaErr)
+			return secretsCreateResponse{}, deps.mapError("secrets.create", metaErr)
 		}
 
 		var opts []secret.SetOption
@@ -243,7 +243,7 @@ func secretsCreateHandler(deps Deps) func(ctx context.Context, in secretsCreateR
 
 		meta, err := deps.Vault.Secrets().Set(ctx, key, []byte(in.Value), appID, opts...)
 		if err != nil {
-			return secretsCreateResponse{}, mapError(err)
+			return secretsCreateResponse{}, deps.mapError("secrets.create", err)
 		}
 		return secretsCreateResponse{Secret: projectSecretSummary(meta)}, nil
 	}
@@ -287,7 +287,7 @@ func secretsUpdateHandler(deps Deps) func(ctx context.Context, in secretsUpdateR
 
 		existing, err := deps.Vault.Secrets().GetMeta(ctx, key, appID)
 		if err != nil {
-			return secretsUpdateResponse{}, mapError(err)
+			return secretsUpdateResponse{}, deps.mapError("secrets.update", err)
 		}
 
 		var opts []secret.SetOption
@@ -324,7 +324,7 @@ func secretsUpdateHandler(deps Deps) func(ctx context.Context, in secretsUpdateR
 
 		updated, err := deps.Vault.Secrets().Set(ctx, key, []byte(in.Value), appID, opts...)
 		if err != nil {
-			return secretsUpdateResponse{}, mapError(err)
+			return secretsUpdateResponse{}, deps.mapError("secrets.update", err)
 		}
 		return secretsUpdateResponse{Secret: projectSecretSummary(updated)}, nil
 	}
@@ -370,11 +370,11 @@ func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteR
 				//nolint:errcheck // best-effort cleanup, see comment above
 				deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID)
 			}
-			return secretsDeleteResponse{}, mapError(err)
+			return secretsDeleteResponse{}, deps.mapError("secrets.delete", err)
 		}
 
 		if err := deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID); err != nil && !errors.Is(err, vault.ErrRotationNotFound) {
-			return secretsDeleteResponse{}, mapError(err)
+			return secretsDeleteResponse{}, deps.mapError("secrets.delete", err)
 		}
 
 		return secretsDeleteResponse{OK: true, Key: key}, nil

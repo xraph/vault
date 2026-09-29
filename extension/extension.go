@@ -257,7 +257,13 @@ func (e *Extension) RegisterContractContributor(
 		}
 		return nil
 	}
-	if err := vaultcontract.Register(disp, reg, wreg, vaultcontract.Deps{Vault: e.v}); err != nil {
+	// Logger may be nil on an extension that was never registered;
+	// Deps treats nil as "log nothing".
+	deps := vaultcontract.Deps{Vault: e.v}
+	if logger := e.Logger(); logger != nil {
+		deps.Logger = logger
+	}
+	if err := vaultcontract.Register(disp, reg, wreg, deps); err != nil {
 		return fmt.Errorf("vault: register contract contributor: %w", err)
 	}
 	return nil

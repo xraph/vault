@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/xraph/forge"
 	"github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
@@ -12,8 +13,9 @@ import (
 // mapError translates a Vault domain error into a *contract.Error the
 // dashboard client can branch on. An error that is not one of the domain
 // sentinels below becomes CodeInternal with a generic message: the
-// underlying error's own text never reaches the client, and nothing here
-// logs it either, because it can carry a secret's key or worse.
+// underlying error's own text never reaches the client, because it can
+// carry a secret's key or a connection string. Handlers call it through
+// Deps.mapError, which also logs the CodeInternal case server-side.
 func mapError(err error) error {
 	if err == nil {
 		return nil
@@ -31,6 +33,28 @@ func mapError(err error) error {
 	default:
 		return &contract.Error{Code: contract.CodeInternal, Message: "an internal error occurred"}
 	}
+}
+
+// mapError maps err exactly as the package-level mapError does and, when
+// the result is CodeInternal and d.Logger is set, logs the underlying
+// error at Error level with the intent that hit it. That is the only case
+// an operator cannot diagnose from what the client sees. The log carries
+// the intent and the error and nothing else; no secret value ever reaches
+// an error in this package, and the client still gets only the generic
+// message.
+func (d Deps) mapError(intent string, err error) error {
+	mapped := mapError(err)
+	if d.Logger == nil || mapped == nil {
+		return mapped
+	}
+	var ce *contract.Error
+	if errors.As(mapped, &ce) && ce.Code == contract.CodeInternal {
+		d.Logger.Error("vault/contract: internal error answering intent",
+			forge.F("intent", intent),
+			forge.F("error", err),
+		)
+	}
+	return mapped
 }
 
 // badRequest builds a CodeBadRequest contract error.

@@ -58,7 +58,7 @@ func rotationPoliciesHandler(deps Deps) func(ctx context.Context, in rotationPol
 
 		all, err := deps.Vault.Store().ListRotationPolicies(ctx, appID)
 		if err != nil {
-			return rotationPoliciesResponse{}, mapError(err)
+			return rotationPoliciesResponse{}, deps.mapError("rotation.policies", err)
 		}
 		sort.Slice(all, func(i, j int) bool { return all[i].SecretKey < all[j].SecretKey })
 		total := int64(len(all))
@@ -111,7 +111,7 @@ func rotationDetailHandler(deps Deps) func(ctx context.Context, in rotationDetai
 		}
 
 		if _, metaErr := deps.Vault.Secrets().GetMeta(ctx, key, appID); metaErr != nil {
-			return rotationDetailResponse{}, mapError(metaErr)
+			return rotationDetailResponse{}, deps.mapError("rotation.detail", metaErr)
 		}
 
 		rotatable := isRotatable(deps.Vault.Rotation().RotatorKeys(), key)
@@ -125,12 +125,12 @@ func rotationDetailHandler(deps Deps) func(ctx context.Context, in rotationDetai
 		case errors.Is(err, vault.ErrRotationNotFound):
 			// No policy for this secret yet: policy stays nil, not an error.
 		default:
-			return rotationDetailResponse{}, mapError(err)
+			return rotationDetailResponse{}, deps.mapError("rotation.detail", err)
 		}
 
 		records, err := deps.Vault.Store().ListRotationRecords(ctx, key, appID, rotation.ListOpts{Limit: recentRotationRecordLimit})
 		if err != nil {
-			return rotationDetailResponse{}, mapError(err)
+			return rotationDetailResponse{}, deps.mapError("rotation.detail", err)
 		}
 		out := make([]RotationRecordSummary, 0, len(records))
 		for _, r := range records {
@@ -171,7 +171,7 @@ func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationS
 		}
 
 		if _, metaErr := deps.Vault.Secrets().GetMeta(ctx, key, appID); metaErr != nil {
-			return rotationSavePolicyResponse{}, mapError(metaErr)
+			return rotationSavePolicyResponse{}, deps.mapError("rotation.savePolicy", metaErr)
 		}
 
 		interval := time.Duration(in.IntervalSeconds) * time.Second
@@ -207,7 +207,7 @@ func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationS
 				Enabled:   in.Enabled,
 			}
 		default:
-			return rotationSavePolicyResponse{}, mapError(err)
+			return rotationSavePolicyResponse{}, deps.mapError("rotation.savePolicy", err)
 		}
 
 		if giveNextDueTime {
@@ -216,7 +216,7 @@ func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationS
 		}
 
 		if err := deps.Vault.Store().SaveRotationPolicy(ctx, policy); err != nil {
-			return rotationSavePolicyResponse{}, mapError(err)
+			return rotationSavePolicyResponse{}, deps.mapError("rotation.savePolicy", err)
 		}
 
 		rotatable := isRotatable(deps.Vault.Rotation().RotatorKeys(), key)
@@ -248,7 +248,7 @@ func rotationDeletePolicyHandler(deps Deps) func(ctx context.Context, in rotatio
 		}
 
 		if err := deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID); err != nil {
-			return rotationDeletePolicyResponse{}, mapError(err)
+			return rotationDeletePolicyResponse{}, deps.mapError("rotation.deletePolicy", err)
 		}
 
 		return rotationDeletePolicyResponse{OK: true, Key: key}, nil
@@ -286,16 +286,16 @@ func rotationRotateNowHandler(deps Deps) func(ctx context.Context, in rotationRo
 
 		before, err := deps.Vault.Secrets().GetMeta(ctx, key, appID)
 		if err != nil {
-			return rotationRotateNowResponse{}, mapError(err)
+			return rotationRotateNowResponse{}, deps.mapError("rotation.rotateNow", err)
 		}
 
 		if rotErr := deps.Vault.Rotation().RotateNow(ctx, key, appID); rotErr != nil {
-			return rotationRotateNowResponse{}, mapError(rotErr)
+			return rotationRotateNowResponse{}, deps.mapError("rotation.rotateNow", rotErr)
 		}
 
 		after, err := deps.Vault.Secrets().GetMeta(ctx, key, appID)
 		if err != nil {
-			return rotationRotateNowResponse{}, mapError(err)
+			return rotationRotateNowResponse{}, deps.mapError("rotation.rotateNow", err)
 		}
 
 		return rotationRotateNowResponse{Key: key, OldVersion: before.Version, NewVersion: after.Version}, nil
