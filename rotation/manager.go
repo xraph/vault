@@ -265,7 +265,8 @@ func (m *Manager) loop(ctx context.Context, done chan struct{}) {
 // It claims each due policy in the store before rotating it, so that when
 // several replicas run this loop over one store, only one of them rotates a
 // given due time. A policy another replica has already claimed is skipped
-// without logging.
+// without logging. A due policy with no rotator registered here is logged
+// and left unclaimed, so a replica that has one can still take it.
 func (m *Manager) checkDuePolicies(ctx context.Context) {
 	appID := m.appID
 	if appID == "" {
@@ -287,7 +288,21 @@ func (m *Manager) checkDuePolicies(ctx context.Context) {
 			continue
 		}
 
-		claimed, err := m.store.ClaimDueRotation(ctx, p.SecretKey, p.AppID, now, now.Add(m.claimLease))
+		// Only claim what this replica can rotate. A claim followed by a
+		// certain failure would push the due time out by a lease on every
+		// pass, and ahead of any replica that does have the rotator.
+		if !m.hasRotator(p.SecretKey) {
+			m.logger.Error("rotation: scheduled rotation failed",
+				log.String("key", p.SecretKey),
+				log.Any("error", fmt.Errorf("rotation: no rotator registered for %q", p.SecretKey)))
+			continue
+		}
+
+		// RotateNow runs serially, so a now read at the top of the pass may
+		// be well behind by the time a later policy is claimed. The lease
+		// starts from the moment of the claim.
+		claimAt := time.Now().UTC()
+		claimed, err := m.store.ClaimDueRotation(ctx, p.SecretKey, p.AppID, claimAt, claimAt.Add(m.claimLease))
 		if err != nil {
 			m.logger.Error("rotation: claim due policy failed",
 				log.String("key", p.SecretKey), log.Any("error", err))
@@ -302,6 +317,15 @@ func (m *Manager) checkDuePolicies(ctx context.Context) {
 				log.String("key", p.SecretKey), log.Any("error", err))
 		}
 	}
+}
+
+// hasRotator reports whether a rotator is registered for secretKey.
+func (m *Manager) hasRotator(secretKey string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	_, ok := m.rotators[secretKey]
+	return ok
 }
 
 // updatePolicyTimestamps updates LastRotatedAt and NextRotationAt on the policy.

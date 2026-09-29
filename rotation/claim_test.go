@@ -152,3 +152,132 @@ func openSQLite(t *testing.T) sharedStore {
 	}
 	return s
 }
+
+// A replica with no rotator for a due key must leave the policy alone. If it
+// claimed first and then failed to rotate, it would push the due time out
+// by a lease on every pass, forever on its own, and ahead of a replica that
+// does have the rotator when several share the store.
+func TestScheduledLoopDoesNotClaimWithoutRotator(t *testing.T) {
+	s := memory.New()
+	svc := setupSecretService(t, s)
+	seedSecret(t, svc, "db-password", []byte("v1"))
+	past := time.Now().UTC().Add(-time.Hour)
+	seedPolicy(t, s, "db-password", 24*time.Hour, past)
+
+	without := rotation.NewManager(s, svc, rotation.WithAppID(testApp))
+	without.CheckDuePoliciesForTest(bg())
+
+	p, err := s.GetRotationPolicy(bg(), "db-password", testApp)
+	if err != nil {
+		t.Fatalf("GetRotationPolicy: %v", err)
+	}
+	if p.NextRotationAt == nil || !p.NextRotationAt.Equal(past) {
+		t.Fatalf("NextRotationAt after a pass with no rotator: got %v, want unchanged %v", p.NextRotationAt, past)
+	}
+
+	// A replica that has the rotator still finds it due and rotates it.
+	var calls atomic.Int32
+	with := rotation.NewManager(s, svc, rotation.WithAppID(testApp))
+	with.RegisterRotator("db-password", func(_ context.Context, _ []byte) ([]byte, error) {
+		calls.Add(1)
+		return []byte("v2"), nil
+	})
+	with.CheckDuePoliciesForTest(bg())
+	if got := calls.Load(); got != 1 {
+		t.Errorf("rotator on the replica that has it ran %d times, want 1", got)
+	}
+}
+
+// While one replica is mid-rotation its lease is live, and a second replica
+// passing over the same policy in that window must not rotate it too.
+func TestScheduledRotationLeaseHoldsMidRotation(t *testing.T) {
+	s := memory.New()
+	svc := setupSecretService(t, s)
+	seedSecret(t, svc, "db-password", []byte("v1"))
+	seedPolicy(t, s, "db-password", 24*time.Hour, time.Now().UTC().Add(-time.Hour))
+
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	blocking := func(_ context.Context, _ []byte) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return []byte("v2"), nil
+	}
+
+	a := rotation.NewManager(s, svc, rotation.WithAppID(testApp))
+	a.RegisterRotator("db-password", blocking)
+	b := rotation.NewManager(s, svc, rotation.WithAppID(testApp))
+	b.RegisterRotator("db-password", blocking)
+
+	aDone := make(chan struct{})
+	go func() {
+		defer close(aDone)
+		a.CheckDuePoliciesForTest(bg())
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("replica A never reached its rotator")
+	}
+	b.CheckDuePoliciesForTest(bg())
+	close(release)
+	<-aDone
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("rotator ran %d times across two replicas, want 1", got)
+	}
+}
+
+// claimRecorder notes the now each claim was made with.
+type claimRecorder struct {
+	rotation.Store
+	mu   sync.Mutex
+	nows map[string]time.Time
+}
+
+func (c *claimRecorder) ClaimDueRotation(ctx context.Context, key, appID string, now, until time.Time) (bool, error) {
+	c.mu.Lock()
+	c.nows[key] = now
+	c.mu.Unlock()
+	return c.Store.ClaimDueRotation(ctx, key, appID, now, until)
+}
+
+// Rotations in one pass run one after another, so each claim must be made
+// at the time it is taken. A now read once at the top of the pass would
+// start a later policy's lease in the past, shortened or already over by
+// the time that policy is claimed.
+func TestScheduledLoopClaimsWithFreshTime(t *testing.T) {
+	s := memory.New()
+	svc := setupSecretService(t, s)
+	past := time.Now().UTC().Add(-time.Hour)
+	for _, k := range []string{"a-slow", "b-next"} {
+		seedSecret(t, svc, k, []byte("v1"))
+		seedPolicy(t, s, k, 24*time.Hour, past)
+	}
+
+	rec := &claimRecorder{Store: s, nows: map[string]time.Time{}}
+	m := rotation.NewManager(rec, svc, rotation.WithAppID(testApp))
+	var slowDone time.Time
+	m.RegisterRotator("a-slow", func(_ context.Context, _ []byte) ([]byte, error) {
+		time.Sleep(50 * time.Millisecond)
+		slowDone = time.Now().UTC()
+		return []byte("v2"), nil
+	})
+	m.RegisterRotator("b-next", func(_ context.Context, _ []byte) ([]byte, error) {
+		return []byte("v2"), nil
+	})
+
+	m.CheckDuePoliciesForTest(bg())
+
+	got, ok := rec.nows["b-next"]
+	if !ok {
+		t.Fatal("b-next was never claimed")
+	}
+	if got.Before(slowDone) {
+		t.Errorf("b-next claimed with now %v, before a-slow finished rotating at %v; the claim time is stale", got, slowDone)
+	}
+}
