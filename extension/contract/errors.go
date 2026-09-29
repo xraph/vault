@@ -39,9 +39,11 @@ func mapError(err error) error {
 // the result is CodeInternal and d.Logger is set, logs the underlying
 // error at Error level with the intent that hit it. That is the only case
 // an operator cannot diagnose from what the client sees. The log carries
-// the intent and the error and nothing else; no secret value ever reaches
-// an error in this package, and the client still gets only the generic
-// message.
+// the intent and the error and nothing else, and the client still gets
+// only the generic message. No error this package or the vault builds
+// carries a secret value, but rotation.rotateNow passes on whatever an
+// application's rotator returns, so a rotator must keep values out of its
+// own errors.
 func (d Deps) mapError(intent string, err error) error {
 	mapped := mapError(err)
 	if d.Logger == nil || mapped == nil {
