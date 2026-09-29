@@ -384,32 +384,41 @@ func (s *Store) ListFlagDefinitions(ctx context.Context, appID string, opts flag
 	return result, nil
 }
 
-// DeleteFlagDefinition removes a flag definition and its rules and overrides.
+// DeleteFlagDefinition removes a flag's rules and overrides, then the flag.
+//
+// Mongo has no transaction here, so the order is the guarantee: the
+// definition goes last. If a cleanup delete fails, the definition is still
+// there and a retry finds it and cleans up again. Deleting the definition
+// first would make that retry return ErrFlagNotFound before it reached the
+// cleanup, and the orphaned rules and overrides would attach to any flag
+// later created with the same key.
+//
+// ErrFlagNotFound is returned only when the definition was already gone and
+// this call removed nothing, so a retry after a partial failure succeeds.
 func (s *Store) DeleteFlagDefinition(ctx context.Context, key, appID string) error {
-	res, err := s.mdb.NewDelete((*FlagModel)(nil)).
+	rules, err := s.mdb.NewDelete((*FlagRuleModel)(nil)).
+		Many().
+		Filter(bson.M{"flag_key": key, "app_id": appID}).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+	overrides, err := s.mdb.NewDelete((*FlagOverrideModel)(nil)).
+		Many().
+		Filter(bson.M{"flag_key": key, "app_id": appID}).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
+	def, err := s.mdb.NewDelete((*FlagModel)(nil)).
 		Filter(bson.M{"key": key, "app_id": appID}).
 		Exec(ctx)
 	if err != nil {
 		return err
 	}
-	if res.DeletedCount() == 0 {
+	if def.DeletedCount() == 0 && rules.DeletedCount() == 0 && overrides.DeletedCount() == 0 {
 		return vault.ErrFlagNotFound
 	}
-
-	// Delete associated rules and overrides.
-	if _, err := s.mdb.NewDelete((*FlagRuleModel)(nil)).
-		Many().
-		Filter(bson.M{"flag_key": key, "app_id": appID}).
-		Exec(ctx); err != nil {
-		return err
-	}
-	if _, err := s.mdb.NewDelete((*FlagOverrideModel)(nil)).
-		Many().
-		Filter(bson.M{"flag_key": key, "app_id": appID}).
-		Exec(ctx); err != nil {
-		return err
-	}
-
 	return nil
 }
 
