@@ -3,6 +3,7 @@ package contract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
@@ -844,5 +845,734 @@ func TestFlags_SQLite_ListDetailEvaluate(t *testing.T) {
 	}
 	if ev.Reason != flag.ReasonRule || ev.Value != float64(50) || ev.MatchedRulePriority == nil || *ev.MatchedRulePriority != 0 || !ev.ValueMatchesType {
 		t.Errorf("evaluate acme: %+v", ev)
+	}
+}
+
+// --- flag commands ---
+
+// decodeReq builds a request the way the dispatcher does: json.Unmarshal of
+// the raw payload. Tests that care about absent versus null go through it.
+func decodeReq[T any](t *testing.T, raw string) T {
+	t.Helper()
+	var in T
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	return in
+}
+
+func flagDetail(t *testing.T, v *vault.Vault, key string) flagsDetailResponse {
+	t.Helper()
+	out, err := flagsDetailHandler(Deps{Vault: v})(context.Background(), flagsDetailRequest{Key: key}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("detail %q: %v", key, err)
+	}
+	return out
+}
+
+func wantCode(t *testing.T, err error, code dashcontract.ErrorCode, msg string) {
+	t.Helper()
+	if codeOf(err) != code {
+		t.Fatalf("code = %q (err %v), want %q", codeOf(err), err, code)
+	}
+	if msg == "" {
+		return
+	}
+	var ce *dashcontract.Error
+	if !errors.As(err, &ce) || !strings.Contains(ce.Message, msg) {
+		t.Errorf("message = %v, want it to contain %q", err, msg)
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func TestOptionalValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		present bool
+		want    any
+	}{
+		{"absent", "", false, nil},
+		{"null is a value", "null", true, nil},
+		{"false", "false", true, false},
+		{"zero", "0", true, float64(0)},
+		{"empty string", `""`, true, ""},
+		{"object", `{"a":[1]}`, true, map[string]any{"a": []any{float64(1)}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := optionalValue(json.RawMessage(tt.raw))
+			if err != nil {
+				t.Fatalf("optionalValue: %v", err)
+			}
+			if (got != nil) != tt.present {
+				t.Fatalf("present = %v, want %v", got != nil, tt.present)
+			}
+			if got != nil && !reflect.DeepEqual(*got, tt.want) {
+				t.Errorf("value = %#v, want %#v", *got, tt.want)
+			}
+		})
+	}
+	if _, err := optionalValue(json.RawMessage(`{`)); codeOf(err) != dashcontract.CodeBadRequest {
+		t.Errorf("malformed raw value: %v, want BAD_REQUEST", err)
+	}
+}
+
+// --- flags.create ---
+
+func TestFlagsCreate_HappyPath(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+
+	out, err := flagsCreateHandler(deps)(ctx, decodeReq[flagsCreateRequest](t,
+		`{"key":"checkout","type":"int","defaultValue":5,"description":"cart size","tags":["a","b"],"enabled":true}`), flagPrincipal)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	f := out.Flag
+	if f.Key != "checkout" || f.Type != "int" || f.DefaultValue != float64(5) || !f.DefaultMatchesType ||
+		f.Description != "cart size" || !reflect.DeepEqual(f.Tags, []string{"a", "b"}) || !f.Enabled || f.ID == "" {
+		t.Errorf("created flag = %+v", f)
+	}
+	if det := flagDetail(t, v, "checkout"); det.Flag.Key != "checkout" || len(det.Rules) != 0 {
+		t.Errorf("detail after create = %+v", det)
+	}
+	// A disabled flag with no tags marshals tags as [] and stays disabled.
+	off, err := flagsCreateHandler(deps)(ctx, flagsCreateRequest{Key: "off", Type: "bool", DefaultValue: false}, flagPrincipal)
+	if err != nil || off.Flag.Enabled || off.Flag.Tags == nil {
+		t.Errorf("create disabled: %+v, %v", off, err)
+	}
+	// A json flag takes null.
+	js, err := flagsCreateHandler(deps)(ctx, decodeReq[flagsCreateRequest](t, `{"key":"cfg","type":"json","defaultValue":null,"enabled":true}`), flagPrincipal)
+	if err != nil || js.Flag.DefaultValue != nil || !js.Flag.DefaultMatchesType {
+		t.Errorf("create json null: %+v, %v", js, err)
+	}
+}
+
+func TestFlagsCreate_ConflictLeavesTheFlagUnchanged(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	seedFlag(t, v, "taken", flag.TypeInt, float64(5), true)
+	seedRules(t, v, "taken", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 10}, ReturnValue: float64(9)})
+
+	_, err := flagsCreateHandler(Deps{Vault: v})(ctx, flagsCreateRequest{Key: "taken", Type: "string", DefaultValue: "x", Enabled: false}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeConflict, "already exists")
+
+	det := flagDetail(t, v, "taken")
+	if det.Flag.Type != "int" || det.Flag.DefaultValue != float64(5) || !det.Flag.Enabled || len(det.Rules) != 1 {
+		t.Errorf("flag changed by a refused create: %+v rules=%d", det.Flag, len(det.Rules))
+	}
+}
+
+func TestFlagsCreate_InvalidInputIsBadRequestAndCreatesNothing(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	tests := []struct {
+		name string
+		in   flagsCreateRequest
+		msg  string
+	}{
+		{"blank key", flagsCreateRequest{Key: "  ", Type: "bool", DefaultValue: true}, "key is required"},
+		{"unknown type", flagsCreateRequest{Key: "k", Type: "yaml", DefaultValue: "x"}, "type"},
+		{"no type", flagsCreateRequest{Key: "k", DefaultValue: true}, "type"},
+		{"string default on a bool flag", flagsCreateRequest{Key: "k", Type: "bool", DefaultValue: "true"}, "defaultValue"},
+		{"absent default on a bool flag", flagsCreateRequest{Key: "k", Type: "bool"}, "defaultValue"},
+		{"fractional int", flagsCreateRequest{Key: "k", Type: "int", DefaultValue: 1.5}, "defaultValue"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := flagsCreateHandler(deps)(ctx, tt.in, flagPrincipal)
+			wantCode(t, err, dashcontract.CodeBadRequest, tt.msg)
+		})
+	}
+	out, err := flagsListHandler(deps)(ctx, flagsListRequest{}, flagPrincipal)
+	if err != nil || out.Total != 0 {
+		t.Errorf("flags after refused creates: %+v, %v", out, err)
+	}
+}
+
+// --- flags.update ---
+
+func TestFlagsUpdate_AbsentDefaultKeepsItAndDescriptionAloneChanges(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	if _, err := v.FlagManager().Create(ctx, flag.CreateInput{
+		Key: "u", Type: flag.TypeInt, DefaultValue: float64(7), Description: "old", Tags: []string{"x"}, Enabled: true,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out, err := flagsUpdateHandler(deps)(ctx, decodeReq[flagsUpdateRequest](t, `{"key":"u","description":"new"}`), flagPrincipal)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	f := out.Flag
+	if f.Description != "new" || f.DefaultValue != float64(7) || !reflect.DeepEqual(f.Tags, []string{"x"}) || !f.Enabled {
+		t.Errorf("after description-only update: %+v", f)
+	}
+
+	// Tags present replace, and an empty list clears; description "" clears.
+	out, err = flagsUpdateHandler(deps)(ctx, decodeReq[flagsUpdateRequest](t, `{"key":"u","tags":[],"description":""}`), flagPrincipal)
+	if err != nil || len(out.Flag.Tags) != 0 || out.Flag.Tags == nil || out.Flag.Description != "" || out.Flag.DefaultValue != float64(7) {
+		t.Errorf("clear tags and description: %+v, %v", out, err)
+	}
+
+	// A new default is validated against the stored type and applied.
+	out, err = flagsUpdateHandler(deps)(ctx, decodeReq[flagsUpdateRequest](t, `{"key":"u","defaultValue":0}`), flagPrincipal)
+	if err != nil || out.Flag.DefaultValue != float64(0) {
+		t.Errorf("update default to zero: %+v, %v", out, err)
+	}
+	_, err = flagsUpdateHandler(deps)(ctx, decodeReq[flagsUpdateRequest](t, `{"key":"u","defaultValue":"seven"}`), flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "defaultValue")
+}
+
+func TestFlagsUpdate_NullDefault(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "b", flag.TypeBool, true, true)
+	seedFlag(t, v, "j", flag.TypeJSON, map[string]any{"a": float64(1)}, true)
+
+	// null on a bool flag is refused and the default stays.
+	_, err := flagsUpdateHandler(deps)(ctx, decodeReq[flagsUpdateRequest](t, `{"key":"b","defaultValue":null}`), flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "defaultValue")
+	if got := flagDetail(t, v, "b").Flag.DefaultValue; got != true {
+		t.Errorf("bool default after refused null = %v, want true", got)
+	}
+
+	// null on a json flag is stored: it is not "absent".
+	out, err := flagsUpdateHandler(deps)(ctx, decodeReq[flagsUpdateRequest](t, `{"key":"j","defaultValue":null}`), flagPrincipal)
+	if err != nil {
+		t.Fatalf("update json to null: %v", err)
+	}
+	if out.Flag.DefaultValue != nil || !out.Flag.DefaultMatchesType {
+		t.Errorf("json default = %#v matches=%v, want null", out.Flag.DefaultValue, out.Flag.DefaultMatchesType)
+	}
+	if got := flagDetail(t, v, "j").Flag.DefaultValue; got != nil {
+		t.Errorf("stored json default = %#v, want nil", got)
+	}
+
+	// Absent leaves the (now null) default alone while changing something else.
+	out, err = flagsUpdateHandler(deps)(ctx, decodeReq[flagsUpdateRequest](t, `{"key":"j","description":"d"}`), flagPrincipal)
+	if err != nil || out.Flag.DefaultValue != nil || out.Flag.Description != "d" {
+		t.Errorf("absent default: %+v, %v", out, err)
+	}
+}
+
+func TestFlagsUpdate_KeepsVariantsMetadataAndRules(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	seedFlag(t, v, "keep", flag.TypeString, "a", true)
+	seedRules(t, v, "keep", flag.RuleInput{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{"t"}}, ReturnValue: "b"})
+	def, err := st.GetFlagDefinition(ctx, "keep", testAppID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	def.Variants = []flag.Variant{{Value: "a", Description: "control"}}
+	def.Metadata = map[string]string{"owner": "growth"}
+	if err := st.DefineFlag(ctx, def); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+
+	if _, err := flagsUpdateHandler(Deps{Vault: v})(ctx, flagsUpdateRequest{Key: "keep", Description: ptr("changed")}, flagPrincipal); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	det := flagDetail(t, v, "keep")
+	if len(det.Variants) != 1 || det.Variants[0].Description != "control" || det.Metadata["owner"] != "growth" || len(det.Rules) != 1 {
+		t.Errorf("variants=%+v metadata=%v rules=%d after update", det.Variants, det.Metadata, len(det.Rules))
+	}
+}
+
+func TestFlagsUpdate_Errors(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	_, err := flagsUpdateHandler(deps)(ctx, flagsUpdateRequest{Key: "ghost", Description: ptr("x")}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsUpdateHandler(deps)(ctx, flagsUpdateRequest{Key: " "}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "key is required")
+}
+
+// --- flags.setEnabled ---
+
+func TestFlagsSetEnabled_DisablingIsVisibleToEvaluateAtOnce(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "kill", flag.TypeBool, false, true)
+	seedRules(t, v, "kill", flag.RuleInput{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{"acme"}}, ReturnValue: true})
+
+	// Warm the engine's cache on the hot path first: a disable that does
+	// not drop it would keep serving true for the cache TTL.
+	tctx := scope.WithTenantID(scope.WithAppID(ctx, testAppID), "acme")
+	if got, err := v.FlagEngine().Evaluate(tctx, "kill", testAppID); err != nil || got != true {
+		t.Fatalf("warm evaluate = %v, %v, want true", got, err)
+	}
+
+	out, err := flagsSetEnabledHandler(deps)(ctx, flagsSetEnabledRequest{Key: "kill", Enabled: false}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if out.Flag.Enabled {
+		t.Errorf("response still enabled: %+v", out.Flag)
+	}
+	if got, evErr := v.FlagEngine().Evaluate(tctx, "kill", testAppID); evErr != nil || got != false {
+		t.Errorf("hot path after disable = %v, %v, want the default false at once", got, evErr)
+	}
+	ev, err := flagsEvaluateHandler(deps)(ctx, flagsEvaluateRequest{Key: "kill", TenantID: "acme"}, flagPrincipal)
+	if err != nil || ev.Reason != flag.ReasonDisabled || ev.Value != false {
+		t.Errorf("flags.evaluate after disable = %+v, %v", ev, err)
+	}
+
+	// And on again.
+	out, err = flagsSetEnabledHandler(deps)(ctx, flagsSetEnabledRequest{Key: "kill", Enabled: true}, flagPrincipal)
+	if err != nil || !out.Flag.Enabled {
+		t.Fatalf("enable: %+v, %v", out, err)
+	}
+	ev, err = flagsEvaluateHandler(deps)(ctx, flagsEvaluateRequest{Key: "kill", TenantID: "acme"}, flagPrincipal)
+	if err != nil || ev.Reason != flag.ReasonRule || ev.Value != true {
+		t.Errorf("flags.evaluate after enable = %+v, %v", ev, err)
+	}
+}
+
+func TestFlagsSetEnabled_Errors(t *testing.T) {
+	v, _ := newTestVault(t)
+	deps := Deps{Vault: v}
+	_, err := flagsSetEnabledHandler(deps)(context.Background(), flagsSetEnabledRequest{Key: "ghost", Enabled: true}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsSetEnabledHandler(deps)(context.Background(), flagsSetEnabledRequest{Enabled: true}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "key is required")
+}
+
+// --- flags.delete ---
+
+func TestFlagsDelete_RemovesTheFlagItsRulesAndOverrides(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "gone", flag.TypeBool, false, true)
+	seedFlag(t, v, "stays", flag.TypeBool, false, true)
+	seedRules(t, v, "gone", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 50}, ReturnValue: true})
+	if _, err := v.FlagManager().SetTenantOverride(ctx, "gone", "acme", true); err != nil {
+		t.Fatalf("override: %v", err)
+	}
+
+	out, err := flagsDeleteHandler(deps)(ctx, flagsDeleteRequest{Key: "gone"}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !out.OK || out.Key != "gone" {
+		t.Errorf("response = %+v", out)
+	}
+	_, err = flagsDetailHandler(deps)(ctx, flagsDetailRequest{Key: "gone"}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	if rules, _ := st.GetFlagRules(ctx, "gone", testAppID); len(rules) != 0 {
+		t.Errorf("rules survived the delete: %d", len(rules))
+	}
+	if ovs, _ := st.ListFlagTenantOverrides(ctx, "gone", testAppID); len(ovs) != 0 {
+		t.Errorf("overrides survived the delete: %d", len(ovs))
+	}
+	if got := flagDetail(t, v, "stays"); got.Flag.Key != "stays" {
+		t.Errorf("the other flag was touched: %+v", got)
+	}
+	// The row is gone, so a second delete is not found.
+	_, err = flagsDeleteHandler(deps)(ctx, flagsDeleteRequest{Key: "gone"}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsDeleteHandler(deps)(ctx, flagsDeleteRequest{}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "key is required")
+}
+
+// --- flags.setRules ---
+
+func TestFlagsSetRules_HappyPathKeepsDisplayOrderAndUTC(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "r", flag.TypeInt, float64(1), true)
+
+	in := decodeReq[flagsSetRulesRequest](t, `{"key":"r","rules":[
+		{"type":"when_tenant","tenantIds":["acme","zed"],"returnValue":10},
+		{"type":"when_user","userIds":["u1"],"returnValue":20},
+		{"type":"rollout","percentage":25,"returnValue":30},
+		{"type":"schedule","startAt":"2030-06-01T12:00:00-05:00","endAt":"2030-07-01T00:00:00Z","returnValue":40}
+	]}`)
+	out, err := flagsSetRulesHandler(deps)(ctx, in, flagPrincipal)
+	if err != nil {
+		t.Fatalf("setRules: %v", err)
+	}
+	if len(out.Rules) != 4 {
+		t.Fatalf("rules = %+v", out.Rules)
+	}
+	wantTypes := []string{"when_tenant", "when_user", "rollout", "schedule"}
+	for i, r := range out.Rules {
+		if r.Priority != i || r.Type != wantTypes[i] || !r.Implemented || !r.ReturnMatchesType || r.ReturnValue != float64((i+1)*10) || r.ID == "" {
+			t.Errorf("rule %d = %+v", i, r)
+		}
+	}
+	if !reflect.DeepEqual(out.Rules[0].TenantIDs, []string{"acme", "zed"}) || out.Rules[0].UserIDs == nil {
+		t.Errorf("tenant rule = %+v", out.Rules[0])
+	}
+	if out.Rules[2].Percentage != 25 {
+		t.Errorf("rollout = %+v", out.Rules[2])
+	}
+	if s := out.Rules[3]; s.StartAt == nil || *s.StartAt != "2030-06-01T17:00:00Z" || s.EndAt == nil || *s.EndAt != "2030-07-01T00:00:00Z" {
+		t.Errorf("schedule = start %v end %v", deref(s.StartAt), deref(s.EndAt))
+	}
+	if det := flagDetail(t, v, "r"); len(det.Rules) != 4 || det.Rules[3].Type != "schedule" {
+		t.Errorf("detail rules = %+v", det.Rules)
+	}
+	// Open-ended schedule: only a start.
+	out, err = flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t,
+		`{"key":"r","rules":[{"type":"schedule","startAt":"2030-01-01T00:00:00Z","returnValue":2}]}`), flagPrincipal)
+	if err != nil || len(out.Rules) != 1 || out.Rules[0].EndAt != nil {
+		t.Errorf("open schedule: %+v, %v", out, err)
+	}
+}
+
+func TestFlagsSetRules_EmptyListClearsAndAbsentListIsRefused(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "r", flag.TypeBool, false, true)
+	seedRules(t, v, "r", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 50}, ReturnValue: true})
+
+	// A request that lost its rules field must not wipe the list.
+	for _, raw := range []string{`{"key":"r"}`, `{"key":"r","rules":null}`} {
+		_, err := flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, raw), flagPrincipal)
+		wantCode(t, err, dashcontract.CodeBadRequest, "rules")
+	}
+	if n := len(flagDetail(t, v, "r").Rules); n != 1 {
+		t.Fatalf("rules after refused requests = %d, want 1", n)
+	}
+
+	out, err := flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, `{"key":"r","rules":[]}`), flagPrincipal)
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if out.Rules == nil || len(out.Rules) != 0 {
+		t.Errorf("cleared rules = %#v, want an empty non-nil list", out.Rules)
+	}
+	raw, _ := json.Marshal(out)
+	if string(raw) != `{"rules":[]}` {
+		t.Errorf("wire = %s", raw)
+	}
+	if n := len(flagDetail(t, v, "r").Rules); n != 0 {
+		t.Errorf("rules after clear = %d", n)
+	}
+}
+
+func TestFlagsSetRules_BadTimesNameTheField(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "r", flag.TypeBool, false, true)
+	seedRules(t, v, "r", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 50}, ReturnValue: true})
+
+	tests := []struct{ name, raw, field string }{
+		{"startAt", `{"key":"r","rules":[{"type":"rollout","percentage":5,"returnValue":true},{"type":"schedule","startAt":"tomorrow","returnValue":true}]}`, "rules[1].startAt"},
+		{"endAt", `{"key":"r","rules":[{"type":"schedule","startAt":"2030-01-01T00:00:00Z","endAt":"2030-13-01","returnValue":true}]}`, "rules[0].endAt"},
+		{"date without a zone", `{"key":"r","rules":[{"type":"schedule","startAt":"2030-01-01T00:00:00","returnValue":true}]}`, "rules[0].startAt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, tt.raw), flagPrincipal)
+			wantCode(t, err, dashcontract.CodeBadRequest, tt.field)
+		})
+	}
+	// Nothing was written: the earlier rule is still there.
+	if det := flagDetail(t, v, "r"); len(det.Rules) != 1 || det.Rules[0].Type != "rollout" || det.Rules[0].Percentage != 50 {
+		t.Errorf("rules after refused writes = %+v", det.Rules)
+	}
+}
+
+func TestFlagsSetRules_ManagerRefusalsAreBadRequestAndWriteNothing(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "r", flag.TypeBool, false, true)
+	seedRules(t, v, "r", flag.RuleInput{Type: flag.RuleWhenUser, Config: flag.RuleConfig{UserIDs: []string{"u"}}, ReturnValue: true})
+
+	tests := []struct{ name, raw, msg string }{
+		{"percentage out of range", `{"key":"r","rules":[{"type":"rollout","percentage":150,"returnValue":true}]}`, "rules[0].config.percentage"},
+		{"return value of the wrong type", `{"key":"r","rules":[{"type":"when_user","userIds":["u"],"returnValue":"yes"}]}`, "rules[0].returnValue"},
+		{"empty id list", `{"key":"r","rules":[{"type":"when_tenant","returnValue":true}]}`, "rules[0].config.tenantIds"},
+		{"unknown type", `{"key":"r","rules":[{"type":"astrology","returnValue":true}]}`, "rules[0].type"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, tt.raw), flagPrincipal)
+			wantCode(t, err, dashcontract.CodeBadRequest, tt.msg)
+		})
+	}
+	if det := flagDetail(t, v, "r"); len(det.Rules) != 1 || det.Rules[0].Type != "when_user" {
+		t.Errorf("rules after refused writes = %+v", det.Rules)
+	}
+	_, err := flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, `{"key":"ghost","rules":[]}`), flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, `{"rules":[]}`), flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "key is required")
+}
+
+func TestFlagsSetRules_RoundTripsACustomRule(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "c", flag.TypeString, "d", true)
+
+	out, err := flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, `{"key":"c","rules":[
+		{"type":"custom","evaluator":"beta-cohort","params":{"n":3,"nested":{"a":[1,"x"]}},"returnValue":"custom"},
+		{"type":"when_tenant_tag","tagKey":"plan","tagValue":"pro","returnValue":"tagged"}
+	]}`), flagPrincipal)
+	if err != nil {
+		t.Fatalf("setRules: %v", err)
+	}
+	c, tag := out.Rules[0], out.Rules[1]
+	wantParams := map[string]any{"n": float64(3), "nested": map[string]any{"a": []any{float64(1), "x"}}}
+	if c.Type != "custom" || c.Implemented || c.Evaluator != "beta-cohort" || !reflect.DeepEqual(c.Params, wantParams) || c.ReturnValue != "custom" {
+		t.Errorf("custom rule = %+v", c)
+	}
+	if tag.Type != "when_tenant_tag" || tag.Implemented || tag.TagKey != "plan" || tag.TagValue != "pro" {
+		t.Errorf("tag rule = %+v", tag)
+	}
+	det := flagDetail(t, v, "c")
+	if !reflect.DeepEqual(det.Rules[0].Params, wantParams) || det.Rules[1].TagKey != "plan" {
+		t.Errorf("detail rules = %+v", det.Rules)
+	}
+}
+
+// --- flags.setTenantOverride / flags.deleteTenantOverride ---
+
+func TestFlagsTenantOverride_SetReplaceAndDelete(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "o", flag.TypeInt, float64(1), true)
+
+	out, err := flagsSetTenantOverrideHandler(deps)(ctx, decodeReq[flagsSetTenantOverrideRequest](t, `{"key":"o","tenantId":"acme","value":50}`), flagPrincipal)
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if o := out.Override; o.TenantID != "acme" || o.Value != float64(50) || !o.ValueMatchesType || o.UpdatedAt == "" {
+		t.Errorf("override = %+v", o)
+	}
+	// A second set for the same tenant replaces the value.
+	out, err = flagsSetTenantOverrideHandler(deps)(ctx, decodeReq[flagsSetTenantOverrideRequest](t, `{"key":"o","tenantId":"acme","value":60}`), flagPrincipal)
+	if err != nil || out.Override.Value != float64(60) {
+		t.Fatalf("replace: %+v, %v", out, err)
+	}
+	if det := flagDetail(t, v, "o"); len(det.Overrides) != 1 || det.Overrides[0].Value != float64(60) {
+		t.Errorf("detail overrides = %+v", det.Overrides)
+	}
+	ev, err := flagsEvaluateHandler(deps)(ctx, flagsEvaluateRequest{Key: "o", TenantID: "acme"}, flagPrincipal)
+	if err != nil || ev.Reason != flag.ReasonTenantOverride || ev.Value != float64(60) {
+		t.Errorf("evaluate = %+v, %v", ev, err)
+	}
+
+	del, err := flagsDeleteTenantOverrideHandler(deps)(ctx, flagsDeleteTenantOverrideRequest{Key: "o", TenantID: "acme"}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if !del.OK || del.Key != "o" || del.TenantID != "acme" {
+		t.Errorf("delete response = %+v", del)
+	}
+	if det := flagDetail(t, v, "o"); len(det.Overrides) != 0 {
+		t.Errorf("overrides after delete = %+v", det.Overrides)
+	}
+	ev, err = flagsEvaluateHandler(deps)(ctx, flagsEvaluateRequest{Key: "o", TenantID: "acme"}, flagPrincipal)
+	if err != nil || ev.Reason != flag.ReasonDefault {
+		t.Errorf("evaluate after delete = %+v, %v", ev, err)
+	}
+}
+
+func TestFlagsSetTenantOverride_Refusals(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "o", flag.TypeBool, false, true)
+
+	_, err := flagsSetTenantOverrideHandler(deps)(ctx, flagsSetTenantOverrideRequest{Key: "o", TenantID: "acme", Value: "true"}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "value")
+	_, err = flagsSetTenantOverrideHandler(deps)(ctx, flagsSetTenantOverrideRequest{Key: "o", TenantID: "  ", Value: true}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "tenantId")
+	_, err = flagsSetTenantOverrideHandler(deps)(ctx, flagsSetTenantOverrideRequest{Key: "ghost", TenantID: "acme", Value: true}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsSetTenantOverrideHandler(deps)(ctx, flagsSetTenantOverrideRequest{TenantID: "acme", Value: true}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "key is required")
+	if det := flagDetail(t, v, "o"); len(det.Overrides) != 0 {
+		t.Errorf("a refused set left overrides: %+v", det.Overrides)
+	}
+}
+
+func TestFlagsDeleteTenantOverride_MissingTenantIsNotFound(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "o", flag.TypeBool, false, true)
+
+	_, err := flagsDeleteTenantOverrideHandler(deps)(ctx, flagsDeleteTenantOverrideRequest{Key: "o", TenantID: "nobody"}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "")
+	var ce *dashcontract.Error
+	if !errors.As(err, &ce) || ce.Message != "tenant override not found" {
+		t.Errorf("message = %v, want exactly %q", err, "tenant override not found")
+	}
+	// A missing flag stays a flag not found, not an override not found.
+	_, err = flagsDeleteTenantOverrideHandler(deps)(ctx, flagsDeleteTenantOverrideRequest{Key: "ghost", TenantID: "nobody"}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsDeleteTenantOverrideHandler(deps)(ctx, flagsDeleteTenantOverrideRequest{Key: "o", TenantID: " "}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "tenantId")
+	_, err = flagsDeleteTenantOverrideHandler(deps)(ctx, flagsDeleteTenantOverrideRequest{TenantID: "x"}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeBadRequest, "key is required")
+}
+
+// --- shared properties of every flag command ---
+
+// Every command goes through the manager: it drops the engine cache and
+// records an audit row per change, which a store write would not.
+func TestFlagCommands_GoThroughTheManagerAndAreAudited(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+
+	steps := []func() error{
+		func() error {
+			_, err := flagsCreateHandler(deps)(ctx, flagsCreateRequest{Key: "a", Type: "bool", DefaultValue: false, Enabled: true}, flagPrincipal)
+			return err
+		},
+		func() error {
+			_, err := flagsUpdateHandler(deps)(ctx, flagsUpdateRequest{Key: "a", Description: ptr("d")}, flagPrincipal)
+			return err
+		},
+		func() error {
+			_, err := flagsSetEnabledHandler(deps)(ctx, flagsSetEnabledRequest{Key: "a", Enabled: false}, flagPrincipal)
+			return err
+		},
+		func() error {
+			_, err := flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, `{"key":"a","rules":[]}`), flagPrincipal)
+			return err
+		},
+		func() error {
+			_, err := flagsSetTenantOverrideHandler(deps)(ctx, flagsSetTenantOverrideRequest{Key: "a", TenantID: "t", Value: true}, flagPrincipal)
+			return err
+		},
+		func() error {
+			_, err := flagsDeleteTenantOverrideHandler(deps)(ctx, flagsDeleteTenantOverrideRequest{Key: "a", TenantID: "t"}, flagPrincipal)
+			return err
+		},
+		func() error {
+			_, err := flagsDeleteHandler(deps)(ctx, flagsDeleteRequest{Key: "a"}, flagPrincipal)
+			return err
+		},
+	}
+	for i, step := range steps {
+		if err := step(); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+	}
+	entries, err := st.ListAuditByKey(ctx, "a", testAppID, audit.ListOpts{Limit: 50, Resource: audithook.ResourceFlag})
+	if err != nil {
+		t.Fatalf("audit: %v", err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Action)
+	}
+	sort.Strings(got)
+	want := []string{
+		audithook.ActionFlagCreated, audithook.ActionFlagDeleted, audithook.ActionFlagOverrideDeleted,
+		audithook.ActionFlagOverrideSet, audithook.ActionFlagRulesSet, audithook.ActionFlagToggled, audithook.ActionFlagUpdated,
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("audit actions = %v, want %v", got, want)
+	}
+}
+
+// Every command operates on deps.Vault.AppID() alone: a flag another app
+// owns under the same key is neither visible nor changed.
+func TestFlagCommands_OtherAppsFlagsAreUntouched(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	if err := st.DefineFlag(ctx, &flag.Definition{
+		Entity: core.NewEntity(), ID: id.NewFlagID(), Key: "shared", Type: flag.TypeBool,
+		DefaultValue: true, Enabled: true, AppID: "other-app",
+	}); err != nil {
+		t.Fatalf("define: %v", err)
+	}
+
+	_, err := flagsSetEnabledHandler(deps)(ctx, flagsSetEnabledRequest{Key: "shared", Enabled: false}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsDeleteHandler(deps)(ctx, flagsDeleteRequest{Key: "shared"}, flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+	_, err = flagsSetRulesHandler(deps)(ctx, decodeReq[flagsSetRulesRequest](t, `{"key":"shared","rules":[]}`), flagPrincipal)
+	wantCode(t, err, dashcontract.CodeNotFound, "flag not found")
+
+	// Creating "shared" here is allowed (different app) and leaves theirs be.
+	if _, err = flagsCreateHandler(deps)(ctx, flagsCreateRequest{Key: "shared", Type: "string", DefaultValue: "mine", Enabled: true}, flagPrincipal); err != nil {
+		t.Fatalf("create in own app: %v", err)
+	}
+	theirs, err := st.GetFlagDefinition(ctx, "shared", "other-app")
+	if err != nil || theirs.Type != flag.TypeBool || theirs.DefaultValue != true || !theirs.Enabled {
+		t.Errorf("the other app's flag = %+v, %v", theirs, err)
+	}
+}
+
+// The wire: a command answers with exactly the documented shape.
+func TestFlagCommands_WireShapes(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedFlag(t, v, "w", flag.TypeBool, false, true)
+
+	if _, err := flagsSetTenantOverrideHandler(deps)(ctx, flagsSetTenantOverrideRequest{Key: "w", TenantID: "t", Value: true}, flagPrincipal); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	del, err := flagsDeleteTenantOverrideHandler(deps)(ctx, flagsDeleteTenantOverrideRequest{Key: "w", TenantID: "t"}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	raw, _ := json.Marshal(del)
+	if string(raw) != `{"ok":true,"key":"w","tenantId":"t"}` {
+		t.Errorf("deleteTenantOverride wire = %s", raw)
+	}
+	fd, err := flagsDeleteHandler(deps)(ctx, flagsDeleteRequest{Key: "w"}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("delete flag: %v", err)
+	}
+	raw, _ = json.Marshal(fd)
+	if string(raw) != `{"ok":true,"key":"w"}` {
+		t.Errorf("delete wire = %s", raw)
+	}
+}
+
+// A rule read from flags.detail carries tenantIds and userIds as [] when it
+// has none. A custom or when_tenant_tag rule keeps its config as given, so
+// those empty lists must not end up stored as empty (non-nil) slices: the
+// stored config has to equal the one that was read, not merely marshal like
+// it.
+func TestFlagsSetRules_EmptyIdListsOnAKeptConfigStayUnset(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	seedFlag(t, v, "c", flag.TypeString, "d", true)
+
+	_, err := flagsSetRulesHandler(Deps{Vault: v})(ctx, decodeReq[flagsSetRulesRequest](t, `{"key":"c","rules":[
+		{"type":"custom","tenantIds":[],"userIds":[],"evaluator":"x","returnValue":"a"},
+		{"type":"when_tenant_tag","tenantIds":[],"userIds":[],"tagKey":"k","tagValue":"v","returnValue":"b"}
+	]}`), flagPrincipal)
+	if err != nil {
+		t.Fatalf("setRules: %v", err)
+	}
+	rules, err := st.GetFlagRules(ctx, "c", testAppID)
+	if err != nil || len(rules) != 2 {
+		t.Fatalf("stored rules = %v, %v", rules, err)
+	}
+	for i, r := range rules {
+		if r.Config.TenantIDs != nil || r.Config.UserIDs != nil {
+			t.Errorf("rule %d stored tenantIds=%#v userIds=%#v, want both unset", i, r.Config.TenantIDs, r.Config.UserIDs)
+		}
 	}
 }

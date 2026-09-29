@@ -19,9 +19,11 @@ func TestManifest_Loads(t *testing.T) {
 	// secrets.list, secrets.detail, secrets.versions, secrets.create,
 	// secrets.update, secrets.delete, rotation.policies, rotation.detail,
 	// rotation.savePolicy, rotation.deletePolicy, rotation.rotateNow, flags.list,
-	// flags.detail, flags.evaluate.
-	if got := len(m.Intents); got != 14 {
-		t.Errorf("intents = %d, want 14", got)
+	// flags.detail, flags.evaluate, flags.create, flags.update, flags.delete,
+	// flags.setEnabled, flags.setRules, flags.setTenantOverride,
+	// flags.deleteTenantOverride.
+	if got := len(m.Intents); got != 21 {
+		t.Errorf("intents = %d, want 21", got)
 	}
 }
 
@@ -45,7 +47,8 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	queries := []string{"secrets.list", "secrets.detail", "secrets.versions", "rotation.policies", "rotation.detail", "flags.list", "flags.detail", "flags.evaluate"}
-	commands := []string{"secrets.create", "secrets.update", "secrets.delete", "rotation.savePolicy", "rotation.deletePolicy", "rotation.rotateNow"}
+	commands := []string{"secrets.create", "secrets.update", "secrets.delete", "rotation.savePolicy", "rotation.deletePolicy", "rotation.rotateNow",
+		"flags.create", "flags.update", "flags.delete", "flags.setEnabled", "flags.setRules", "flags.setTenantOverride", "flags.deleteTenantOverride"}
 	for _, name := range queries {
 		intent, ok := reg.Intent("vault", name, 1)
 		if !ok {

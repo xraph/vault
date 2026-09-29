@@ -307,6 +307,15 @@ func ruleImplemented(t flag.RuleType) bool {
 // type of the flag the rule belongs to, which its return value is checked
 // against.
 func projectFlagRule(r *flag.Rule, flagType flag.Type) FlagRuleSummary {
+	return projectFlagRuleMatching(r, valueMatchesType(flagType, r.ReturnValue))
+}
+
+// projectFlagRuleMatching is projectFlagRule with the return value's type
+// check already decided. A command that has just stored the rule through
+// flag.Manager knows the answer is true (the manager validated the value
+// against the flag's type before writing), so it does not read the flag
+// again just to ask.
+func projectFlagRuleMatching(r *flag.Rule, returnMatchesType bool) FlagRuleSummary {
 	var params map[string]any
 	if len(r.Config.Params) > 0 {
 		params = make(map[string]any, len(r.Config.Params))
@@ -329,16 +338,22 @@ func projectFlagRule(r *flag.Rule, flagType flag.Type) FlagRuleSummary {
 		Evaluator:         r.Config.Evaluator,
 		Params:            params,
 		ReturnValue:       wireValue(r.ReturnValue),
-		ReturnMatchesType: valueMatchesType(flagType, r.ReturnValue),
+		ReturnMatchesType: returnMatchesType,
 	}
 }
 
 // projectFlagOverride projects a flag.TenantOverride onto its wire type.
 func projectFlagOverride(o *flag.TenantOverride, flagType flag.Type) FlagOverrideSummary {
+	return projectFlagOverrideMatching(o, valueMatchesType(flagType, o.Value))
+}
+
+// projectFlagOverrideMatching is projectFlagOverride with the type check
+// already decided, for the same reason as projectFlagRuleMatching.
+func projectFlagOverrideMatching(o *flag.TenantOverride, valueMatchesType bool) FlagOverrideSummary {
 	return FlagOverrideSummary{
 		TenantID:         o.TenantID,
 		Value:            wireValue(o.Value),
-		ValueMatchesType: valueMatchesType(flagType, o.Value),
+		ValueMatchesType: valueMatchesType,
 		UpdatedAt:        formatTime(o.UpdatedAt),
 	}
 }

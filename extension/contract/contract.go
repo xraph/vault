@@ -96,6 +96,27 @@ func Register(
 		{"flags.evaluate", func() error {
 			return dispatcher.RegisterQuery(d, c, "flags.evaluate", 1, flagsEvaluateHandler(deps))
 		}},
+		{"flags.create", func() error {
+			return dispatcher.RegisterCommand(d, c, "flags.create", 1, flagsCreateHandler(deps))
+		}},
+		{"flags.update", func() error {
+			return dispatcher.RegisterCommand(d, c, "flags.update", 1, flagsUpdateHandler(deps))
+		}},
+		{"flags.delete", func() error {
+			return dispatcher.RegisterCommand(d, c, "flags.delete", 1, flagsDeleteHandler(deps))
+		}},
+		{"flags.setEnabled", func() error {
+			return dispatcher.RegisterCommand(d, c, "flags.setEnabled", 1, flagsSetEnabledHandler(deps))
+		}},
+		{"flags.setRules", func() error {
+			return dispatcher.RegisterCommand(d, c, "flags.setRules", 1, flagsSetRulesHandler(deps))
+		}},
+		{"flags.setTenantOverride", func() error {
+			return dispatcher.RegisterCommand(d, c, "flags.setTenantOverride", 1, flagsSetTenantOverrideHandler(deps))
+		}},
+		{"flags.deleteTenantOverride", func() error {
+			return dispatcher.RegisterCommand(d, c, "flags.deleteTenantOverride", 1, flagsDeleteTenantOverrideHandler(deps))
+		}},
 		{"rotation.policies", func() error {
 			return dispatcher.RegisterQuery(d, c, "rotation.policies", 1, rotationPoliciesHandler(deps))
 		}},

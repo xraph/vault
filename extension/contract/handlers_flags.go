@@ -2,12 +2,16 @@ package contract
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/xraph/forge/extensions/dashboard/contract"
 
+	"github.com/xraph/vault"
 	"github.com/xraph/vault/audit"
 	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/flag"
@@ -260,5 +264,341 @@ func flagsEvaluateHandler(deps Deps) func(ctx context.Context, in flagsEvaluateR
 			out.Bucket = &b
 		}
 		return out, nil
+	}
+}
+
+// --- commands ---
+//
+// Every command below goes through deps.Vault.FlagManager(), never the
+// store. The manager is the one path that validates a value against the
+// flag's type, refuses to overwrite on create, drops the engine's cache and
+// records the audit row; a store write does none of that.
+
+// flagResponse is the wire response of every command that answers with the
+// flag it changed.
+type flagResponse struct {
+	Flag FlagSummary `json:"flag"`
+}
+
+// optionalValue decodes a request field that has to tell "absent" from JSON
+// null. raw is the field as json.RawMessage captured it: empty when the
+// field was not sent, the literal null when it was sent as null. Absent
+// returns nil, leaving the stored value alone; anything else returns a
+// pointer to the decoded value, so a present null is a *any holding nil,
+// which only a json flag accepts. It is the one place that decision is made.
+func optionalValue(raw json.RawMessage) (*any, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, badRequest("defaultValue is not valid JSON")
+	}
+	return &v, nil
+}
+
+// flagsCreateRequest is the wire request for flags.create. DefaultValue is a
+// plain any: for a create there is no stored value to keep, so an absent
+// default and a null one are both nil, and the manager refuses nil for every
+// type but json.
+type flagsCreateRequest struct {
+	Key          string   `json:"key"`
+	Type         string   `json:"type"`
+	DefaultValue any      `json:"defaultValue"`
+	Description  string   `json:"description,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	Enabled      bool     `json:"enabled"`
+}
+
+// flagsCreateHandler answers flags.create for deps.Vault.AppID() alone. An
+// existing key is CONFLICT and the flag is left exactly as it was.
+func flagsCreateHandler(deps Deps) func(ctx context.Context, in flagsCreateRequest, p contract.Principal) (flagResponse, error) {
+	return func(ctx context.Context, in flagsCreateRequest, _ contract.Principal) (flagResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return flagResponse{}, err
+		}
+		def, err := deps.Vault.FlagManager().Create(ctx, flag.CreateInput{
+			Key:          key,
+			Type:         flag.Type(in.Type),
+			DefaultValue: in.DefaultValue,
+			Description:  in.Description,
+			Tags:         in.Tags,
+			Enabled:      in.Enabled,
+		})
+		if err != nil {
+			return flagResponse{}, deps.mapError("flags.create", err)
+		}
+		return flagResponse{Flag: projectFlagSummary(def)}, nil
+	}
+}
+
+// flagsUpdateRequest is the wire request for flags.update. Every field but
+// the key is optional and only a field that is present changes. DefaultValue
+// is a json.RawMessage so an absent default (leave it) and a null one (set
+// it to null, which only a json flag accepts) can be told apart: see
+// optionalValue.
+type flagsUpdateRequest struct {
+	Key          string          `json:"key"`
+	Description  *string         `json:"description,omitempty"`
+	DefaultValue json.RawMessage `json:"defaultValue,omitempty"`
+	Tags         *[]string       `json:"tags,omitempty"`
+}
+
+// flagsUpdateHandler answers flags.update for deps.Vault.AppID() alone.
+func flagsUpdateHandler(deps Deps) func(ctx context.Context, in flagsUpdateRequest, p contract.Principal) (flagResponse, error) {
+	return func(ctx context.Context, in flagsUpdateRequest, _ contract.Principal) (flagResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return flagResponse{}, err
+		}
+		def, err := optionalValue(in.DefaultValue)
+		if err != nil {
+			return flagResponse{}, err
+		}
+		updated, err := deps.Vault.FlagManager().Update(ctx, key, flag.UpdateInput{
+			Description:  in.Description,
+			DefaultValue: def,
+			Tags:         in.Tags,
+		})
+		if err != nil {
+			return flagResponse{}, deps.mapError("flags.update", err)
+		}
+		return flagResponse{Flag: projectFlagSummary(updated)}, nil
+	}
+}
+
+// flagsDeleteRequest is the wire request for flags.delete.
+type flagsDeleteRequest struct {
+	Key string `json:"key"`
+}
+
+// flagsDeleteResponse is the wire response for flags.delete.
+type flagsDeleteResponse struct {
+	OK  bool   `json:"ok"`
+	Key string `json:"key"`
+}
+
+// flagsDeleteHandler answers flags.delete for deps.Vault.AppID() alone. The
+// store removes the flag's rules and overrides with it.
+func flagsDeleteHandler(deps Deps) func(ctx context.Context, in flagsDeleteRequest, p contract.Principal) (flagsDeleteResponse, error) {
+	return func(ctx context.Context, in flagsDeleteRequest, _ contract.Principal) (flagsDeleteResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return flagsDeleteResponse{}, err
+		}
+		if err := deps.Vault.FlagManager().Delete(ctx, key); err != nil {
+			return flagsDeleteResponse{}, deps.mapError("flags.delete", err)
+		}
+		return flagsDeleteResponse{OK: true, Key: key}, nil
+	}
+}
+
+// flagsSetEnabledRequest is the wire request for flags.setEnabled.
+type flagsSetEnabledRequest struct {
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
+}
+
+// flagsSetEnabledHandler answers flags.setEnabled for deps.Vault.AppID()
+// alone. The manager drops the engine's cache, so a flag turned off stops
+// being served on the hot path at once rather than after the cache TTL.
+func flagsSetEnabledHandler(deps Deps) func(ctx context.Context, in flagsSetEnabledRequest, p contract.Principal) (flagResponse, error) {
+	return func(ctx context.Context, in flagsSetEnabledRequest, _ contract.Principal) (flagResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return flagResponse{}, err
+		}
+		def, err := deps.Vault.FlagManager().SetEnabled(ctx, key, in.Enabled)
+		if err != nil {
+			return flagResponse{}, deps.mapError("flags.setEnabled", err)
+		}
+		return flagResponse{Flag: projectFlagSummary(def)}, nil
+	}
+}
+
+// flagRuleRequest is one rule on the wire, in the shape flags.detail returns
+// it, so a list read from detail can be sent back unchanged. Fields a rule's
+// type does not read are accepted and ignored by the manager, except for
+// when_tenant_tag and custom, which keep their config as given. Times are
+// RFC3339, "" (or absent) meaning an open end.
+type flagRuleRequest struct {
+	Type        string         `json:"type"`
+	TenantIDs   []string       `json:"tenantIds,omitempty"`
+	UserIDs     []string       `json:"userIds,omitempty"`
+	Percentage  int            `json:"percentage,omitempty"`
+	StartAt     string         `json:"startAt,omitempty"`
+	EndAt       string         `json:"endAt,omitempty"`
+	TagKey      string         `json:"tagKey,omitempty"`
+	TagValue    string         `json:"tagValue,omitempty"`
+	Evaluator   string         `json:"evaluator,omitempty"`
+	Params      map[string]any `json:"params,omitempty"`
+	ReturnValue any            `json:"returnValue"`
+}
+
+// flagsSetRulesRequest is the wire request for flags.setRules. Rules is a
+// pointer so a request that omits it (or sends null) is refused instead of
+// reading as "no rules" and wiping the list; an explicit [] clears it.
+type flagsSetRulesRequest struct {
+	Key   string             `json:"key"`
+	Rules *[]flagRuleRequest `json:"rules"`
+}
+
+// flagsSetRulesResponse is the wire response for flags.setRules: the rules
+// as stored, in evaluation order.
+type flagsSetRulesResponse struct {
+	Rules []FlagRuleSummary `json:"rules"`
+}
+
+// parseRuleTime parses an optional RFC3339 rule time. "" is absent. The
+// error names the field the way the manager's own validation errors do,
+// rules[i].startAt.
+func parseRuleTime(i int, name, raw string) (*time.Time, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, badRequest(fmt.Sprintf("rules[%d].%s must be an RFC3339 timestamp", i, name))
+	}
+	return &t, nil
+}
+
+// nilIfEmpty returns nil for an empty list. The wire always carries lists as
+// [], and a stored config that keeps an empty slice where the original had
+// none would not be the config that was read.
+func nilIfEmpty(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
+
+// toRuleInputs converts the wire rules to the manager's inputs.
+func toRuleInputs(in []flagRuleRequest) ([]flag.RuleInput, error) {
+	out := make([]flag.RuleInput, 0, len(in))
+	for i, r := range in {
+		start, err := parseRuleTime(i, "startAt", r.StartAt)
+		if err != nil {
+			return nil, err
+		}
+		end, err := parseRuleTime(i, "endAt", r.EndAt)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, flag.RuleInput{
+			Type: flag.RuleType(r.Type),
+			Config: flag.RuleConfig{
+				TenantIDs:  nilIfEmpty(r.TenantIDs),
+				UserIDs:    nilIfEmpty(r.UserIDs),
+				Percentage: r.Percentage,
+				StartAt:    start,
+				EndAt:      end,
+				TagKey:     r.TagKey,
+				TagValue:   r.TagValue,
+				Evaluator:  r.Evaluator,
+				Params:     r.Params,
+			},
+			ReturnValue: r.ReturnValue,
+		})
+	}
+	return out, nil
+}
+
+// flagsSetRulesHandler answers flags.setRules for deps.Vault.AppID() alone.
+// The list replaces the flag's rules whole and its order is the priority:
+// the first rule wins.
+func flagsSetRulesHandler(deps Deps) func(ctx context.Context, in flagsSetRulesRequest, p contract.Principal) (flagsSetRulesResponse, error) {
+	return func(ctx context.Context, in flagsSetRulesRequest, _ contract.Principal) (flagsSetRulesResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return flagsSetRulesResponse{}, err
+		}
+		if in.Rules == nil {
+			return flagsSetRulesResponse{}, badRequest("rules is required; send an empty list to clear them")
+		}
+		inputs, err := toRuleInputs(*in.Rules)
+		if err != nil {
+			return flagsSetRulesResponse{}, err
+		}
+		stored, err := deps.Vault.FlagManager().SetRules(ctx, key, inputs)
+		if err != nil {
+			return flagsSetRulesResponse{}, deps.mapError("flags.setRules", err)
+		}
+		rules := make([]FlagRuleSummary, 0, len(stored))
+		for _, r := range stored {
+			// The manager validated every return value against the flag's
+			// type before it wrote, so they all match.
+			rules = append(rules, projectFlagRuleMatching(r, true))
+		}
+		return flagsSetRulesResponse{Rules: rules}, nil
+	}
+}
+
+// flagsSetTenantOverrideRequest is the wire request for
+// flags.setTenantOverride.
+type flagsSetTenantOverrideRequest struct {
+	Key      string `json:"key"`
+	TenantID string `json:"tenantId"`
+	Value    any    `json:"value"`
+}
+
+// flagsSetTenantOverrideResponse is the wire response for
+// flags.setTenantOverride.
+type flagsSetTenantOverrideResponse struct {
+	Override FlagOverrideSummary `json:"override"`
+}
+
+// flagsSetTenantOverrideHandler answers flags.setTenantOverride for
+// deps.Vault.AppID() alone. The value must be a value of the flag's type.
+func flagsSetTenantOverrideHandler(deps Deps) func(ctx context.Context, in flagsSetTenantOverrideRequest, p contract.Principal) (flagsSetTenantOverrideResponse, error) {
+	return func(ctx context.Context, in flagsSetTenantOverrideRequest, _ contract.Principal) (flagsSetTenantOverrideResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return flagsSetTenantOverrideResponse{}, err
+		}
+		o, err := deps.Vault.FlagManager().SetTenantOverride(ctx, key, in.TenantID, in.Value)
+		if err != nil {
+			return flagsSetTenantOverrideResponse{}, deps.mapError("flags.setTenantOverride", err)
+		}
+		// Validated against the flag's type by the manager before the write.
+		return flagsSetTenantOverrideResponse{Override: projectFlagOverrideMatching(o, true)}, nil
+	}
+}
+
+// flagsDeleteTenantOverrideRequest is the wire request for
+// flags.deleteTenantOverride.
+type flagsDeleteTenantOverrideRequest struct {
+	Key      string `json:"key"`
+	TenantID string `json:"tenantId"`
+}
+
+// flagsDeleteTenantOverrideResponse is the wire response for
+// flags.deleteTenantOverride.
+type flagsDeleteTenantOverrideResponse struct {
+	OK       bool   `json:"ok"`
+	Key      string `json:"key"`
+	TenantID string `json:"tenantId"`
+}
+
+// flagsDeleteTenantOverrideHandler answers flags.deleteTenantOverride for
+// deps.Vault.AppID() alone. A tenant with no override is NOT_FOUND. The
+// sentinel behind that is shared with the config overrides, so mapError does
+// not map it (a flag's override and a config override would read alike);
+// this handler does, because here it can only mean a tenant override.
+func flagsDeleteTenantOverrideHandler(deps Deps) func(ctx context.Context, in flagsDeleteTenantOverrideRequest, p contract.Principal) (flagsDeleteTenantOverrideResponse, error) {
+	return func(ctx context.Context, in flagsDeleteTenantOverrideRequest, _ contract.Principal) (flagsDeleteTenantOverrideResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return flagsDeleteTenantOverrideResponse{}, err
+		}
+		tenantID := strings.TrimSpace(in.TenantID)
+		if err := deps.Vault.FlagManager().DeleteTenantOverride(ctx, key, in.TenantID); err != nil {
+			if errors.Is(err, vault.ErrOverrideNotFound) {
+				return flagsDeleteTenantOverrideResponse{}, &contract.Error{Code: contract.CodeNotFound, Message: "tenant override not found"}
+			}
+			return flagsDeleteTenantOverrideResponse{}, deps.mapError("flags.deleteTenantOverride", err)
+		}
+		return flagsDeleteTenantOverrideResponse{OK: true, Key: key, TenantID: tenantID}, nil
 	}
 }

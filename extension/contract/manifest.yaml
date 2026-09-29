@@ -24,6 +24,13 @@ intents:
   - { name: flags.list,     kind: query, version: 1, capability: read }
   - { name: flags.detail,   kind: query, version: 1, capability: read }
   - { name: flags.evaluate, kind: query, version: 1, capability: read }
+  - { name: flags.create,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
+  - { name: flags.update,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
+  - { name: flags.delete,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
+  - { name: flags.setEnabled,           kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
+  - { name: flags.setRules,             kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
+  - { name: flags.setTenantOverride,    kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
+  - { name: flags.deleteTenantOverride, kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
   - { name: rotation.policies,     kind: query, version: 1, capability: read }
   - { name: rotation.detail,       kind: query, version: 1, capability: read }
   - { name: rotation.savePolicy,   kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }
