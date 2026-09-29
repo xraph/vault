@@ -896,7 +896,7 @@ func (s *Store) RecordRotation(ctx context.Context, r *rotation.Record) error {
 	m := &RotationRecordModel{
 		ID: r.ID.String(), SecretKey: r.SecretKey, AppID: r.AppID,
 		OldVersion: r.OldVersion, NewVersion: r.NewVersion,
-		RotatedBy: r.RotatedBy, RotatedAt: r.RotatedAt,
+		RotatedBy: r.RotatedBy, RotatedAt: dbTime(r.RotatedAt),
 	}
 	_, err := s.sdb.NewInsert(m).Exec(ctx)
 	return err

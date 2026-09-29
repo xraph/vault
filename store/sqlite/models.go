@@ -23,6 +23,26 @@ func mustParseID(s string) id.ID {
 	return parsed
 }
 
+// dbTime normalizes a caller-supplied time before it is bound as a query
+// argument. modernc/sqlite writes a time.Time with t.String() unless the DSN
+// sets _time_format, and this store doesn't own the DSN. That string only
+// parses back when it is UTC with no monotonic clock reading: a monotonic
+// reading adds a " m=+..." suffix and a nameless offset renders as
+// "+0200 +0200", and either one fails the scan for every row the query
+// touches, not just the bad one. t.UTC() fixes both, since it also strips
+// the monotonic reading, and keeps the instant unchanged.
+func dbTime(t time.Time) time.Time { return t.UTC() }
+
+// dbTimePtr is dbTime for a nullable column. It returns a new pointer so the
+// caller's value is left as it was.
+func dbTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := dbTime(*t)
+	return &u
+}
+
 // ──────────────────────────────────────────────────
 // Secret models
 // ──────────────────────────────────────────────────
@@ -49,8 +69,8 @@ func secretModelFromEntity(s *secret.Secret) *SecretModel {
 		ID: s.ID.String(), Key: s.Key, AppID: s.AppID,
 		EncryptedValue: s.EncryptedValue, EncryptionAlg: s.EncryptionAlg,
 		EncryptionKeyID: s.EncryptionKeyID, Version: s.Version,
-		Metadata: string(meta), ExpiresAt: s.ExpiresAt,
-		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
+		Metadata: string(meta), ExpiresAt: dbTimePtr(s.ExpiresAt),
+		CreatedAt: dbTime(s.CreatedAt), UpdatedAt: dbTime(s.UpdatedAt),
 	}
 }
 
@@ -311,8 +331,8 @@ func rotationPolicyModelFromEntity(p *rotation.Policy) *RotationPolicyModel {
 	return &RotationPolicyModel{
 		ID: p.ID.String(), SecretKey: p.SecretKey, AppID: p.AppID,
 		IntervalNS: int64(p.Interval), Enabled: p.Enabled,
-		LastRotatedAt: p.LastRotatedAt, NextRotationAt: p.NextRotationAt,
-		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+		LastRotatedAt: dbTimePtr(p.LastRotatedAt), NextRotationAt: dbTimePtr(p.NextRotationAt),
+		CreatedAt: dbTime(p.CreatedAt), UpdatedAt: dbTime(p.UpdatedAt),
 	}
 }
 
@@ -373,7 +393,7 @@ func auditModelFromEntity(e *audit.Entry) *AuditModel {
 		ID: e.ID.String(), Action: e.Action, Resource: e.Resource,
 		Key: e.Key, AppID: e.AppID, TenantID: e.TenantID,
 		UserID: e.UserID, IP: e.IP, Outcome: e.Outcome,
-		Metadata: string(meta), CreatedAt: e.CreatedAt,
+		Metadata: string(meta), CreatedAt: dbTime(e.CreatedAt),
 	}
 }
 
