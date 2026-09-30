@@ -21,9 +21,10 @@ func TestManifest_Loads(t *testing.T) {
 	// rotation.savePolicy, rotation.deletePolicy, rotation.rotateNow, flags.list,
 	// flags.detail, flags.evaluate, flags.create, flags.update, flags.delete,
 	// flags.setEnabled, flags.setRules, flags.setTenantOverride,
-	// flags.deleteTenantOverride.
-	if got := len(m.Intents); got != 21 {
-		t.Errorf("intents = %d, want 21", got)
+	// flags.deleteTenantOverride, config.list, config.detail, config.versions,
+	// config.resolve, overrides.list.
+	if got := len(m.Intents); got != 26 {
+		t.Errorf("intents = %d, want 26", got)
 	}
 }
 
@@ -46,7 +47,8 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 	if err := reg.Register(m); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	queries := []string{"secrets.list", "secrets.detail", "secrets.versions", "rotation.policies", "rotation.detail", "flags.list", "flags.detail", "flags.evaluate"}
+	queries := []string{"secrets.list", "secrets.detail", "secrets.versions", "rotation.policies", "rotation.detail", "flags.list", "flags.detail", "flags.evaluate",
+		"config.list", "config.detail", "config.versions", "config.resolve", "overrides.list"}
 	commands := []string{"secrets.create", "secrets.update", "secrets.delete", "rotation.savePolicy", "rotation.deletePolicy", "rotation.rotateNow",
 		"flags.create", "flags.update", "flags.delete", "flags.setEnabled", "flags.setRules", "flags.setTenantOverride", "flags.deleteTenantOverride"}
 	for _, name := range queries {

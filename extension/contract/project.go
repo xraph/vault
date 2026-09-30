@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"github.com/xraph/vault/audit"
+	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/flag"
+	"github.com/xraph/vault/override"
 	"github.com/xraph/vault/rotation"
 	"github.com/xraph/vault/secret"
 )
@@ -357,4 +359,118 @@ func projectFlagOverrideMatching(o *flag.TenantOverride, valueMatchesType bool) 
 		ValueMatchesType: valueMatchesType,
 		UpdatedAt:        formatTime(o.UpdatedAt),
 	}
+}
+
+// ConfigEntrySummary is the wire projection of a config entry. Its value
+// leaves through wireValue, so every backend produces the same JSON shape.
+type ConfigEntrySummary struct {
+	ID    string `json:"id"`
+	Key   string `json:"key"`
+	Value any    `json:"value"`
+	// ValueType is the label stored with the entry. The store keeps it as
+	// free text, so it is not always one of the six the vault validates:
+	// see KnownType.
+	ValueType string `json:"valueType"`
+	// KnownType is false for a label the vault does not validate (the templ
+	// page's "yaml", say). Such an entry is readable but its value cannot be
+	// judged, so ValueMatchesType is false for it as well.
+	KnownType bool `json:"knownType"`
+	// ValueMatchesType is false when the stored value is not a value of
+	// ValueType, e.g. a string "abc" on an int entry.
+	ValueMatchesType bool              `json:"valueMatchesType"`
+	Version          int64             `json:"version"`
+	Description      string            `json:"description"`
+	Metadata         map[string]string `json:"metadata"`
+	CreatedAt        string            `json:"createdAt"`
+	UpdatedAt        string            `json:"updatedAt"`
+}
+
+// ConfigVersionSummary is the wire projection of one historical version. A
+// version keeps only its value, so ValueMatchesType is judged against the
+// entry's current type, and Current marks the version the entry is at now.
+type ConfigVersionSummary struct {
+	Version          int64  `json:"version"`
+	Value            any    `json:"value"`
+	ValueMatchesType bool   `json:"valueMatchesType"`
+	CreatedAt        string `json:"createdAt"`
+	Current          bool   `json:"current"`
+}
+
+// OverrideSummary is the wire projection of one per-tenant config override.
+type OverrideSummary struct {
+	Key      string `json:"key"`
+	TenantID string `json:"tenantId"`
+	Value    any    `json:"value"`
+	// ValueMatchesType is judged against the type of the key's entry, and is
+	// false when the entry no longer exists.
+	ValueMatchesType bool `json:"valueMatchesType"`
+	// KeyExists is false for an orphan: an override whose config entry is
+	// gone. It resolves for no one, and deleting the key normally removes
+	// the overrides with it, so an orphan is an older or foreign write.
+	KeyExists bool   `json:"keyExists"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+// configValueMatchesType reports whether v, as it will appear on the wire, is
+// a value of valueType according to the write service's own rules. A type the
+// vault does not know never matches.
+func configValueMatchesType(valueType string, v any) bool {
+	return config.ValidateValue(valueType, wireValue(v)) == nil
+}
+
+// nonNilMetadata returns a copy of m that is never nil, so metadata always
+// marshals as an object.
+func nonNilMetadata(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// projectConfigEntry projects a config.Entry onto its wire type.
+func projectConfigEntry(e *config.Entry) ConfigEntrySummary {
+	return ConfigEntrySummary{
+		ID:               e.ID.String(),
+		Key:              e.Key,
+		Value:            wireValue(e.Value),
+		ValueType:        e.ValueType,
+		KnownType:        config.KnownType(e.ValueType),
+		ValueMatchesType: configValueMatchesType(e.ValueType, e.Value),
+		Version:          e.Version,
+		Description:      e.Description,
+		Metadata:         nonNilMetadata(e.Metadata),
+		CreatedAt:        formatTime(e.CreatedAt),
+		UpdatedAt:        formatTime(e.UpdatedAt),
+	}
+}
+
+// projectConfigVersion projects a config.EntryVersion onto its wire type.
+// entry is the entry's current row, which supplies the type the value is
+// judged against and the version that is current.
+func projectConfigVersion(v *config.EntryVersion, entry *config.Entry) ConfigVersionSummary {
+	return ConfigVersionSummary{
+		Version:          v.Version,
+		Value:            wireValue(v.Value),
+		ValueMatchesType: configValueMatchesType(entry.ValueType, v.Value),
+		CreatedAt:        formatTime(v.CreatedAt),
+		Current:          v.Version == entry.Version,
+	}
+}
+
+// projectOverride projects an override.Override onto its wire type. entry is
+// the config entry the override is for, or nil when the key no longer exists,
+// which makes it an orphan whose value cannot match any type.
+func projectOverride(o *override.Override, entry *config.Entry) OverrideSummary {
+	out := OverrideSummary{
+		Key:       o.Key,
+		TenantID:  o.TenantID,
+		Value:     wireValue(o.Value),
+		KeyExists: entry != nil,
+		UpdatedAt: formatTime(o.UpdatedAt),
+	}
+	if entry != nil {
+		out.ValueMatchesType = configValueMatchesType(entry.ValueType, o.Value)
+	}
+	return out
 }

@@ -117,6 +117,21 @@ func Register(
 		{"flags.deleteTenantOverride", func() error {
 			return dispatcher.RegisterCommand(d, c, "flags.deleteTenantOverride", 1, flagsDeleteTenantOverrideHandler(deps))
 		}},
+		{"config.list", func() error {
+			return dispatcher.RegisterQuery(d, c, "config.list", 1, configListHandler(deps))
+		}},
+		{"config.detail", func() error {
+			return dispatcher.RegisterQuery(d, c, "config.detail", 1, configDetailHandler(deps))
+		}},
+		{"config.versions", func() error {
+			return dispatcher.RegisterQuery(d, c, "config.versions", 1, configVersionsHandler(deps))
+		}},
+		{"config.resolve", func() error {
+			return dispatcher.RegisterQuery(d, c, "config.resolve", 1, configResolveHandler(deps))
+		}},
+		{"overrides.list", func() error {
+			return dispatcher.RegisterQuery(d, c, "overrides.list", 1, overridesListHandler(deps))
+		}},
 		{"rotation.policies", func() error {
 			return dispatcher.RegisterQuery(d, c, "rotation.policies", 1, rotationPoliciesHandler(deps))
 		}},

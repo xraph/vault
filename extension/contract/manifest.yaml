@@ -12,8 +12,8 @@ contributor:
 # No intent below, or added by a later task in this file, ever takes an
 # app id on the request. Every handler reads deps.Vault.AppID() and answers
 # for that app alone. flags.evaluate takes a tenantId and userId of its own
-# and never inherits either from the request context; config resolve is a
-# later slice and will follow the same rule.
+# and never inherits either from the request context; config.resolve takes a
+# tenantId and follows the same rule.
 intents:
   - { name: secrets.list,     kind: query, version: 1, capability: read }
   - { name: secrets.detail,   kind: query, version: 1, capability: read }
@@ -31,6 +31,11 @@ intents:
   - { name: flags.setRules,             kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
   - { name: flags.setTenantOverride,    kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
   - { name: flags.deleteTenantOverride, kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
+  - { name: config.list,      kind: query, version: 1, capability: read }
+  - { name: config.detail,    kind: query, version: 1, capability: read }
+  - { name: config.versions,  kind: query, version: 1, capability: read }
+  - { name: config.resolve,   kind: query, version: 1, capability: read }
+  - { name: overrides.list,   kind: query, version: 1, capability: read }
   - { name: rotation.policies,     kind: query, version: 1, capability: read }
   - { name: rotation.detail,       kind: query, version: 1, capability: read }
   - { name: rotation.savePolicy,   kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }
@@ -62,3 +67,18 @@ queries:
   flagsEvaluate:
     intent: flags.evaluate
     cache: { staleTime: 0s }
+  configList:
+    intent: config.list
+    cache: { staleTime: 30s }
+  configDetail:
+    intent: config.detail
+    cache: { staleTime: 30s }
+  configVersions:
+    intent: config.versions
+    cache: { staleTime: 30s }
+  configResolve:
+    intent: config.resolve
+    cache: { staleTime: 0s }
+  overridesList:
+    intent: overrides.list
+    cache: { staleTime: 30s }
