@@ -200,3 +200,12 @@ func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 		Where("app_id = ?", appID).
 		Count(ctx)
 }
+
+// CountSecretsUnencrypted returns the number of secrets belonging to appID
+// that were stored without an encryption algorithm.
+func (s *Store) CountSecretsUnencrypted(ctx context.Context, appID string) (int64, error) {
+	return s.pgdb().NewSelect((*SecretModel)(nil)).
+		Where("app_id = ?", appID).
+		Where("encryption_alg = ''").
+		Count(ctx)
+}

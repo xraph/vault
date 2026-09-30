@@ -970,6 +970,16 @@ func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*SecretModel)(nil)).Filter(bson.M{"app_id": appID}).Count(ctx)
 }
 
+// CountSecretsUnencrypted returns the number of secrets belonging to appID
+// that were stored without an encryption algorithm. A document with no
+// encryption_alg field at all is unencrypted too, so the filter matches both
+// an empty string and a missing field.
+func (s *Store) CountSecretsUnencrypted(ctx context.Context, appID string) (int64, error) {
+	return s.mdb.NewFind((*SecretModel)(nil)).
+		Filter(bson.M{"app_id": appID, "encryption_alg": bson.M{"$in": bson.A{"", nil}}}).
+		Count(ctx)
+}
+
 // CountFlagDefinitions returns the number of flag definitions belonging to appID.
 func (s *Store) CountFlagDefinitions(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*FlagModel)(nil)).Filter(bson.M{"app_id": appID}).Count(ctx)

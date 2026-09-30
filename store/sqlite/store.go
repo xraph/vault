@@ -1052,6 +1052,15 @@ func (s *Store) CountOverrides(ctx context.Context, appID string) (int64, error)
 	return s.sdb.NewSelect((*OverrideModel)(nil)).Where("app_id = ?", appID).Count(ctx)
 }
 
+// CountSecretsUnencrypted returns the number of secrets belonging to appID
+// that were stored without an encryption algorithm.
+func (s *Store) CountSecretsUnencrypted(ctx context.Context, appID string) (int64, error) {
+	return s.sdb.NewSelect((*SecretModel)(nil)).
+		Where("app_id = ?", appID).
+		Where("encryption_alg = ''").
+		Count(ctx)
+}
+
 // CountRotationPolicies returns the number of rotation policies belonging to appID.
 func (s *Store) CountRotationPolicies(ctx context.Context, appID string) (int64, error) {
 	return s.sdb.NewSelect((*RotationPolicyModel)(nil)).Where("app_id = ?", appID).Count(ctx)

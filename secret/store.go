@@ -25,4 +25,10 @@ type Store interface {
 	// CountSecrets returns the total number of secrets for an app,
 	// independent of any paging.
 	CountSecrets(ctx context.Context, appID string) (int64, error)
+
+	// CountSecretsUnencrypted returns the number of secrets for an app whose
+	// stored value carries no encryption algorithm, that is, rows written
+	// while no encryption key was configured. It counts in the store and
+	// never loads a value.
+	CountSecretsUnencrypted(ctx context.Context, appID string) (int64, error)
 }

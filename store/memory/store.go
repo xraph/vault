@@ -955,6 +955,21 @@ func (m *Store) CountOverrides(_ context.Context, appID string) (int64, error) {
 	return n, nil
 }
 
+// CountSecretsUnencrypted returns the number of secrets belonging to appID
+// that were stored without an encryption algorithm.
+func (m *Store) CountSecretsUnencrypted(_ context.Context, appID string) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, s := range m.secrets {
+		if s.AppID == appID && s.EncryptionAlg == "" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // CountRotationPolicies returns the number of rotation policies belonging to appID.
 func (m *Store) CountRotationPolicies(_ context.Context, appID string) (int64, error) {
 	m.mu.RLock()
