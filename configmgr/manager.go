@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -152,7 +153,9 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*config.Entry, er
 // Update changes the value, type or description of an existing entry. Only
 // non-nil fields change; the rest of the row (id, metadata, creation time)
 // is carried over. A new value is validated against the entry's type, or
-// against the new type when the type changes, which needs a value. An entry
+// against the new type when the type changes, which needs a value, and every
+// tenant override must be a valid value of the new type too, or the change is
+// refused naming the first tenant (in tenant order) whose is not. An entry
 // whose stored type is not one the manager supports is read-only for its
 // value. Asking for what the entry already holds writes, audits and
 // notifies nothing.
@@ -172,6 +175,9 @@ func (m *Manager) Update(ctx context.Context, key string, in UpdateInput) (*conf
 			return nil, &config.ValidationError{Field: "valueType", Message: "changing the type needs a value of that type"}
 		}
 		if err := validateValue(*in.ValueType, *in.Value); err != nil {
+			return nil, err
+		}
+		if err := m.checkOverridesFit(ctx, key, *in.ValueType); err != nil {
 			return nil, err
 		}
 		merged.ValueType = *in.ValueType
@@ -335,6 +341,28 @@ func (m *Manager) DeleteOverride(ctx context.Context, key, tenantID string) erro
 		return err
 	}
 	m.overrideChanged(ctx, audithook.ActionOverrideDeleted, key, tenantID)
+	return nil
+}
+
+// checkOverridesFit refuses a change to newType while any tenant holds an
+// override that is not a value of it: that tenant would silently read the
+// caller's fallback instead of the override. Overrides are checked in tenant
+// order and the first that fails is named, so the answer is stable.
+func (m *Manager) checkOverridesFit(ctx context.Context, key, newType string) error {
+	all, err := m.overrides.ListOverridesByKey(ctx, key, m.appID)
+	if err != nil {
+		return err
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].TenantID < all[j].TenantID })
+	for _, o := range all {
+		if config.ValidateValue(newType, o.Value) != nil {
+			return &config.ValidationError{
+				Field: "valueType",
+				Message: fmt.Sprintf("tenant %s has an override of %s, which is not a valid %s; change or revert it first",
+					o.TenantID, config.DescribeValue(o.Value), newType),
+			}
+		}
+	}
 	return nil
 }
 
