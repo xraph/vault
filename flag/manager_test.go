@@ -602,7 +602,7 @@ func TestManagerHookGetsTheCallerContext(t *testing.T) {
 	var gotAction, gotKey, gotApp string
 	m := flag.NewManager(memory.New(), nil,
 		flag.WithManagerAppID(mgrApp),
-		flag.WithOnFlagMutate(func(ctx context.Context, action, key, appID string) {
+		flag.WithOnFlagMutate(func(ctx context.Context, action, key, appID, _ string) {
 			gotCtx, gotAction, gotKey, gotApp = ctx, action, key, appID
 		}),
 	)
@@ -685,7 +685,7 @@ func TestManagerCreateAuditsEvenWhenTheReadBackFails(t *testing.T) {
 	fs := &failingStore{Store: memory.New(), failGetAfter: 2} // 1st: existence check, 2nd: read back
 	var actions []string
 	m := flag.NewManager(fs, nil, flag.WithManagerAppID(mgrApp),
-		flag.WithOnFlagMutate(func(_ context.Context, action, _, _ string) { actions = append(actions, action) }))
+		flag.WithOnFlagMutate(func(_ context.Context, action, _, _, _ string) { actions = append(actions, action) }))
 
 	_, err := m.Create(bg(), flag.CreateInput{Key: "made", Type: flag.TypeBool, DefaultValue: false, Enabled: true})
 	if !errors.Is(err, errInjected) {
@@ -693,5 +693,35 @@ func TestManagerCreateAuditsEvenWhenTheReadBackFails(t *testing.T) {
 	}
 	if len(actions) != 1 || actions[0] != audithook.ActionFlagCreated {
 		t.Errorf("audit actions = %v, want [%s]: the flag was defined", actions, audithook.ActionFlagCreated)
+	}
+}
+
+// The hook hears which tenant an override write targets, and an empty tenant
+// for every write to the flag itself.
+func TestManagerHookGetsTheOverriddenTenant(t *testing.T) {
+	got := map[string]string{}
+	m := flag.NewManager(memory.New(), nil,
+		flag.WithManagerAppID(mgrApp),
+		flag.WithOnFlagMutate(func(_ context.Context, action, _, _, tenantID string) { got[action] = tenantID }),
+	)
+	if _, err := m.Create(bg(), flag.CreateInput{Key: "k", Type: flag.TypeBool, DefaultValue: true, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Padding around the id is trimmed before the write, and the hook gets the trimmed id.
+	if _, err := m.SetTenantOverride(bg(), "k", "  acme ", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteTenantOverride(bg(), "k", "acme"); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		audithook.ActionFlagCreated:         "",
+		audithook.ActionFlagOverrideSet:     "acme",
+		audithook.ActionFlagOverrideDeleted: "acme",
+	}
+	for action, tenant := range want {
+		if g, ok := got[action]; !ok || g != tenant {
+			t.Errorf("%s tenant = %q (heard %v), want %q", action, g, ok, tenant)
+		}
 	}
 }

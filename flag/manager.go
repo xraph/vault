@@ -30,7 +30,7 @@ type Manager struct {
 	store    Store
 	engine   *Engine
 	appID    string
-	onMutate func(ctx context.Context, action, key, appID string)
+	onMutate func(ctx context.Context, action, key, appID, tenantID string)
 }
 
 // ManagerOption configures a Manager.
@@ -45,7 +45,9 @@ func WithManagerAppID(appID string) ManagerOption {
 
 // WithOnFlagMutate registers a callback invoked after each successful write,
 // with the context the write ran under and one of the flag.* audit actions.
-func WithOnFlagMutate(fn func(ctx context.Context, action, key, appID string)) ManagerOption {
+// tenantID is the tenant a per-tenant override write targets, and empty for
+// every write to the flag itself.
+func WithOnFlagMutate(fn func(ctx context.Context, action, key, appID, tenantID string)) ManagerOption {
 	return func(m *Manager) { m.onMutate = fn }
 }
 
@@ -134,7 +136,7 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Definition, erro
 	// The flag exists from here on, so whatever happens next it is audited
 	// and the cache is dropped before Create returns.
 	m.invalidate(in.Key)
-	m.audit(ctx, audithook.ActionFlagCreated, in.Key)
+	m.audit(ctx, audithook.ActionFlagCreated, in.Key, "")
 	return m.store.GetFlagDefinition(ctx, in.Key, m.appID)
 }
 
@@ -206,7 +208,7 @@ func (m *Manager) write(ctx context.Context, def *Definition, action string) (*D
 		return nil, err
 	}
 	m.invalidate(def.Key)
-	m.audit(ctx, action, def.Key)
+	m.audit(ctx, action, def.Key, "")
 	return m.store.GetFlagDefinition(ctx, def.Key, m.appID)
 }
 
@@ -216,7 +218,7 @@ func (m *Manager) Delete(ctx context.Context, key string) error {
 		return err
 	}
 	m.invalidate(key)
-	m.audit(ctx, audithook.ActionFlagDeleted, key)
+	m.audit(ctx, audithook.ActionFlagDeleted, key, "")
 	return nil
 }
 
@@ -251,7 +253,7 @@ func (m *Manager) SetRules(ctx context.Context, key string, rules []RuleInput) (
 		return nil, err
 	}
 	m.invalidate(key)
-	m.audit(ctx, audithook.ActionFlagRulesSet, key)
+	m.audit(ctx, audithook.ActionFlagRulesSet, key, "")
 
 	stored, err := m.store.GetFlagRules(ctx, key, m.appID)
 	if err != nil {
@@ -283,7 +285,7 @@ func (m *Manager) SetTenantOverride(ctx context.Context, key, tenantID string, v
 		return nil, err
 	}
 	m.invalidate(key)
-	m.audit(ctx, audithook.ActionFlagOverrideSet, key)
+	m.audit(ctx, audithook.ActionFlagOverrideSet, key, tenantID)
 
 	all, err := m.store.ListFlagTenantOverrides(ctx, key, m.appID)
 	if err != nil {
@@ -311,7 +313,7 @@ func (m *Manager) DeleteTenantOverride(ctx context.Context, key, tenantID string
 		return err
 	}
 	m.invalidate(key)
-	m.audit(ctx, audithook.ActionFlagOverrideDeleted, key)
+	m.audit(ctx, audithook.ActionFlagOverrideDeleted, key, tenantID)
 	return nil
 }
 
@@ -321,9 +323,9 @@ func (m *Manager) invalidate(key string) {
 	}
 }
 
-func (m *Manager) audit(ctx context.Context, action, key string) {
+func (m *Manager) audit(ctx context.Context, action, key, tenantID string) {
 	if m.onMutate != nil {
-		m.onMutate(ctx, action, key, m.appID)
+		m.onMutate(ctx, action, key, m.appID, tenantID)
 	}
 }
 

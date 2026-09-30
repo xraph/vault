@@ -92,8 +92,15 @@ func New(opts ...Option) (*Vault, error) {
 	v.flags = flag.NewService(v.engine, flag.WithAppID(v.config.AppID))
 	v.flagMgr = flag.NewManager(v.store, v.engine,
 		flag.WithManagerAppID(v.config.AppID),
-		flag.WithOnFlagMutate(func(ctx context.Context, action, key, appID string) {
-			v.auditLog.LogAccess(scope.WithAppID(ctx, appID), key, action, audithook.ResourceFlag)
+		flag.WithOnFlagMutate(func(ctx context.Context, action, key, appID, tenantID string) {
+			ctx = scope.WithAppID(ctx, appID)
+			// An override write is attributed to the tenant it targets, not
+			// the one acting, as configmgr's is; a write to the flag itself
+			// keeps the caller's scope.
+			if tenantID != "" {
+				ctx = scope.WithTenantID(ctx, tenantID)
+			}
+			v.auditLog.LogAccess(ctx, key, action, audithook.ResourceFlag)
 		}),
 	)
 

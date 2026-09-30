@@ -14,6 +14,7 @@ import (
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/audit"
 	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/flag"
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/override"
 	"github.com/xraph/vault/store/memory"
@@ -505,4 +506,42 @@ func TestSecretReadsWriteAnAttributedAuditEntry(t *testing.T) {
 		}
 	}
 	t.Errorf("no secret.get audit entry for app1 among %d entries", len(entries))
+}
+
+// A flag override row names the tenant that was overridden, so the audit log
+// can say which tenant an override touched. Rows for the flag itself, which
+// belong to no tenant, carry none.
+func TestFlagOverrideAuditRowsCarryTheTenant(t *testing.T) {
+	ctx := context.Background()
+	v, err := vault.New(vault.WithStore(memory.New()), vault.WithAppID("app1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := v.FlagManager()
+	if _, err := fm.Create(ctx, flag.CreateInput{Key: "f", Type: flag.TypeBool, DefaultValue: true, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fm.SetTenantOverride(ctx, "f", "tenant-a", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.DeleteTenantOverride(ctx, "f", "tenant-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	for action, wantTenant := range map[string]string{
+		"flag.override_set":     "tenant-a",
+		"flag.override_deleted": "tenant-a",
+		"flag.created":          "",
+	} {
+		rows, err := v.Store().ListAudit(ctx, "app1", audit.ListOpts{Limit: 10, Action: action})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("%s rows = %d, want 1", action, len(rows))
+		}
+		if rows[0].TenantID != wantTenant {
+			t.Errorf("%s tenant = %q, want %q", action, rows[0].TenantID, wantTenant)
+		}
+	}
 }
