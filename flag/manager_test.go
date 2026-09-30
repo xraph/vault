@@ -366,15 +366,15 @@ func TestManagerSetRulesRefusals(t *testing.T) {
 			rule  flag.RuleInput
 			field string
 		}{
-			{"rollout over 100", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 101}, ReturnValue: true}, "rules[0].config.percentage"},
-			{"rollout under 0", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: -1}, ReturnValue: true}, "rules[0].config.percentage"},
-			{"schedule start after end", flag.RuleInput{Type: flag.RuleSchedule, Config: flag.RuleConfig{StartAt: &t1, EndAt: &t0}, ReturnValue: true}, "rules[0].config.endAt"},
-			{"schedule start equals end", flag.RuleInput{Type: flag.RuleSchedule, Config: flag.RuleConfig{StartAt: &t1, EndAt: &t1}, ReturnValue: true}, "rules[0].config.endAt"},
-			{"schedule neither", flag.RuleInput{Type: flag.RuleSchedule, ReturnValue: true}, "rules[0].config"},
-			{"empty tenant list", flag.RuleInput{Type: flag.RuleWhenTenant, ReturnValue: true}, "rules[0].config.tenantIds"},
-			{"blank tenant", flag.RuleInput{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{" "}}, ReturnValue: true}, "rules[0].config.tenantIds"},
-			{"duplicate tenant", flag.RuleInput{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{"a", " a"}}, ReturnValue: true}, "rules[0].config.tenantIds"},
-			{"empty user list", flag.RuleInput{Type: flag.RuleWhenUser, ReturnValue: true}, "rules[0].config.userIds"},
+			{"rollout over 100", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 101}, ReturnValue: true}, "rules[0].percentage"},
+			{"rollout under 0", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: -1}, ReturnValue: true}, "rules[0].percentage"},
+			{"schedule start after end", flag.RuleInput{Type: flag.RuleSchedule, Config: flag.RuleConfig{StartAt: &t1, EndAt: &t0}, ReturnValue: true}, "rules[0].endAt"},
+			{"schedule start equals end", flag.RuleInput{Type: flag.RuleSchedule, Config: flag.RuleConfig{StartAt: &t1, EndAt: &t1}, ReturnValue: true}, "rules[0].endAt"},
+			{"schedule neither", flag.RuleInput{Type: flag.RuleSchedule, ReturnValue: true}, "rules[0].startAt"},
+			{"empty tenant list", flag.RuleInput{Type: flag.RuleWhenTenant, ReturnValue: true}, "rules[0].tenantIds"},
+			{"blank tenant", flag.RuleInput{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{" "}}, ReturnValue: true}, "rules[0].tenantIds"},
+			{"duplicate tenant", flag.RuleInput{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{"a", " a"}}, ReturnValue: true}, "rules[0].tenantIds"},
+			{"empty user list", flag.RuleInput{Type: flag.RuleWhenUser, ReturnValue: true}, "rules[0].userIds"},
 			{"unknown type", flag.RuleInput{Type: "nope", ReturnValue: true}, "rules[0].type"},
 		}
 		for _, tc := range cases {
@@ -389,7 +389,7 @@ func TestManagerSetRulesRefusals(t *testing.T) {
 			{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 5}, ReturnValue: true},
 			{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 500}, ReturnValue: true},
 		})
-		wantValidation(t, err, "rules[1].config.percentage")
+		wantValidation(t, err, "rules[1].percentage")
 
 		// Nothing above wrote anything.
 		got, err := v.Store().GetFlagRules(bg(), "r", mgrApp)

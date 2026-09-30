@@ -1297,9 +1297,9 @@ func TestFlagsSetRules_ManagerRefusalsAreBadRequestAndWriteNothing(t *testing.T)
 	seedRules(t, v, "r", flag.RuleInput{Type: flag.RuleWhenUser, Config: flag.RuleConfig{UserIDs: []string{"u"}}, ReturnValue: true})
 
 	tests := []struct{ name, raw, msg string }{
-		{"percentage out of range", `{"key":"r","rules":[{"type":"rollout","percentage":150,"returnValue":true}]}`, "rules[0].config.percentage"},
+		{"percentage out of range", `{"key":"r","rules":[{"type":"rollout","percentage":150,"returnValue":true}]}`, "rules[0].percentage"},
 		{"return value of the wrong type", `{"key":"r","rules":[{"type":"when_user","userIds":["u"],"returnValue":"yes"}]}`, "rules[0].returnValue"},
-		{"empty id list", `{"key":"r","rules":[{"type":"when_tenant","returnValue":true}]}`, "rules[0].config.tenantIds"},
+		{"empty id list", `{"key":"r","rules":[{"type":"when_tenant","returnValue":true}]}`, "rules[0].tenantIds"},
 		{"unknown type", `{"key":"r","rules":[{"type":"astrology","returnValue":true}]}`, "rules[0].type"},
 	}
 	for _, tt := range tests {

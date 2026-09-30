@@ -369,27 +369,27 @@ func validateRule(i int, flagType Type, in RuleInput) (RuleConfig, error) {
 	case RuleWhenTenant:
 		ids, msg := cleanIDs(in.Config.TenantIDs)
 		if msg != "" {
-			return bad("config.tenantIds", msg)
+			return bad("tenantIds", msg)
 		}
 		cfg.TenantIDs = ids
 	case RuleWhenUser:
 		ids, msg := cleanIDs(in.Config.UserIDs)
 		if msg != "" {
-			return bad("config.userIds", msg)
+			return bad("userIds", msg)
 		}
 		cfg.UserIDs = ids
 	case RuleRollout:
 		if in.Config.Percentage < 0 || in.Config.Percentage > 100 {
-			return bad("config.percentage", "must be between 0 and 100")
+			return bad("percentage", "must be between 0 and 100")
 		}
 		cfg.Percentage = in.Config.Percentage
 	case RuleSchedule:
 		start, end := in.Config.StartAt, in.Config.EndAt
 		if start == nil && end == nil {
-			return bad("config", "a schedule needs a start, an end, or both")
+			return bad("startAt", "a schedule needs a start, an end, or both")
 		}
 		if start != nil && end != nil && !start.Before(*end) {
-			return bad("config.endAt", "must be after the start")
+			return bad("endAt", "must be after the start")
 		}
 		cfg.StartAt = utcCopy(start)
 		cfg.EndAt = utcCopy(end)
