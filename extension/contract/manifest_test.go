@@ -24,9 +24,10 @@ func TestManifest_Loads(t *testing.T) {
 	// flags.setEnabled, flags.setRules, flags.setTenantOverride,
 	// flags.deleteTenantOverride, config.list, config.detail, config.versions,
 	// config.resolve, overrides.list, config.create, config.update,
-	// config.delete, config.rollback, overrides.set, overrides.delete.
-	if got := len(m.Intents); got != 32 {
-		t.Errorf("intents = %d, want 32", got)
+	// config.delete, config.rollback, overrides.set, overrides.delete, audit.list,
+	// overview.stats.
+	if got := len(m.Intents); got != 34 {
+		t.Errorf("intents = %d, want 34", got)
 	}
 }
 
@@ -39,12 +40,12 @@ func TestManifest_ConfigCommandInvalidates(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	want := map[string][]string{
-		"config.create":    {"config.list", "config.detail", "config.versions", "config.resolve", "overrides.list"},
-		"config.update":    {"config.list", "config.detail", "config.versions", "config.resolve"},
-		"config.delete":    {"config.list", "config.detail", "config.versions", "config.resolve", "overrides.list"},
-		"config.rollback":  {"config.list", "config.detail", "config.versions", "config.resolve"},
-		"overrides.set":    {"config.detail", "config.resolve", "overrides.list"},
-		"overrides.delete": {"config.detail", "config.resolve", "overrides.list"},
+		"config.create":    {"config.list", "config.detail", "config.versions", "config.resolve", "overrides.list", "audit.list", "overview.stats"},
+		"config.update":    {"config.list", "config.detail", "config.versions", "config.resolve", "audit.list", "overview.stats"},
+		"config.delete":    {"config.list", "config.detail", "config.versions", "config.resolve", "overrides.list", "audit.list", "overview.stats"},
+		"config.rollback":  {"config.list", "config.detail", "config.versions", "config.resolve", "audit.list", "overview.stats"},
+		"overrides.set":    {"config.detail", "config.resolve", "overrides.list", "audit.list", "overview.stats"},
+		"overrides.delete": {"config.detail", "config.resolve", "overrides.list", "audit.list", "overview.stats"},
 	}
 	seen := 0
 	for _, intent := range m.Intents {
@@ -57,6 +58,54 @@ func TestManifest_ConfigCommandInvalidates(t *testing.T) {
 	}
 	if seen != len(want) {
 		t.Errorf("found %d of %d config commands in the manifest", seen, len(want))
+	}
+}
+
+// Every command that writes an audit row or changes a count refreshes the
+// audit list and the overview, so a dashboard write shows up in both
+// without a reload. That is every command the manifest declares.
+func TestManifest_EveryCommandInvalidatesAuditAndOverview(t *testing.T) {
+	m, err := loader.Load(strings.NewReader(string(manifestYAML)), "vault/contract/manifest.yaml")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	commands := 0
+	for _, intent := range m.Intents {
+		if intent.Kind != dashcontract.IntentKindCommand {
+			continue
+		}
+		commands++
+		have := map[string]bool{}
+		for _, name := range intent.Invalidates {
+			have[name] = true
+		}
+		for _, want := range []string{"audit.list", "overview.stats"} {
+			if !have[want] {
+				t.Errorf("%s does not invalidate %s: %v", intent.Name, want, intent.Invalidates)
+			}
+		}
+	}
+	if commands != 19 {
+		t.Errorf("manifest declares %d commands, want 19", commands)
+	}
+}
+
+func TestManifest_AuditAndOverviewCacheFifteenSeconds(t *testing.T) {
+	m, err := loader.Load(strings.NewReader(string(manifestYAML)), "vault/contract/manifest.yaml")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, q := range m.Queries {
+		if q.Intent == "audit.list" || q.Intent == "overview.stats" {
+			seen[q.Intent] = true
+			if q.Cache.StaleTime != "15s" {
+				t.Errorf("%s staleTime = %q, want 15s", q.Intent, q.Cache.StaleTime)
+			}
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("queries block declares %v, want audit.list and overview.stats", seen)
 	}
 }
 
@@ -80,7 +129,7 @@ func TestManifest_RegistersWithRegistry(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 	queries := []string{"secrets.list", "secrets.detail", "secrets.versions", "rotation.policies", "rotation.detail", "flags.list", "flags.detail", "flags.evaluate",
-		"config.list", "config.detail", "config.versions", "config.resolve", "overrides.list"}
+		"config.list", "config.detail", "config.versions", "config.resolve", "overrides.list", "audit.list", "overview.stats"}
 	commands := []string{"secrets.create", "secrets.update", "secrets.delete", "rotation.savePolicy", "rotation.deletePolicy", "rotation.rotateNow",
 		"flags.create", "flags.update", "flags.delete", "flags.setEnabled", "flags.setRules", "flags.setTenantOverride", "flags.deleteTenantOverride",
 		"config.create", "config.update", "config.delete", "config.rollback", "overrides.set", "overrides.delete"}

@@ -79,6 +79,16 @@ func TestCommandInvalidatesReachTheClient(t *testing.T) {
 			if !reflect.DeepEqual(resp.Meta.Invalidates, want) {
 				t.Fatalf("meta.invalidates = %v, want the manifest's %v", resp.Meta.Invalidates, want)
 			}
+			// Every write also refreshes the audit list and the overview.
+			have := map[string]bool{}
+			for _, name := range resp.Meta.Invalidates {
+				have[name] = true
+			}
+			for _, name := range []string{"audit.list", "overview.stats"} {
+				if !have[name] {
+					t.Errorf("meta.invalidates = %v, missing %s", resp.Meta.Invalidates, name)
+				}
+			}
 		})
 	}
 }

@@ -187,3 +187,21 @@ func TestLogAccessEmptyContext(t *testing.T) {
 			e.AppID, e.TenantID, e.UserID, e.IP)
 	}
 }
+
+// A rotation-resource row is categorised vault.rotation, not vault.unknown.
+func TestLogAccessRotationCategory(t *testing.T) {
+	s := memory.New()
+	rec := &captureRecorder{}
+	logger := audit.NewLogger(s, audit.WithHook(audithook.New(rec)))
+
+	ctx := scope.WithScope(bg(), "app1", "", "", "")
+	logger.LogAccess(ctx, "my-key", audithook.ActionRotationPolicySaved, audithook.ResourceRotation)
+
+	ev := rec.last()
+	if ev == nil {
+		t.Fatal("no hook event")
+	}
+	if ev.Category != "vault.rotation" {
+		t.Errorf("category: got %q, want vault.rotation", ev.Category)
+	}
+}

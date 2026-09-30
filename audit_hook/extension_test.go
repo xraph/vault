@@ -206,8 +206,8 @@ func TestName(t *testing.T) {
 
 func TestAllActions(t *testing.T) {
 	actions := audithook.AllActions()
-	if len(actions) != 17 {
-		t.Errorf("got %d actions, want 17", len(actions))
+	if len(actions) != 19 {
+		t.Errorf("got %d actions, want 19", len(actions))
 	}
 	seen := map[string]bool{}
 	for _, a := range actions {
@@ -216,6 +216,7 @@ func TestAllActions(t *testing.T) {
 	for _, want := range []string{
 		audithook.ActionFlagRulesSet, audithook.ActionFlagOverrideSet, audithook.ActionFlagOverrideDeleted,
 		audithook.ActionConfigRolledBack,
+		audithook.ActionRotationPolicySaved, audithook.ActionRotationPolicyDeleted,
 	} {
 		if !seen[want] {
 			t.Errorf("AllActions is missing %q", want)

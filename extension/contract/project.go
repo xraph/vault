@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/xraph/vault/audit"
+	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/flag"
 	"github.com/xraph/vault/override"
@@ -66,13 +67,21 @@ type RotationRecordSummary struct {
 	RotatedAt  string `json:"rotatedAt"`
 }
 
-// AuditSummary is the wire projection of one audit log entry, trimmed to
-// what a secret or rotation detail page shows.
+// AuditSummary is the wire projection of one audit log entry. The detail
+// pages and the audit list share it, so it carries every column the audit
+// list shows. TenantID, UserID and Error are omitted when empty: an app
+// write has no user, and only a failure row has an error.
 type AuditSummary struct {
-	ID        string `json:"id"`
-	Action    string `json:"action"`
-	Outcome   string `json:"outcome"`
-	UserID    string `json:"userId,omitempty"`
+	ID       string `json:"id"`
+	Action   string `json:"action"`
+	Resource string `json:"resource"`
+	Key      string `json:"key"`
+	Outcome  string `json:"outcome"`
+	TenantID string `json:"tenantId,omitempty"`
+	UserID   string `json:"userId,omitempty"`
+	// Error is the failure's message, read from the row's metadata. It is
+	// empty on a success row and on a failure row that recorded none.
+	Error     string `json:"error,omitempty"`
 	CreatedAt string `json:"createdAt"`
 }
 
@@ -151,15 +160,25 @@ func projectRotationRecord(r *rotation.Record) RotationRecordSummary {
 	}
 }
 
-// projectAuditSummary projects an audit.Entry onto its wire type.
+// projectAuditSummary projects an audit.Entry onto its wire type. The error
+// text comes from the metadata's "error" string, and only on a failure row.
 func projectAuditSummary(e *audit.Entry) AuditSummary {
-	return AuditSummary{
+	out := AuditSummary{
 		ID:        e.ID.String(),
 		Action:    e.Action,
+		Resource:  e.Resource,
+		Key:       e.Key,
 		Outcome:   e.Outcome,
+		TenantID:  e.TenantID,
 		UserID:    e.UserID,
 		CreatedAt: formatTime(e.CreatedAt),
 	}
+	if e.Outcome == audithook.OutcomeFailure {
+		if msg, ok := e.Metadata["error"].(string); ok {
+			out.Error = msg
+		}
+	}
+	return out
 }
 
 // isRotatable reports whether key appears in the sorted list a

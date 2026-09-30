@@ -130,6 +130,8 @@ func categoryForResource(resource string) string {
 		return audithook.CategoryConfig
 	case audithook.ResourceOverride:
 		return audithook.CategoryOverride
+	case audithook.ResourceRotation:
+		return audithook.CategoryRotation
 	default:
 		return "vault.unknown"
 	}

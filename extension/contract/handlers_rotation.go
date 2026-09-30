@@ -9,9 +9,11 @@ import (
 	"github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
+	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/rotation"
+	"github.com/xraph/vault/scope"
 )
 
 // minRotationIntervalSeconds is the shortest interval a rotation policy can
@@ -158,7 +160,8 @@ type rotationSavePolicyResponse struct {
 // is set to now+interval when the policy is new, when its interval
 // changed, when it goes from disabled to enabled, or when it is saved
 // enabled with no due time at all; every other save keeps the stored
-// value, including LastRotatedAt, unchanged.
+// value, including LastRotatedAt, unchanged. A stored policy writes a
+// rotation.policy_saved audit row naming the operator.
 func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationSavePolicyRequest, p contract.Principal) (rotationSavePolicyResponse, error) {
 	return func(ctx context.Context, in rotationSavePolicyRequest, p contract.Principal) (rotationSavePolicyResponse, error) {
 		ctx = withOperator(ctx, p)
@@ -220,6 +223,8 @@ func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationS
 			return rotationSavePolicyResponse{}, deps.mapError("rotation.savePolicy", err)
 		}
 
+		deps.Vault.Audit().LogAccess(scope.WithAppID(ctx, appID), key, audithook.ActionRotationPolicySaved, audithook.ResourceRotation)
+
 		rotatable := isRotatable(deps.Vault.Rotation().RotatorKeys(), key)
 		return rotationSavePolicyResponse{Policy: projectRotationPolicy(policy, rotatable)}, nil
 	}
@@ -239,7 +244,8 @@ type rotationDeletePolicyResponse struct {
 
 // rotationDeletePolicyHandler answers rotation.deletePolicy for
 // deps.Vault.AppID() alone. A missing policy maps to NOT_FOUND through
-// mapError, the same as every other not-found in this package.
+// mapError, the same as every other not-found in this package. A removed
+// policy writes a rotation.policy_deleted audit row naming the operator.
 func rotationDeletePolicyHandler(deps Deps) func(ctx context.Context, in rotationDeletePolicyRequest, p contract.Principal) (rotationDeletePolicyResponse, error) {
 	return func(ctx context.Context, in rotationDeletePolicyRequest, p contract.Principal) (rotationDeletePolicyResponse, error) {
 		ctx = withOperator(ctx, p)
@@ -252,6 +258,8 @@ func rotationDeletePolicyHandler(deps Deps) func(ctx context.Context, in rotatio
 		if err := deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID); err != nil {
 			return rotationDeletePolicyResponse{}, deps.mapError("rotation.deletePolicy", err)
 		}
+
+		deps.Vault.Audit().LogAccess(scope.WithAppID(ctx, appID), key, audithook.ActionRotationPolicyDeleted, audithook.ResourceRotation)
 
 		return rotationDeletePolicyResponse{OK: true, Key: key}, nil
 	}

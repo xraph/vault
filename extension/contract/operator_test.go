@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 
 	dashauth "github.com/xraph/forge/extensions/dashboard/auth"
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
+	"github.com/xraph/forge/extensions/dashboard/contract/loader"
 
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/audit"
@@ -28,6 +30,8 @@ func TestWithOperator(t *testing.T) {
 		{"principal with a subject", operatorPrincipal, operatorSubject},
 		{"nil user", dashcontract.Principal{}, ""},
 		{"empty subject", dashcontract.Principal{User: &dashauth.UserInfo{}}, ""},
+		{"whitespace-only subject", dashcontract.Principal{User: &dashauth.UserInfo{Subject: " \t\n"}}, ""},
+		{"padded subject is trimmed", dashcontract.Principal{User: &dashauth.UserInfo{Subject: "  " + operatorSubject + "\t"}}, operatorSubject},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,9 +81,17 @@ func TestCommandsRecordTheOperator(t *testing.T) {
 			_, err := secretsUpdateHandler(deps)(ctx, secretsUpdateRequest{Key: "s1", Value: "v2"}, p)
 			return err
 		}},
+		{"rotation.savePolicy", "rotation.policy_saved", func() error {
+			_, err := rotationSavePolicyHandler(deps)(ctx, rotationSavePolicyRequest{Key: "s1", IntervalSeconds: 3600, Enabled: true}, p)
+			return err
+		}},
 		{"rotation.rotateNow", "secret.rotated", func() error {
 			v.Rotation().RegisterRotator("s1", func(_ context.Context, cur []byte) ([]byte, error) { return cur, nil })
 			_, err := rotationRotateNowHandler(deps)(ctx, rotationRotateNowRequest{Key: "s1"}, p)
+			return err
+		}},
+		{"rotation.deletePolicy", "rotation.policy_deleted", func() error {
+			_, err := rotationDeletePolicyHandler(deps)(ctx, rotationDeletePolicyRequest{Key: "s1"}, p)
 			return err
 		}},
 		{"secrets.delete", "secret.delete", func() error {
@@ -189,8 +201,11 @@ func TestCommandWithoutAPrincipalWritesNoUser(t *testing.T) {
 	}
 }
 
-// A query never puts a user on the log: no query writes a row, and the
-// principal it was given must not leak onto the context a later write uses.
+// No query writes an audit row, so no query can put a user on the log. The
+// test runs every query the manifest declares with an operator principal and
+// checks that the log is exactly as it was and that no row carries a user.
+// It does not prove a query's context is free of the principal, only that
+// nothing was written under it.
 func TestQueriesWriteNoUser(t *testing.T) {
 	v, _ := newTestVault(t)
 	deps := Deps{Vault: v}
@@ -215,12 +230,20 @@ func TestQueriesWriteNoUser(t *testing.T) {
 			_, err := secretsVersionsHandler(deps)(ctx, secretsVersionsRequest{Key: "q"}, p)
 			return err
 		},
-		"flags.list":    func() error { _, err := flagsListHandler(deps)(ctx, flagsListRequest{Limit: 10}, p); return err },
-		"flags.detail":  func() error { _, err := flagsDetailHandler(deps)(ctx, flagsDetailRequest{Key: "qf"}, p); return err },
+		"flags.list":   func() error { _, err := flagsListHandler(deps)(ctx, flagsListRequest{Limit: 10}, p); return err },
+		"flags.detail": func() error { _, err := flagsDetailHandler(deps)(ctx, flagsDetailRequest{Key: "qf"}, p); return err },
+		"flags.evaluate": func() error {
+			_, err := flagsEvaluateHandler(deps)(ctx, flagsEvaluateRequest{Key: "qf", TenantID: "t1", UserID: "u1"}, p)
+			return err
+		},
 		"config.list":   func() error { _, err := configListHandler(deps)(ctx, configListRequest{Limit: 10}, p); return err },
 		"config.detail": func() error { _, err := configDetailHandler(deps)(ctx, configDetailRequest{Key: "qc"}, p); return err },
 		"config.versions": func() error {
 			_, err := configVersionsHandler(deps)(ctx, configVersionsRequest{Key: "qc"}, p)
+			return err
+		},
+		"config.resolve": func() error {
+			_, err := configResolveHandler(deps)(ctx, configResolveRequest{Key: "qc", TenantID: "t1"}, p)
 			return err
 		},
 		"overrides.list": func() error {
@@ -231,7 +254,40 @@ func TestQueriesWriteNoUser(t *testing.T) {
 			_, err := rotationPoliciesHandler(deps)(ctx, rotationPoliciesRequest{Limit: 10}, p)
 			return err
 		},
+		"rotation.detail": func() error {
+			_, err := rotationDetailHandler(deps)(ctx, rotationDetailRequest{Key: "q"}, p)
+			return err
+		},
+		"audit.list": func() error {
+			_, err := auditListHandler(deps)(ctx, auditListRequest{Limit: 10, IncludeReads: true}, p)
+			return err
+		},
+		"overview.stats": func() error {
+			_, err := overviewStatsHandler(deps)(ctx, overviewStatsRequest{}, p)
+			return err
+		},
 	}
+
+	// The table must cover every query the manifest declares, so a query
+	// added later cannot escape the check.
+	m, err := loader.Load(bytes.NewReader(manifestYAML), "vault/contract/manifest.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := 0
+	for _, intent := range m.Intents {
+		if intent.Kind != dashcontract.IntentKindQuery {
+			continue
+		}
+		declared++
+		if queries[intent.Name] == nil {
+			t.Errorf("query %s is declared in the manifest but not covered here", intent.Name)
+		}
+	}
+	if declared != len(queries) {
+		t.Errorf("manifest declares %d queries, the table has %d", declared, len(queries))
+	}
+
 	for name, run := range queries {
 		if err := run(); err != nil {
 			t.Fatalf("%s: %v", name, err)

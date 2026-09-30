@@ -165,6 +165,12 @@ func Register(
 		{"rotation.rotateNow", func() error {
 			return dispatcher.RegisterCommand(d, c, "rotation.rotateNow", 1, rotationRotateNowHandler(deps))
 		}},
+		{"audit.list", func() error {
+			return dispatcher.RegisterQuery(d, c, "audit.list", 1, auditListHandler(deps))
+		}},
+		{"overview.stats", func() error {
+			return dispatcher.RegisterQuery(d, c, "overview.stats", 1, overviewStatsHandler(deps))
+		}},
 	} {
 		if err := bind.fn(); err != nil {
 			return fmt.Errorf("vault/contract: register %s: %w", bind.intent, err)

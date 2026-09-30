@@ -11,6 +11,10 @@ import (
 	"github.com/xraph/vault/id"
 )
 
+// EncryptionAlgorithm is the value recorded in Meta.EncryptionAlg for a
+// secret stored encrypted. An unencrypted secret records "".
+const EncryptionAlgorithm = "AES-256-GCM"
+
 // OnAccessFunc is called after a secret is accessed.
 type OnAccessFunc func(ctx context.Context, key, appID string)
 
@@ -175,7 +179,7 @@ func (s *Service) Set(ctx context.Context, key string, value []byte, appID strin
 			return nil, fmt.Errorf("secret: encrypt %q: %w", key, encErr)
 		}
 		sec.EncryptedValue = ct
-		sec.EncryptionAlg = "AES-256-GCM"
+		sec.EncryptionAlg = EncryptionAlgorithm
 	} else {
 		// No encryptor: store plaintext in EncryptedValue as fallback.
 		sec.EncryptedValue = value

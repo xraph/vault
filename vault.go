@@ -179,6 +179,17 @@ func (v *Vault) AppID() string { return v.config.AppID }
 // False means a key was not configured and values are stored as given.
 func (v *Vault) EncryptionEnabled() bool { return v.encryptor != nil }
 
+// EncryptionAlgorithm names the algorithm this vault encrypts new secrets
+// with, the same string a stored secret carries in its EncryptionAlg, or ""
+// when no key is configured. Like EncryptionEnabled it describes new writes
+// only, not the rows already stored.
+func (v *Vault) EncryptionAlgorithm() string {
+	if v.encryptor == nil {
+		return ""
+	}
+	return secret.EncryptionAlgorithm
+}
+
 // Secrets returns the secret service.
 func (v *Vault) Secrets() *secret.Service { return v.secrets }
 

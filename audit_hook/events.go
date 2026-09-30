@@ -42,6 +42,13 @@ const (
 	// Override actions.
 	ActionOverrideSet     = "override.set"
 	ActionOverrideDeleted = "override.deleted"
+
+	// ActionRotationPolicySaved records a rotation policy being created or
+	// changed. The policy's secret key is the row's key.
+	ActionRotationPolicySaved = "rotation.policy_saved"
+
+	// ActionRotationPolicyDeleted records a rotation policy being removed.
+	ActionRotationPolicyDeleted = "rotation.policy_deleted"
 )
 
 // AllActions returns all registered audit action strings.
@@ -52,6 +59,7 @@ func AllActions() []string {
 		ActionFlagRulesSet, ActionFlagOverrideSet, ActionFlagOverrideDeleted,
 		ActionConfigSet, ActionConfigDeleted, ActionConfigRolledBack,
 		ActionOverrideSet, ActionOverrideDeleted,
+		ActionRotationPolicySaved, ActionRotationPolicyDeleted,
 	}
 }
 
@@ -65,6 +73,7 @@ const (
 	CategoryFlag     = "vault.flag"
 	CategoryConfig   = "vault.config"
 	CategoryOverride = "vault.override"
+	CategoryRotation = "vault.rotation"
 )
 
 // ──────────────────────────────────────────────────
@@ -77,6 +86,7 @@ const (
 	ResourceFlag     = "flag"
 	ResourceConfig   = "config"
 	ResourceOverride = "override"
+	ResourceRotation = "rotation"
 )
 
 // ──────────────────────────────────────────────────

@@ -18,35 +18,37 @@ intents:
   - { name: secrets.list,     kind: query, version: 1, capability: read }
   - { name: secrets.detail,   kind: query, version: 1, capability: read }
   - { name: secrets.versions, kind: query, version: 1, capability: read }
-  - { name: secrets.create,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
-  - { name: secrets.update,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions] }
-  - { name: secrets.delete,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions, rotation.policies, rotation.detail] }
+  - { name: secrets.create,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions, audit.list, overview.stats] }
+  - { name: secrets.update,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions, audit.list, overview.stats] }
+  - { name: secrets.delete,   kind: command, version: 1, capability: write, invalidates: [secrets.list, secrets.detail, secrets.versions, rotation.policies, rotation.detail, audit.list, overview.stats] }
   - { name: flags.list,     kind: query, version: 1, capability: read }
   - { name: flags.detail,   kind: query, version: 1, capability: read }
   - { name: flags.evaluate, kind: query, version: 1, capability: read }
-  - { name: flags.create,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
-  - { name: flags.update,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
-  - { name: flags.delete,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
-  - { name: flags.setEnabled,           kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate] }
-  - { name: flags.setRules,             kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
-  - { name: flags.setTenantOverride,    kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
-  - { name: flags.deleteTenantOverride, kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate] }
+  - { name: flags.create,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate, audit.list, overview.stats] }
+  - { name: flags.update,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate, audit.list, overview.stats] }
+  - { name: flags.delete,               kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate, audit.list, overview.stats] }
+  - { name: flags.setEnabled,           kind: command, version: 1, capability: write, invalidates: [flags.list, flags.detail, flags.evaluate, audit.list, overview.stats] }
+  - { name: flags.setRules,             kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate, audit.list, overview.stats] }
+  - { name: flags.setTenantOverride,    kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate, audit.list, overview.stats] }
+  - { name: flags.deleteTenantOverride, kind: command, version: 1, capability: write, invalidates: [flags.detail, flags.evaluate, audit.list, overview.stats] }
   - { name: config.list,      kind: query, version: 1, capability: read }
   - { name: config.detail,    kind: query, version: 1, capability: read }
   - { name: config.versions,  kind: query, version: 1, capability: read }
   - { name: config.resolve,   kind: query, version: 1, capability: read }
   - { name: overrides.list,   kind: query, version: 1, capability: read }
-  - { name: config.create,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, overrides.list] }
-  - { name: config.update,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve] }
-  - { name: config.delete,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, overrides.list] }
-  - { name: config.rollback,  kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve] }
-  - { name: overrides.set,    kind: command, version: 1, capability: write, invalidates: [config.detail, config.resolve, overrides.list] }
-  - { name: overrides.delete, kind: command, version: 1, capability: write, invalidates: [config.detail, config.resolve, overrides.list] }
+  - { name: config.create,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, overrides.list, audit.list, overview.stats] }
+  - { name: config.update,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, audit.list, overview.stats] }
+  - { name: config.delete,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, overrides.list, audit.list, overview.stats] }
+  - { name: config.rollback,  kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, audit.list, overview.stats] }
+  - { name: overrides.set,    kind: command, version: 1, capability: write, invalidates: [config.detail, config.resolve, overrides.list, audit.list, overview.stats] }
+  - { name: overrides.delete, kind: command, version: 1, capability: write, invalidates: [config.detail, config.resolve, overrides.list, audit.list, overview.stats] }
   - { name: rotation.policies,     kind: query, version: 1, capability: read }
   - { name: rotation.detail,       kind: query, version: 1, capability: read }
-  - { name: rotation.savePolicy,   kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }
-  - { name: rotation.deletePolicy, kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }
-  - { name: rotation.rotateNow,    kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.list, secrets.detail, secrets.versions] }
+  - { name: rotation.savePolicy,   kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail, audit.list, overview.stats] }
+  - { name: rotation.deletePolicy, kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail, audit.list, overview.stats] }
+  - { name: rotation.rotateNow,    kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.list, secrets.detail, secrets.versions, audit.list, overview.stats] }
+  - { name: audit.list,     kind: query, version: 1, capability: read }
+  - { name: overview.stats, kind: query, version: 1, capability: read }
 
 queries:
   secretsList:
@@ -88,3 +90,9 @@ queries:
   overridesList:
     intent: overrides.list
     cache: { staleTime: 30s }
+  auditList:
+    intent: audit.list
+    cache: { staleTime: 15s }
+  overviewStats:
+    intent: overview.stats
+    cache: { staleTime: 15s }

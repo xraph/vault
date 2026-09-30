@@ -71,6 +71,36 @@ func TestNewWiresEverySubsystem(t *testing.T) {
 	}
 }
 
+// EncryptionAlgorithm names what a stored secret carries in EncryptionAlg,
+// and is empty when no key is configured.
+func TestEncryptionAlgorithmMatchesWhatIsStored(t *testing.T) {
+	key, _ := hex.DecodeString(testKeyHex)
+	for name, opts := range map[string][]vault.Option{
+		"key":    {vault.WithEncryptionKey(key)},
+		"no key": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			v, err := vault.New(append([]vault.Option{vault.WithStore(memory.New()), vault.WithAppID("app1")}, opts...)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, setErr := v.Secrets().Set(context.Background(), "k", []byte("v"), "app1"); setErr != nil {
+				t.Fatal(setErr)
+			}
+			meta, err := v.Secrets().GetMeta(context.Background(), "k", "app1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := v.EncryptionAlgorithm(); got != meta.EncryptionAlg {
+				t.Errorf("EncryptionAlgorithm() = %q, stored EncryptionAlg = %q", got, meta.EncryptionAlg)
+			}
+			if name == "key" && v.EncryptionAlgorithm() != "AES-256-GCM" {
+				t.Errorf("EncryptionAlgorithm() = %q, want AES-256-GCM", v.EncryptionAlgorithm())
+			}
+		})
+	}
+}
+
 // Review Focus 1: no key at all is the documented fallback, not a panic.
 func TestNewWithNoKeyStoresPlaintextAndDoesNotPanic(t *testing.T) {
 	v, err := vault.New(vault.WithStore(memory.New()), vault.WithAppID("app1"))
