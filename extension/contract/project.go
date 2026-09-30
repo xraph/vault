@@ -227,9 +227,10 @@ type FlagVariantSummary struct {
 }
 
 // FlagTraceStep is the wire projection of one rule the engine considered
-// during an explained evaluation. Note has no omitempty: a rule the engine
+// during an explained evaluation. RuleID is the rule's id. Note has no omitempty: a rule the engine
 // never reached carries "".
 type FlagTraceStep struct {
+	RuleID   string `json:"ruleId"`
 	Priority int    `json:"priority"`
 	Type     string `json:"type"`
 	Matched  bool   `json:"matched"`

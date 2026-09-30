@@ -1576,3 +1576,81 @@ func TestFlagsSetRules_EmptyIdListsOnAKeptConfigStayUnset(t *testing.T) {
 		}
 	}
 }
+
+// The evaluation names the rules by id: each trace step carries the id of the
+// rule it describes and matchedRuleId is the id of the one that decided.
+func TestFlagsEvaluate_TraceCarriesRuleIDsAndMatchedRuleID(t *testing.T) {
+	v, _ := newTestVault(t)
+	seedFlag(t, v, "ids", flag.TypeBool, false, true)
+	stored, err := v.FlagManager().SetRules(context.Background(), "ids", []flag.RuleInput{
+		{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{"nobody"}}, ReturnValue: true},
+		{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 100}, ReturnValue: true},
+		{Type: flag.RuleWhenUser, Config: flag.RuleConfig{UserIDs: []string{"u"}}, ReturnValue: true},
+	})
+	if err != nil {
+		t.Fatalf("rules: %v", err)
+	}
+
+	out, err := flagsEvaluateHandler(Deps{Vault: v})(context.Background(), flagsEvaluateRequest{Key: "ids", TenantID: "t-1"}, flagPrincipal)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if len(out.Trace) != 3 {
+		t.Fatalf("trace = %+v, want 3 steps", out.Trace)
+	}
+	for i, r := range stored {
+		if out.Trace[i].RuleID == "" || out.Trace[i].RuleID != r.ID.String() {
+			t.Errorf("trace[%d].ruleId = %q, want %q", i, out.Trace[i].RuleID, r.ID.String())
+		}
+	}
+	if out.MatchedRuleID != stored[1].ID.String() {
+		t.Errorf("matchedRuleId = %q, want %q", out.MatchedRuleID, stored[1].ID.String())
+	}
+	raw, _ := json.Marshal(out)
+	s := string(raw)
+	if !strings.Contains(s, `"matchedRuleId":"`+stored[1].ID.String()+`"`) || !strings.Contains(s, `"ruleId":"`+stored[0].ID.String()+`"`) {
+		t.Errorf("JSON lacks the rule ids: %s", s)
+	}
+}
+
+// matchedRuleId is present exactly when the reason is "rule".
+func TestFlagsEvaluate_MatchedRuleIDAbsentUnlessARuleMatched(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	seedFlag(t, v, "off", flag.TypeBool, false, false)
+	seedFlag(t, v, "ov", flag.TypeBool, false, true)
+	seedFlag(t, v, "dflt", flag.TypeBool, false, true)
+	seedRules(t, v, "off", flag.RuleInput{Type: flag.RuleRollout, Config: flag.RuleConfig{Percentage: 100}, ReturnValue: true})
+	seedRules(t, v, "dflt", flag.RuleInput{Type: flag.RuleWhenTenant, Config: flag.RuleConfig{TenantIDs: []string{"nobody"}}, ReturnValue: true})
+	if _, err := v.FlagManager().SetTenantOverride(ctx, "ov", "big", true); err != nil {
+		t.Fatalf("override: %v", err)
+	}
+	h := flagsEvaluateHandler(Deps{Vault: v})
+
+	for _, tc := range []struct {
+		name string
+		in   flagsEvaluateRequest
+		want string
+	}{
+		{"disabled", flagsEvaluateRequest{Key: "off", TenantID: "t"}, flag.ReasonDisabled},
+		{"tenant override", flagsEvaluateRequest{Key: "ov", TenantID: "big"}, flag.ReasonTenantOverride},
+		{"default", flagsEvaluateRequest{Key: "dflt", TenantID: "t"}, flag.ReasonDefault},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := h(ctx, tc.in, flagPrincipal)
+			if err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if out.Reason != tc.want {
+				t.Fatalf("reason = %q, want %q", out.Reason, tc.want)
+			}
+			if out.MatchedRuleID != "" {
+				t.Errorf("matchedRuleId = %q, want none", out.MatchedRuleID)
+			}
+			raw, _ := json.Marshal(out)
+			if strings.Contains(string(raw), "matchedRuleId") {
+				t.Errorf("JSON carries matchedRuleId: %s", raw)
+			}
+		})
+	}
+}

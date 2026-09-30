@@ -244,3 +244,34 @@ func TestDetailTraceIsNeverNull(t *testing.T) {
 		}
 	}
 }
+
+// Every trace step, reached or not, names the rule it describes, so a client
+// can tie a step back to the row it is showing in the editor.
+func TestDetailTraceStepsCarryRuleIDsInOrder(t *testing.T) {
+	s := memory.New()
+	defineFlag(t, s, "ids", false, true)
+	first := flag.WhenTenant("nobody").Return(true)
+	first.Priority = 0
+	second := flag.Rollout(100).Return(true)
+	second.Priority = 1
+	third := flag.WhenUser("u").Return(true)
+	third.Priority = 2
+	setRules(t, s, "ids", first, second, third)
+	e := flag.NewEngine(s)
+
+	d, err := e.EvaluateDetail(withTenant("t-1"), "ids", testApp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Trace) != 3 {
+		t.Fatalf("trace: got %d steps, want 3", len(d.Trace))
+	}
+	for i, want := range []*flag.Rule{first, second, third} {
+		if d.Trace[i].RuleID == "" || d.Trace[i].RuleID != want.ID.String() {
+			t.Errorf("trace[%d].RuleID = %q, want %q", i, d.Trace[i].RuleID, want.ID.String())
+		}
+	}
+	if d.MatchedRule == nil || d.MatchedRule.ID.String() != second.ID.String() {
+		t.Errorf("MatchedRule = %v, want the rollout rule %q", d.MatchedRule, second.ID.String())
+	}
+}

@@ -33,10 +33,12 @@ const (
 	ReasonDefault        = "default"
 )
 
-// TraceStep records one targeting rule the engine considered.
+// TraceStep records one targeting rule the engine considered. RuleID is the
+// rule's own id, so a step can be tied back to the rule it describes.
 // Reached is false for rules after the one that matched: the engine stops
 // at the first match, and a trace that hid that would misreport precedence.
 type TraceStep struct {
+	RuleID   string   `json:"rule_id"`
 	Priority int      `json:"priority"`
 	Type     RuleType `json:"type"`
 	Matched  bool     `json:"matched"`
@@ -181,6 +183,7 @@ func (e *Engine) evaluate(ctx context.Context, key, appID string, withTrace bool
 		matched := e.evaluateRule(rule, key, tenantID, userID)
 		if withTrace {
 			trace = append(trace, TraceStep{
+				RuleID:   rule.ID.String(),
 				Priority: rule.Priority,
 				Type:     rule.Type,
 				Matched:  matched,
@@ -194,6 +197,7 @@ func (e *Engine) evaluate(ctx context.Context, key, appID string, withTrace bool
 		if withTrace {
 			for _, rest := range rules[i+1:] {
 				trace = append(trace, TraceStep{
+					RuleID:   rest.ID.String(),
 					Priority: rest.Priority,
 					Type:     rest.Type,
 					Reached:  false,

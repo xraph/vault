@@ -193,12 +193,13 @@ type flagsEvaluateRequest struct {
 
 // flagsEvaluateResponse is the wire response for flags.evaluate. Bucket and
 // MatchedRulePriority are pointers so a bucket or priority of 0 still
-// reaches the client.
+// reaches the client. MatchedRuleID is present exactly when Reason is "rule".
 type flagsEvaluateResponse struct {
 	Value               any             `json:"value"`
 	ValueMatchesType    bool            `json:"valueMatchesType"`
 	Reason              string          `json:"reason"`
 	MatchedRulePriority *int            `json:"matchedRulePriority,omitempty"`
+	MatchedRuleID       string          `json:"matchedRuleId,omitempty"`
 	Trace               []FlagTraceStep `json:"trace"`
 	Bucket              *int            `json:"bucket,omitempty"`
 	EvaluatedAt         string          `json:"evaluatedAt"`
@@ -240,6 +241,7 @@ func flagsEvaluateHandler(deps Deps) func(ctx context.Context, in flagsEvaluateR
 		trace := make([]FlagTraceStep, 0, len(detail.Trace))
 		for _, s := range detail.Trace {
 			trace = append(trace, FlagTraceStep{
+				RuleID:   s.RuleID,
 				Priority: s.Priority,
 				Type:     string(s.Type),
 				Matched:  s.Matched,
@@ -258,6 +260,7 @@ func flagsEvaluateHandler(deps Deps) func(ctx context.Context, in flagsEvaluateR
 		if detail.MatchedRule != nil {
 			p := detail.MatchedRule.Priority
 			out.MatchedRulePriority = &p
+			out.MatchedRuleID = detail.MatchedRule.ID.String()
 		}
 		if tenantID != "" {
 			b := int(flag.RolloutBucket(tenantID, key))
