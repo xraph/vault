@@ -11,6 +11,7 @@ import (
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/audit"
 	audithook "github.com/xraph/vault/audit_hook"
+	"github.com/xraph/vault/scope"
 	"github.com/xraph/vault/secret"
 )
 
@@ -355,6 +356,10 @@ type secretsDeleteResponse struct {
 // NOT_FOUND before ever trying DeleteRotationPolicy again. So a
 // vault.ErrSecretNotFound from Secrets().Delete still gets a best-effort
 // DeleteRotationPolicy attempt before this returns NOT_FOUND.
+//
+// A policy removed either way writes a rotation.policy_deleted audit row
+// naming the operator, exactly as rotation.deletePolicy does; a delete that
+// found no policy writes none.
 func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteRequest, p contract.Principal) (secretsDeleteResponse, error) {
 	return func(ctx context.Context, in secretsDeleteRequest, p contract.Principal) (secretsDeleteResponse, error) {
 		ctx = withOperator(ctx, p)
@@ -370,17 +375,29 @@ func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteR
 				// earlier delete's own cleanup failed to remove. NOT_FOUND
 				// for the secret is still the answer below regardless of
 				// how this turns out; a real failure here gets another
-				// chance on the next retry.
-				//nolint:errcheck // best-effort cleanup, see comment above
-				deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID)
+				// chance on the next retry. A policy it does remove is
+				// recorded like any other.
+				if deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID) == nil {
+					logPolicyDeleted(ctx, deps, key, appID)
+				}
 			}
 			return secretsDeleteResponse{}, deps.mapError("secrets.delete", err)
 		}
 
-		if err := deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID); err != nil && !errors.Is(err, vault.ErrRotationNotFound) {
+		switch err := deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID); {
+		case err == nil:
+			logPolicyDeleted(ctx, deps, key, appID)
+		case !errors.Is(err, vault.ErrRotationNotFound):
 			return secretsDeleteResponse{}, deps.mapError("secrets.delete", err)
 		}
 
 		return secretsDeleteResponse{OK: true, Key: key}, nil
 	}
+}
+
+// logPolicyDeleted writes the rotation.policy_deleted row for a policy a
+// secret delete removed, the same row rotation.deletePolicy writes. ctx
+// already carries the operator.
+func logPolicyDeleted(ctx context.Context, deps Deps, key, appID string) {
+	deps.Vault.Audit().LogAccess(scope.WithAppID(ctx, appID), key, audithook.ActionRotationPolicyDeleted, audithook.ResourceRotation)
 }

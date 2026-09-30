@@ -601,6 +601,56 @@ func TestSecretsDelete_RemovesPolicyToo(t *testing.T) {
 	}
 }
 
+// Removing a secret takes its rotation policy with it, and that leaves the
+// same rotation.policy_deleted row rotation.deletePolicy would, naming the
+// operator. A secret with no policy leaves no such row.
+func TestSecretsDelete_RecordsThePolicyItRemoves(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	const key = "with-policy"
+	if _, err := v.Secrets().Set(ctx, key, []byte("v1"), testAppID); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	if err := st.SaveRotationPolicy(ctx, &rotation.Policy{
+		Entity: vault.NewEntity(), ID: id.NewRotationID(), SecretKey: key, AppID: testAppID,
+		Interval: 24 * time.Hour, Enabled: true,
+	}); err != nil {
+		t.Fatalf("seed policy: %v", err)
+	}
+
+	if _, err := secretsDeleteHandler(Deps{Vault: v})(ctx, secretsDeleteRequest{Key: key}, operatorPrincipal); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	rows, err := st.ListAudit(ctx, testAppID, audit.ListOpts{Limit: 50, Action: "rotation.policy_deleted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rotation.policy_deleted rows = %d, want 1", len(rows))
+	}
+	if rows[0].Resource != "rotation" || rows[0].Key != key || rows[0].UserID != operatorSubject {
+		t.Errorf("row = %+v, want resource rotation, key %q, user %q", rows[0], key, operatorSubject)
+	}
+}
+
+func TestSecretsDelete_NoPolicyWritesNoPolicyRow(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	if _, err := v.Secrets().Set(ctx, "bare", []byte("v1"), testAppID); err != nil {
+		t.Fatalf("seed secret: %v", err)
+	}
+	if _, err := secretsDeleteHandler(Deps{Vault: v})(ctx, secretsDeleteRequest{Key: "bare"}, operatorPrincipal); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	rows, err := st.ListAudit(ctx, testAppID, audit.ListOpts{Limit: 50, Action: "rotation.policy_deleted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("rotation.policy_deleted rows = %d, want 0", len(rows))
+	}
+}
+
 func TestSecretsDelete_NoPolicyIsFine(t *testing.T) {
 	v, _ := newTestVault(t)
 	ctx := context.Background()
@@ -638,6 +688,13 @@ func TestSecretsDelete_OrphanedPolicyCleanedUpOnRetry(t *testing.T) {
 	}
 	if _, polErr := st.GetRotationPolicy(ctx, key, testAppID); !errors.Is(polErr, vault.ErrRotationNotFound) {
 		t.Errorf("orphaned rotation policy still exists after the retry: %v", polErr)
+	}
+	rows, listErr := st.ListAudit(ctx, testAppID, audit.ListOpts{Limit: 50, Action: "rotation.policy_deleted"})
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(rows) != 1 {
+		t.Errorf("rotation.policy_deleted rows after the retry = %d, want 1", len(rows))
 	}
 }
 
