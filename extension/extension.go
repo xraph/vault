@@ -17,7 +17,6 @@ import (
 	dashboard "github.com/xraph/forge/extensions/dashboard"
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 	"github.com/xraph/forge/extensions/dashboard/contract/dispatcher"
-	"github.com/xraph/forge/extensions/dashboard/contributor"
 	"github.com/xraph/grove"
 	"github.com/xraph/vessel"
 
@@ -25,7 +24,6 @@ import (
 
 	"github.com/xraph/vault"
 	vaultconfy "github.com/xraph/vault/confy"
-	vaultdash "github.com/xraph/vault/dashboard"
 	vaultcontract "github.com/xraph/vault/extension/contract"
 	"github.com/xraph/vault/store"
 	mongostore "github.com/xraph/vault/store/mongo"
@@ -42,11 +40,10 @@ const ExtensionDescription = "Composable secrets management, feature flags, and 
 // ExtensionVersion is the semantic version.
 const ExtensionVersion = "0.1.0"
 
-// Ensure Extension implements forge.Extension and the dashboard awareness
-// interfaces at compile time.
+// Ensure Extension implements forge.Extension and the dashboard contract
+// awareness interface at compile time.
 var (
 	_ forge.Extension                    = (*Extension)(nil)
-	_ dashboard.DashboardAware           = (*Extension)(nil)
 	_ dashboard.ContractContributorAware = (*Extension)(nil)
 )
 
@@ -241,8 +238,7 @@ func (e *Extension) Health(ctx context.Context) error {
 
 // RegisterContractContributor implements dashboard.ContractContributorAware.
 // It registers the vault contract contributor, which is what the React
-// shell reads. The templ LocalContributor below is unaffected, and both run
-// side by side until the templ dashboard is retired.
+// shell reads.
 func (e *Extension) RegisterContractContributor(
 	disp *dispatcher.Dispatcher,
 	reg dashcontract.Registry,
@@ -267,17 +263,6 @@ func (e *Extension) RegisterContractContributor(
 		return fmt.Errorf("vault: register contract contributor: %w", err)
 	}
 	return nil
-}
-
-// DashboardContributor implements dashboard.DashboardAware. It returns a
-// LocalContributor that renders vault pages, widgets, and settings in the
-// Forge dashboard using templ + ForgeUI.
-func (e *Extension) DashboardContributor() contributor.LocalContributor {
-	return vaultdash.New(
-		vaultdash.NewManifest(),
-		e.store,
-		e.config.AppID,
-	)
 }
 
 // mountToConfy registers vault as a confy ConfigSource and SecretProvider
