@@ -416,7 +416,8 @@ type configCreateRequest struct {
 // existing key is CONFLICT and the entry is left exactly as it was. The type
 // is never guessed: an absent valueType is refused.
 func configCreateHandler(deps Deps) func(ctx context.Context, in configCreateRequest, p contract.Principal) (configEntryResponse, error) {
-	return func(ctx context.Context, in configCreateRequest, _ contract.Principal) (configEntryResponse, error) {
+	return func(ctx context.Context, in configCreateRequest, p contract.Principal) (configEntryResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return configEntryResponse{}, err
@@ -454,7 +455,8 @@ type configUpdateRequest struct {
 // request that asks for what the entry already holds is not an error: the
 // entry comes back and no version is added.
 func configUpdateHandler(deps Deps) func(ctx context.Context, in configUpdateRequest, p contract.Principal) (configEntryResponse, error) {
-	return func(ctx context.Context, in configUpdateRequest, _ contract.Principal) (configEntryResponse, error) {
+	return func(ctx context.Context, in configUpdateRequest, p contract.Principal) (configEntryResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return configEntryResponse{}, err
@@ -495,7 +497,8 @@ type configDeleteResponse struct {
 // manager removes the entry's versions and every override for the key with
 // it, so recreating the key never brings an old override back.
 func configDeleteHandler(deps Deps) func(ctx context.Context, in configDeleteRequest, p contract.Principal) (configDeleteResponse, error) {
-	return func(ctx context.Context, in configDeleteRequest, _ contract.Principal) (configDeleteResponse, error) {
+	return func(ctx context.Context, in configDeleteRequest, p contract.Principal) (configDeleteResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return configDeleteResponse{}, err
@@ -518,7 +521,8 @@ type configRollbackRequest struct {
 // version's value as a new version. A version whose value does not fit the
 // entry's current type is refused.
 func configRollbackHandler(deps Deps) func(ctx context.Context, in configRollbackRequest, p contract.Principal) (configEntryResponse, error) {
-	return func(ctx context.Context, in configRollbackRequest, _ contract.Principal) (configEntryResponse, error) {
+	return func(ctx context.Context, in configRollbackRequest, p contract.Principal) (configEntryResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return configEntryResponse{}, err
@@ -550,7 +554,8 @@ type overridesSetResponse struct {
 // an override of the empty string; taking an override away is
 // overrides.delete.
 func overridesSetHandler(deps Deps) func(ctx context.Context, in overridesSetRequest, p contract.Principal) (overridesSetResponse, error) {
-	return func(ctx context.Context, in overridesSetRequest, _ contract.Principal) (overridesSetResponse, error) {
+	return func(ctx context.Context, in overridesSetRequest, p contract.Principal) (overridesSetResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return overridesSetResponse{}, err
@@ -592,7 +597,8 @@ type overridesDeleteResponse struct {
 // mapError does not map it; this handler does, because here it can only mean
 // a tenant's config override.
 func overridesDeleteHandler(deps Deps) func(ctx context.Context, in overridesDeleteRequest, p contract.Principal) (overridesDeleteResponse, error) {
-	return func(ctx context.Context, in overridesDeleteRequest, _ contract.Principal) (overridesDeleteResponse, error) {
+	return func(ctx context.Context, in overridesDeleteRequest, p contract.Principal) (overridesDeleteResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return overridesDeleteResponse{}, err

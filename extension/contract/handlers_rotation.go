@@ -160,7 +160,8 @@ type rotationSavePolicyResponse struct {
 // enabled with no due time at all; every other save keeps the stored
 // value, including LastRotatedAt, unchanged.
 func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationSavePolicyRequest, p contract.Principal) (rotationSavePolicyResponse, error) {
-	return func(ctx context.Context, in rotationSavePolicyRequest, _ contract.Principal) (rotationSavePolicyResponse, error) {
+	return func(ctx context.Context, in rotationSavePolicyRequest, p contract.Principal) (rotationSavePolicyResponse, error) {
+		ctx = withOperator(ctx, p)
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
@@ -240,7 +241,8 @@ type rotationDeletePolicyResponse struct {
 // deps.Vault.AppID() alone. A missing policy maps to NOT_FOUND through
 // mapError, the same as every other not-found in this package.
 func rotationDeletePolicyHandler(deps Deps) func(ctx context.Context, in rotationDeletePolicyRequest, p contract.Principal) (rotationDeletePolicyResponse, error) {
-	return func(ctx context.Context, in rotationDeletePolicyRequest, _ contract.Principal) (rotationDeletePolicyResponse, error) {
+	return func(ctx context.Context, in rotationDeletePolicyRequest, p contract.Principal) (rotationDeletePolicyResponse, error) {
+		ctx = withOperator(ctx, p)
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
@@ -273,7 +275,8 @@ type rotationRotateNowResponse struct {
 // would fail the same way, but only after Manager.RotateNow's own checks,
 // and this handler must refuse before ever calling it.
 func rotationRotateNowHandler(deps Deps) func(ctx context.Context, in rotationRotateNowRequest, p contract.Principal) (rotationRotateNowResponse, error) {
-	return func(ctx context.Context, in rotationRotateNowRequest, _ contract.Principal) (rotationRotateNowResponse, error) {
+	return func(ctx context.Context, in rotationRotateNowRequest, p contract.Principal) (rotationRotateNowResponse, error) {
+		ctx = withOperator(ctx, p)
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {

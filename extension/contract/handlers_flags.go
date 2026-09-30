@@ -299,7 +299,8 @@ type flagsCreateRequest struct {
 // flagsCreateHandler answers flags.create for deps.Vault.AppID() alone. An
 // existing key is CONFLICT and the flag is left exactly as it was.
 func flagsCreateHandler(deps Deps) func(ctx context.Context, in flagsCreateRequest, p contract.Principal) (flagResponse, error) {
-	return func(ctx context.Context, in flagsCreateRequest, _ contract.Principal) (flagResponse, error) {
+	return func(ctx context.Context, in flagsCreateRequest, p contract.Principal) (flagResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return flagResponse{}, err
@@ -333,7 +334,8 @@ type flagsUpdateRequest struct {
 
 // flagsUpdateHandler answers flags.update for deps.Vault.AppID() alone.
 func flagsUpdateHandler(deps Deps) func(ctx context.Context, in flagsUpdateRequest, p contract.Principal) (flagResponse, error) {
-	return func(ctx context.Context, in flagsUpdateRequest, _ contract.Principal) (flagResponse, error) {
+	return func(ctx context.Context, in flagsUpdateRequest, p contract.Principal) (flagResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return flagResponse{}, err
@@ -368,7 +370,8 @@ type flagsDeleteResponse struct {
 // flagsDeleteHandler answers flags.delete for deps.Vault.AppID() alone. The
 // store removes the flag's rules and overrides with it.
 func flagsDeleteHandler(deps Deps) func(ctx context.Context, in flagsDeleteRequest, p contract.Principal) (flagsDeleteResponse, error) {
-	return func(ctx context.Context, in flagsDeleteRequest, _ contract.Principal) (flagsDeleteResponse, error) {
+	return func(ctx context.Context, in flagsDeleteRequest, p contract.Principal) (flagsDeleteResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return flagsDeleteResponse{}, err
@@ -390,7 +393,8 @@ type flagsSetEnabledRequest struct {
 // alone. The manager drops the engine's cache, so a flag turned off stops
 // being served on the hot path at once rather than after the cache TTL.
 func flagsSetEnabledHandler(deps Deps) func(ctx context.Context, in flagsSetEnabledRequest, p contract.Principal) (flagResponse, error) {
-	return func(ctx context.Context, in flagsSetEnabledRequest, _ contract.Principal) (flagResponse, error) {
+	return func(ctx context.Context, in flagsSetEnabledRequest, p contract.Principal) (flagResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return flagResponse{}, err
@@ -495,7 +499,8 @@ func toRuleInputs(in []flagRuleRequest) ([]flag.RuleInput, error) {
 // The list replaces the flag's rules whole and its order is the priority:
 // the first rule wins.
 func flagsSetRulesHandler(deps Deps) func(ctx context.Context, in flagsSetRulesRequest, p contract.Principal) (flagsSetRulesResponse, error) {
-	return func(ctx context.Context, in flagsSetRulesRequest, _ contract.Principal) (flagsSetRulesResponse, error) {
+	return func(ctx context.Context, in flagsSetRulesRequest, p contract.Principal) (flagsSetRulesResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return flagsSetRulesResponse{}, err
@@ -538,7 +543,8 @@ type flagsSetTenantOverrideResponse struct {
 // flagsSetTenantOverrideHandler answers flags.setTenantOverride for
 // deps.Vault.AppID() alone. The value must be a value of the flag's type.
 func flagsSetTenantOverrideHandler(deps Deps) func(ctx context.Context, in flagsSetTenantOverrideRequest, p contract.Principal) (flagsSetTenantOverrideResponse, error) {
-	return func(ctx context.Context, in flagsSetTenantOverrideRequest, _ contract.Principal) (flagsSetTenantOverrideResponse, error) {
+	return func(ctx context.Context, in flagsSetTenantOverrideRequest, p contract.Principal) (flagsSetTenantOverrideResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return flagsSetTenantOverrideResponse{}, err
@@ -573,7 +579,8 @@ type flagsDeleteTenantOverrideResponse struct {
 // not map it (a flag's override and a config override would read alike);
 // this handler does, because here it can only mean a tenant override.
 func flagsDeleteTenantOverrideHandler(deps Deps) func(ctx context.Context, in flagsDeleteTenantOverrideRequest, p contract.Principal) (flagsDeleteTenantOverrideResponse, error) {
-	return func(ctx context.Context, in flagsDeleteTenantOverrideRequest, _ contract.Principal) (flagsDeleteTenantOverrideResponse, error) {
+	return func(ctx context.Context, in flagsDeleteTenantOverrideRequest, p contract.Principal) (flagsDeleteTenantOverrideResponse, error) {
+		ctx = withOperator(ctx, p)
 		key, err := requireKey(in.Key)
 		if err != nil {
 			return flagsDeleteTenantOverrideResponse{}, err

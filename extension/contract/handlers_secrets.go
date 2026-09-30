@@ -216,7 +216,8 @@ type secretsCreateResponse struct {
 // It refuses an existing key with CONFLICT, because Secrets().Set would
 // otherwise silently add a version to it instead of creating fresh.
 func secretsCreateHandler(deps Deps) func(ctx context.Context, in secretsCreateRequest, p contract.Principal) (secretsCreateResponse, error) {
-	return func(ctx context.Context, in secretsCreateRequest, _ contract.Principal) (secretsCreateResponse, error) {
+	return func(ctx context.Context, in secretsCreateRequest, p contract.Principal) (secretsCreateResponse, error) {
+		ctx = withOperator(ctx, p)
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
@@ -276,7 +277,8 @@ type secretsUpdateResponse struct {
 // an update that only changes the value never silently erases the other
 // two.
 func secretsUpdateHandler(deps Deps) func(ctx context.Context, in secretsUpdateRequest, p contract.Principal) (secretsUpdateResponse, error) {
-	return func(ctx context.Context, in secretsUpdateRequest, _ contract.Principal) (secretsUpdateResponse, error) {
+	return func(ctx context.Context, in secretsUpdateRequest, p contract.Principal) (secretsUpdateResponse, error) {
+		ctx = withOperator(ctx, p)
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
@@ -354,7 +356,8 @@ type secretsDeleteResponse struct {
 // vault.ErrSecretNotFound from Secrets().Delete still gets a best-effort
 // DeleteRotationPolicy attempt before this returns NOT_FOUND.
 func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteRequest, p contract.Principal) (secretsDeleteResponse, error) {
-	return func(ctx context.Context, in secretsDeleteRequest, _ contract.Principal) (secretsDeleteResponse, error) {
+	return func(ctx context.Context, in secretsDeleteRequest, p contract.Principal) (secretsDeleteResponse, error) {
+		ctx = withOperator(ctx, p)
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
