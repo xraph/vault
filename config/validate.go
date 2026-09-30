@@ -63,7 +63,7 @@ func ValidateValue(valueType string, v any) error {
 	switch valueType {
 	case TypeString:
 		if _, ok := v.(string); !ok {
-			return fmt.Errorf("must be a string, got %s", describe(v))
+			return fmt.Errorf("must be a string, got %s", DescribeValue(v))
 		}
 	case TypeInt:
 		return validateInt(v)
@@ -71,7 +71,7 @@ func ValidateValue(valueType string, v any) error {
 		return validateFloat(v)
 	case TypeBool:
 		if _, ok := v.(bool); !ok {
-			return fmt.Errorf("must be a boolean, got %s", describe(v))
+			return fmt.Errorf("must be a boolean, got %s", DescribeValue(v))
 		}
 	case TypeJSON:
 		if v == nil {
@@ -83,7 +83,7 @@ func ValidateValue(valueType string, v any) error {
 	case TypeDuration:
 		s, ok := v.(string)
 		if !ok {
-			return fmt.Errorf("must be a duration string such as \"30s\", got %s", describe(v))
+			return fmt.Errorf("must be a duration string such as \"30s\", got %s", DescribeValue(v))
 		}
 		if _, err := time.ParseDuration(s); err != nil {
 			return fmt.Errorf("must be a duration such as \"30s\" or \"1h30m\": %w", err)
@@ -107,7 +107,7 @@ func validateInt(v any) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("must be a whole number, got %s", describe(v))
+		return fmt.Errorf("must be a whole number, got %s", DescribeValue(v))
 	}
 }
 
@@ -120,7 +120,7 @@ func validateFloat(v any) error {
 	case float64:
 		return finite(n)
 	default:
-		return fmt.Errorf("must be a number, got %s", describe(v))
+		return fmt.Errorf("must be a number, got %s", DescribeValue(v))
 	}
 }
 
@@ -131,9 +131,10 @@ func finite(n float64) error {
 	return nil
 }
 
-// describe names v's kind without echoing its value, which for a bad value
-// could be anything the caller sent.
-func describe(v any) string {
+// DescribeValue names v's kind ("a string", "an object", "null") without
+// echoing its value, which for a bad value could be anything the caller
+// sent. It is what the write service uses to word a refusal.
+func DescribeValue(v any) string {
 	switch v.(type) {
 	case nil:
 		return "null"

@@ -412,9 +412,24 @@ func TestRollback(t *testing.T) {
 		}
 
 		// Rolling back to the value already held is a no-op.
+		var watcherCalls int
+		v.Config().Watch("r", func(context.Context, string, any, any) { watcherCalls++ })
+		rowsBefore := len(auditRows(t, v, audithook.ResourceConfig))
 		got, err = m.Rollback(bg(), "r", 3)
-		if err != nil || got.Version != 3 {
-			t.Errorf("no-op rollback = v%d, %v, want v3", got.Version, err)
+		if err != nil {
+			t.Fatalf("no-op rollback: %v", err)
+		}
+		if got.Version != 3 {
+			t.Errorf("no-op rollback = v%d, want v3", got.Version)
+		}
+		if n := len(versions(t, v, "r")); n != 3 {
+			t.Errorf("no-op rollback left %d versions, want 3", n)
+		}
+		if n := len(auditRows(t, v, audithook.ResourceConfig)); n != rowsBefore {
+			t.Errorf("no-op rollback wrote %d audit rows", n-rowsBefore)
+		}
+		if watcherCalls != 0 {
+			t.Errorf("no-op rollback fired watchers %d times", watcherCalls)
 		}
 
 		if _, err = m.Rollback(bg(), "r", 99); !errors.Is(err, vault.ErrConfigVersionNotFound) {

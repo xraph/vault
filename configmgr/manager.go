@@ -7,12 +7,14 @@
 package configmgr
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/config"
@@ -36,7 +38,9 @@ const maxKeyBytes = 256
 //
 // It is safe for concurrent use as far as its stores are. Update and
 // Rollback are read-modify-write of one row with no version check, so two
-// concurrent writers to the same key can lose one write.
+// concurrent writers to the same key can lose one write. A SetOverride that
+// races a Delete of its key can leave an orphan override behind until the key
+// is recreated, when Create clears it.
 type Manager struct {
 	store     config.Store
 	overrides override.Store
@@ -124,6 +128,7 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*config.Entry, er
 	if err := m.clearOverrides(ctx, in.Key); err != nil {
 		return nil, err
 	}
+	m.invalidate(in.Key)
 
 	entry := &config.Entry{
 		Entity:      core.NewEntity(),
@@ -226,7 +231,7 @@ func (m *Manager) Rollback(ctx context.Context, key string, version int64) (*con
 	if verr := config.ValidateValue(entry.ValueType, target.Value); verr != nil {
 		return nil, &config.ValidationError{
 			Field:   "version",
-			Message: fmt.Sprintf("version %d holds %s, not a %s", version, describe(target.Value), entry.ValueType),
+			Message: fmt.Sprintf("version %d holds %s, not a %s", version, config.DescribeValue(target.Value), entry.ValueType),
 		}
 	}
 
@@ -261,6 +266,7 @@ func (m *Manager) Delete(ctx context.Context, key string) error {
 	if err := m.clearOverrides(ctx, key); err != nil {
 		return err
 	}
+	m.invalidate(key)
 	if err := m.store.DeleteConfig(ctx, key, m.appID); err != nil {
 		return err
 	}
@@ -419,36 +425,98 @@ func validateTenant(tenantID string) (string, error) {
 	return tenantID, nil
 }
 
-// sameValue compares two stored values as JSON, so float64(5) and int 5, or
-// a map read back from a store, compare equal to the one a caller sent.
+// sameValue compares two values as the wire would show them: each side is
+// reduced to plain JSON shapes and the results are deep-compared. Object key
+// order does not matter (a mongo read gives bson.D in document order, and a
+// map written from Go has none), and int, int32 and float64 meet as float64.
+// A value that cannot be reduced is never the same as anything.
 func sameValue(a, b any) bool {
-	ja, err := json.Marshal(a)
-	if err != nil {
+	wa, ok := wireForm(a)
+	if !ok {
 		return false
 	}
-	jb, err := json.Marshal(b)
-	if err != nil {
+	wb, ok := wireForm(b)
+	if !ok {
 		return false
 	}
-	return bytes.Equal(ja, jb)
+	return reflect.DeepEqual(wa, wb)
 }
 
-// describe names v's kind without echoing its value.
-func describe(v any) string {
-	switch v.(type) {
-	case nil:
-		return "null"
-	case bool:
-		return "a boolean"
-	case string:
-		return "a string"
-	case float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-		return "a number"
+// wireForm reduces v to the shapes a JSON decode produces (nil, bool,
+// string, float64, []any, map[string]any), and reports false for a value no
+// backend could have stored. bson.D and bson.A are walked directly rather
+// than marshalled: their JSON form is extended JSON, which would turn a
+// plain 1 into {"$numberInt":"1"}.
+func wireForm(v any) (any, bool) {
+	switch x := v.(type) {
+	case nil, bool, string, float64:
+		return x, true
+	case int:
+		return float64(x), true
+	case int8:
+		return float64(x), true
+	case int16:
+		return float64(x), true
+	case int32:
+		return float64(x), true
+	case int64:
+		return float64(x), true
+	case uint:
+		return float64(x), true
+	case uint8:
+		return float64(x), true
+	case uint16:
+		return float64(x), true
+	case uint32:
+		return float64(x), true
+	case uint64:
+		return float64(x), true
+	case float32:
+		return float64(x), true
+	case bson.D:
+		out := make(map[string]any, len(x))
+		for _, e := range x {
+			w, ok := wireForm(e.Value)
+			if !ok {
+				return nil, false
+			}
+			out[e.Key] = w
+		}
+		return out, true
+	case bson.A:
+		return wireForm([]any(x))
+	case bson.M:
+		return wireForm(map[string]any(x))
 	case []any:
-		return "an array"
+		out := make([]any, len(x))
+		for i, e := range x {
+			w, ok := wireForm(e)
+			if !ok {
+				return nil, false
+			}
+			out[i] = w
+		}
+		return out, true
 	case map[string]any:
-		return "an object"
-	default:
-		return fmt.Sprintf("%T", v)
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			w, ok := wireForm(e)
+			if !ok {
+				return nil, false
+			}
+			out[k] = w
+		}
+		return out, true
 	}
+	// Any other type (a struct, a typed slice or map) goes through one JSON
+	// round trip and is then reduced again.
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, false
+	}
+	return wireForm(decoded)
 }
