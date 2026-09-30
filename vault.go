@@ -130,7 +130,10 @@ func New(opts ...Option) (*Vault, error) {
 		// Every attempt leaves a row, so a failing rotation is something an
 		// operator can find by filtering on outcome.
 		rotation.WithOnRotate(func(ctx context.Context, key, appID string, err error) {
-			ctx = scope.WithAppID(ctx, appID)
+			// A dashboard client that disconnects mid-rotation cancels ctx;
+			// the row must still land. WithoutCancel keeps the values (app,
+			// user) and drops only the cancellation.
+			ctx = scope.WithAppID(context.WithoutCancel(ctx), appID)
 			if err != nil {
 				v.auditLog.LogFailure(ctx, key, audithook.ActionSecretRotated, audithook.ResourceSecret, err)
 				return

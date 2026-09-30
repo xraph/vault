@@ -17,6 +17,7 @@ import (
 	"github.com/xraph/vault/flag"
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/override"
+	"github.com/xraph/vault/scope"
 	"github.com/xraph/vault/store/memory"
 )
 
@@ -573,5 +574,67 @@ func TestFlagOverrideAuditRowsCarryTheTenant(t *testing.T) {
 		if rows[0].TenantID != wantTenant {
 			t.Errorf("%s tenant = %q, want %q", action, rows[0].TenantID, wantTenant)
 		}
+	}
+}
+
+// refusingCancelled is a memory store that, like a real database driver,
+// refuses an audit write made under a cancelled context.
+type refusingCancelled struct {
+	*memory.Store
+}
+
+func (r refusingCancelled) RecordAudit(ctx context.Context, e *audit.Entry) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.Store.RecordAudit(ctx, e)
+}
+
+// A dashboard client that disconnects mid-rotation cancels the request
+// context. The attempt's audit row must survive that, failed or not, and
+// still name the user the context carried.
+func TestRotationAuditRowSurvivesACancelledContext(t *testing.T) {
+	cases := []struct {
+		name        string
+		rotatorErr  error
+		wantOutcome string
+	}{
+		{"success", nil, "success"},
+		{"failure", errors.New("rotator exploded"), "failure"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := refusingCancelled{memory.New()}
+			v, err := vault.New(vault.WithStore(s), vault.WithAppID("app1"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := context.Background()
+			if _, err := v.Secrets().Set(base, "rk", []byte("v1"), "app1"); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(scope.WithUserID(base, "user_operator_1"))
+			defer cancel()
+			v.Rotation().RegisterRotator("rk", func(_ context.Context, cur []byte) ([]byte, error) {
+				cancel() // the client goes away while the rotator runs
+				return cur, tc.rotatorErr
+			})
+			_ = v.Rotation().RotateNow(ctx, "rk", "app1")
+
+			rows, err := s.ListAudit(base, "app1", audit.ListOpts{Limit: 10, Action: "secret.rotated"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("secret.rotated rows = %d, want 1", len(rows))
+			}
+			if rows[0].Outcome != tc.wantOutcome {
+				t.Errorf("outcome = %q, want %q", rows[0].Outcome, tc.wantOutcome)
+			}
+			if rows[0].UserID != "user_operator_1" || rows[0].AppID != "app1" {
+				t.Errorf("row scope = app %q user %q, want app1 and the operator", rows[0].AppID, rows[0].UserID)
+			}
+		})
 	}
 }
