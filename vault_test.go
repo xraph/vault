@@ -610,8 +610,8 @@ func TestRotationAuditRowSurvivesACancelledContext(t *testing.T) {
 				t.Fatal(err)
 			}
 			base := context.Background()
-			if _, err := v.Secrets().Set(base, "rk", []byte("v1"), "app1"); err != nil {
-				t.Fatal(err)
+			if _, setErr := v.Secrets().Set(base, "rk", []byte("v1"), "app1"); setErr != nil {
+				t.Fatal(setErr)
 			}
 
 			ctx, cancel := context.WithCancel(scope.WithUserID(base, "user_operator_1"))
