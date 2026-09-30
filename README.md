@@ -108,13 +108,13 @@ Vault is organised as a root package with shared types, six service packages imp
 - Services — [secret/](secret/), [flag/](flag/), [config/](config/), [override/](override/), [rotation/](rotation/), [audit/](audit/)
 - Supporting — [crypto/](crypto/) (AES-256-GCM), [id/](id/) (TypeID), [scope/](scope/) (context keys), [source/](source/) (memory/env/database/chain), [plugin/](plugin/), [audit_hook/](audit_hook/), [metrics/](metrics/)
 - Stores — [store/memory/](store/memory/), [store/postgres/](store/postgres/), [store/sqlite/](store/sqlite/), [store/mongo/](store/mongo/), [store/grovestore/](store/grovestore/)
-- Integrations — [extension/](extension/) (Forge), [confy/](confy/) (Confy), [dashboard/](dashboard/) (Templ UI)
+- Integrations — [extension/](extension/) (Forge), [confy/](confy/) (Confy), [extension/contract/](extension/contract/) (dashboard contract)
 
 Every operation follows the same three-phase flow: **scope** the context → **resolve** the value (tenant override → rule match → default) → **respond** with a coerced type or the caller's default on error. See [docs/content/docs/architecture.mdx](docs/content/docs/architecture.mdx) for the full package diagram and request-flow breakdown.
 
 ## Ecosystem integration
 
-**Forge extension.** Mount Vault as a Forge extension to auto-wire the store, encryption, audit hooks, and a management dashboard into your Forge app. See [extension/](extension/) and [docs/content/docs/guides/forge-extension.mdx](docs/content/docs/guides/forge-extension.mdx).
+**Forge extension.** Mount Vault as a Forge extension to auto-wire the store, encryption, audit hooks, and the dashboard contract into your Forge app. The React dashboard plugin, `@forge-go/dashboard-plugin-vault`, reads that contract (see [MIGRATION.md](MIGRATION.md) for what moved from the old templ pages). See [extension/](extension/) and [docs/content/docs/guides/forge-extension.mdx](docs/content/docs/guides/forge-extension.mdx).
 
 **Confy source.** Adapt Vault as a Confy `ConfigSource` and `SecretProvider` so a single `confy.Load` call pulls typed config and encrypted secrets through Vault alongside your other sources. See [confy/](confy/) and [docs/content/docs/guides/confy-integration.mdx](docs/content/docs/guides/confy-integration.mdx).
 

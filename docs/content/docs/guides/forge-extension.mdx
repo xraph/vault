@@ -388,3 +388,9 @@ dbHost := cm.GetString("vault.db.host", "localhost")
 ```
 
 For detailed documentation, see the [Confy Integration](/docs/guides/confy-integration) guide.
+
+## Dashboard
+
+The extension registers a `vault` contract contributor with the Forge dashboard, and the React shell reads it through `@forge-go/dashboard-plugin-vault`. Add the plugin to your shell and you get overview, secrets, rotation, flags, config, overrides and audit pages. Nothing needs configuring on the Vault side.
+
+The old templ dashboard is gone, and so is the `github.com/xraph/vault/dashboard` package, so any import of it has to be removed. `MIGRATION.md` in the repo root lists every page and widget the templ version had, and says where each one went or why it didn't.
