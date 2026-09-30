@@ -59,6 +59,16 @@ func WithClaimLease(d time.Duration) ManagerOption {
 	}
 }
 
+// WithOnRotate registers a callback invoked once for every RotateNow attempt,
+// whether it came from the scheduled loop or a manual call. err is nil after a
+// successful rotation, and only once the rotation record is written; any
+// other outcome (no rotator, a failed read, a rotator error, a failed write)
+// passes the error RotateNow returns. The callback runs under the context
+// RotateNow was given, so a caller's scope reaches it.
+func WithOnRotate(fn func(ctx context.Context, key, appID string, err error)) ManagerOption {
+	return func(m *Manager) { m.onRotate = fn }
+}
+
 // Manager handles scheduled secret rotation with registered rotator functions.
 type Manager struct {
 	store         Store
@@ -67,6 +77,7 @@ type Manager struct {
 	logger        log.Logger
 	checkInterval time.Duration
 	claimLease    time.Duration
+	onRotate      func(ctx context.Context, key, appID string, err error)
 
 	mu       sync.RWMutex
 	rotators map[string]Rotator // secretKey → rotator
@@ -168,12 +179,21 @@ func (m *Manager) Stop(_ context.Context) error {
 	return nil
 }
 
-// RotateNow performs an immediate rotation for the given secret key.
+// RotateNow performs an immediate rotation for the given secret key. When a
+// WithOnRotate callback is set it hears the outcome, success or failure.
 func (m *Manager) RotateNow(ctx context.Context, secretKey, appID string) error {
 	if appID == "" {
 		appID = m.appID
 	}
+	err := m.rotate(ctx, secretKey, appID)
+	if m.onRotate != nil {
+		m.onRotate(ctx, secretKey, appID, err)
+	}
+	return err
+}
 
+// rotate is RotateNow's body. appID is already resolved.
+func (m *Manager) rotate(ctx context.Context, secretKey, appID string) error {
 	// Look up registered rotator.
 	m.mu.RLock()
 	rotator, ok := m.rotators[secretKey]

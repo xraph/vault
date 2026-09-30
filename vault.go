@@ -120,6 +120,16 @@ func New(opts ...Option) (*Vault, error) {
 	v.rotation = rotation.NewManager(v.store, v.secrets,
 		rotation.WithAppID(v.config.AppID),
 		rotation.WithLogger(v.logger),
+		// Every attempt leaves a row, so a failing rotation is something an
+		// operator can find by filtering on outcome.
+		rotation.WithOnRotate(func(ctx context.Context, key, appID string, err error) {
+			ctx = scope.WithAppID(ctx, appID)
+			if err != nil {
+				v.auditLog.LogFailure(ctx, key, audithook.ActionSecretRotated, audithook.ResourceSecret, err)
+				return
+			}
+			v.auditLog.LogAccess(ctx, key, audithook.ActionSecretRotated, audithook.ResourceSecret)
+		}),
 	)
 
 	return v, nil
