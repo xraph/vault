@@ -35,6 +35,10 @@ const (
 	ActionConfigSet     = "config.set"
 	ActionConfigDeleted = "config.deleted"
 
+	// ActionConfigRolledBack records a config entry's value being restored
+	// from an earlier version.
+	ActionConfigRolledBack = "config.rolled_back"
+
 	// Override actions.
 	ActionOverrideSet     = "override.set"
 	ActionOverrideDeleted = "override.deleted"
@@ -46,7 +50,7 @@ func AllActions() []string {
 		ActionSecretAccessed, ActionSecretSet, ActionSecretDeleted, ActionSecretRotated,
 		ActionFlagEvaluated, ActionFlagCreated, ActionFlagUpdated, ActionFlagDeleted, ActionFlagToggled,
 		ActionFlagRulesSet, ActionFlagOverrideSet, ActionFlagOverrideDeleted,
-		ActionConfigSet, ActionConfigDeleted,
+		ActionConfigSet, ActionConfigDeleted, ActionConfigRolledBack,
 		ActionOverrideSet, ActionOverrideDeleted,
 	}
 }

@@ -369,6 +369,24 @@ func TestServiceWatchFires(t *testing.T) {
 	}
 }
 
+func TestServiceNotifyRunsTheWatchersSetRuns(t *testing.T) {
+	svc := cfgpkg.NewService(memory.New(), cfgpkg.WithAppID(testApp))
+
+	var gotKey string
+	var gotOld, gotNew any
+	var calls int
+	svc.Watch("n.key", func(_ context.Context, key string, oldValue, newValue any) {
+		calls++
+		gotKey, gotOld, gotNew = key, oldValue, newValue
+	})
+
+	svc.Notify(bg(), "n.key", "was", "now")
+	svc.Notify(bg(), "other", "a", "b")
+	if calls != 1 || gotKey != "n.key" || gotOld != "was" || gotNew != "now" {
+		t.Errorf("Notify: calls=%d key=%q old=%v new=%v", calls, gotKey, gotOld, gotNew)
+	}
+}
+
 func TestServiceWatchDoesNotFireForOtherKey(t *testing.T) {
 	s := memory.New()
 	svc := cfgpkg.NewService(s, cfgpkg.WithAppID(testApp))

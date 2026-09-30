@@ -54,4 +54,8 @@ var (
 
 	// Config errors.
 	ErrConfigExists = core.ErrConfigExists
+
+	// ErrConfigVersionNotFound is returned when a config entry has no
+	// version with the requested number.
+	ErrConfigVersionNotFound = core.ErrConfigVersionNotFound
 )

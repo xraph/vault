@@ -43,6 +43,7 @@ func TestErrorSentinelsAreTheSameValues(t *testing.T) {
 		{"ErrOverrideNotFound", vault.ErrOverrideNotFound, core.ErrOverrideNotFound},
 		{"ErrFlagNotFound", vault.ErrFlagNotFound, core.ErrFlagNotFound},
 		{"ErrConfigNotFound", vault.ErrConfigNotFound, core.ErrConfigNotFound},
+		{"ErrConfigVersionNotFound", vault.ErrConfigVersionNotFound, core.ErrConfigVersionNotFound},
 	}
 	for _, tc := range cases {
 		if tc.root != tc.leaf { //nolint:errorlint // intentional identity check: these must be the same sentinel value, not merely errors.Is-compatible

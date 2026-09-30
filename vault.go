@@ -10,6 +10,7 @@ import (
 	"github.com/xraph/vault/audit"
 	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/configmgr"
 	"github.com/xraph/vault/crypto"
 	"github.com/xraph/vault/flag"
 	"github.com/xraph/vault/override"
@@ -35,6 +36,7 @@ type Vault struct {
 	flags     *flag.Service
 	resolver  *override.Resolver
 	configSvc *config.Service
+	configMgr *configmgr.Manager
 	rotation  *rotation.Manager
 	auditLog  *audit.Logger
 }
@@ -101,6 +103,18 @@ func New(opts ...Option) (*Vault, error) {
 	v.configSvc = config.NewService(v.store,
 		config.WithAppID(v.config.AppID),
 		config.WithResolver(v.resolver),
+	)
+	v.configMgr = configmgr.NewManager(v.store, v.store, v.resolver, v.configSvc,
+		configmgr.WithManagerAppID(v.config.AppID),
+		configmgr.WithOnConfigMutate(func(ctx context.Context, action, resource, key, appID, tenantID string) {
+			ctx = scope.WithAppID(ctx, appID)
+			// An override write is attributed to the tenant it targets, not
+			// the one acting; a write to the entry keeps the caller's scope.
+			if tenantID != "" {
+				ctx = scope.WithTenantID(ctx, tenantID)
+			}
+			v.auditLog.LogAccess(ctx, key, action, resource)
+		}),
 	)
 
 	v.rotation = rotation.NewManager(v.store, v.secrets,
@@ -169,6 +183,11 @@ func (v *Vault) FlagCacheTTL() time.Duration { return v.config.FlagCacheTTL }
 
 // Config returns the runtime config service.
 func (v *Vault) Config() *config.Service { return v.configSvc }
+
+// ConfigManager returns the config write service: the one path that creates,
+// changes, rolls back and deletes config entries and their tenant overrides
+// with validation, cache invalidation, watchers and audit.
+func (v *Vault) ConfigManager() *configmgr.Manager { return v.configMgr }
 
 // Overrides returns the per-tenant config resolver.
 func (v *Vault) Overrides() *override.Resolver { return v.resolver }

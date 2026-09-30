@@ -42,4 +42,8 @@ var (
 
 	// Config errors.
 	ErrConfigExists = errors.New("vault: config entry already exists")
+
+	// ErrConfigVersionNotFound is returned when a config entry exists but
+	// has no version with the requested number.
+	ErrConfigVersionNotFound = errors.New("vault: config version not found")
 )

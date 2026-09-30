@@ -296,6 +296,14 @@ func (s *Service) Watch(key string, cb WatchCallback) {
 	s.watchers[key] = append(s.watchers[key], cb)
 }
 
+// Notify runs the watchers registered for key, exactly as Set does after a
+// write. It exists for the write service (package configmgr), which writes
+// through the store itself and so must tell watchers what changed: oldValue
+// is nil for a create, newValue nil for a delete.
+func (s *Service) Notify(ctx context.Context, key string, oldValue, newValue any) {
+	s.notifyWatchers(ctx, key, oldValue, newValue)
+}
+
 func (s *Service) notifyWatchers(ctx context.Context, key string, oldValue, newValue any) {
 	s.mu.RLock()
 	cbs := s.watchers[key]
