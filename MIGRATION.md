@@ -36,7 +36,7 @@ has to scan the package. If your shell declares its sources with `@source`, add
 Vault now needs forge v1.11.2. On v1.10.0 the dashboard transport never passed
 a manifest's `invalidates` to the client, so no write refreshed any page. Vault
 declares its cache hints in `extension/contract/manifest.yaml` and returns none
-from its handlers, which is exactly the case v1.10.0 dropped. `go.mod` pins
+from its handlers, and that is the case v1.10.0 dropped. `go.mod` pins
 v1.11.2 already; if a workspace `replace` or another module holds forge back,
 lift it.
 
@@ -46,12 +46,14 @@ it claims the policy through `rotation.Store.ClaimDueRotation`, which moves the
 due time forward by a five minute lease, so only one replica rotates a given
 policy. A replica with no rotator registered for a key never claims that key's
 policy. A rotation that fails is retried when the lease runs out, not every
-minute. Rotators are still registered in application code with
-`RegisterRotator`, and a policy for a key nobody registered a rotator for does
-nothing.
+minute. The loop also returns at once when the app id is empty
+(`checkDuePolicies` in `rotation/manager.go`), so a vault with an empty
+`app_id` never rotates on a schedule. Rotators are still registered in
+application code with `RegisterRotator`, and a policy for a key nobody
+registered a rotator for does nothing.
 
 `enable_audit` is deprecated, and so is `WithEnableAudit`. Audit is always on,
-whatever you set. Remove the setting when you next touch your config.
+whatever you set. Drop the setting the next time you touch your config.
 
 A named key variable that is missing now refuses to start. If
 `encryption_key_env` names an environment variable that is unset or empty,
@@ -66,18 +68,24 @@ If you call Vault from Go, you will notice these changes:
   `(*Vault, error)` and composes the real services. `Secrets()`, `Flags()`,
   `FlagEngine()`, `FlagManager()`, `Config()`, `ConfigManager()`, `Overrides()`,
   `Rotation()`, `Audit()` and `Store()` all work.
-- `flag.WithOnFlagMutate` takes a callback with a fifth argument:
+- `flag.WithOnFlagMutate` is new since v1.6.4, an option for the new
+  `flag.Manager`. Its callback is
   `func(ctx, action, key, appID, tenantID string)`. The tenant is the one a
   per-tenant override write targets, and empty for writes to the flag itself.
 - `rotation.Store` has a new method, `ClaimDueRotation(ctx, key, appID string,
   now, until time.Time) (bool, error)`. It must claim atomically: two callers
   racing on one policy get one `true` between them.
 - The store interfaces gained counts, and a custom store has to implement all of
-  them: `CountSecrets`, `CountSecretsUnencrypted`, `CountFlagDefinitions`,
-  `CountFlagDefinitionsMatching`, `CountConfig`, `CountConfigMatching`,
-  `CountOverrides`, `CountRotationPolicies`, `CountAudit` and
+  them. `secret.Store` gets `CountSecrets` and `CountSecretsUnencrypted`.
+  `flag.Store` gets `CountFlagDefinitions` and `CountFlagDefinitionsMatching`.
+  `config.Store` gets `CountConfig` and `CountConfigMatching`. `override.Store`
+  gets `CountOverrides`. `rotation.Store` gets `CountRotationPolicies` (and
+  `ClaimDueRotation`, above). `audit.Store` gets `CountAudit` and
   `CountAuditMatching`. A `...Matching` count and its list must apply the same
   filter, or a page and its total disagree.
+- The audit log writes `secret.get` when a secret is read. The declared constant
+  `audit_hook.ActionSecretAccessed` (`secret.accessed`) is never written, so
+  filter on `secret.get`.
 - The list options grew filters that every backend must honour in the query
   itself, never after paging: `audit.ListOpts` takes `Resource`, `Key`,
   `Action`, `Outcome`, `Since` and `ExcludeActions`; `flag.ListOpts` takes
@@ -182,7 +190,7 @@ templ pages had been hiding. All of them are fixed.
 - The overview's Overrides card was always 0, because nothing set it. Every
   count was capped at 10000 by a list limit, and any error showed as 0.
 - The settings page showed "Audit Logging: Disabled" forever, from a config
-  field nothing read, and eight of its nine fields were never passed in at all.
+  field nothing read, and only one of its nine fields, App ID, was ever passed in.
 - The tenant and user context keys were three different types that shared
   string values, so a tenant set with `scope.WithTenantID` never reached flag
   evaluation or override resolution.
@@ -199,9 +207,10 @@ templ pages had been hiding. All of them are fixed.
 
 ## Deliberately dropped
 
-- The settings page and the settings panel `vault-config`. Eight of its nine
-  fields were never populated, and the ninth was a hardcoded constant.
-  `encryptionEnabled` moved to `overview.stats`.
+- The settings page and the settings panel `vault-config`. Of its nine fields
+  only App ID was ever passed in, and the Encryption card (algorithm, key size,
+  nonce) was hardcoded constants. `encryptionEnabled` moved to
+  `overview.stats`.
 - The Overrides stat on the overview, as it was. It was never populated and
   always read zero. It is replaced by a real count.
 - `secrets.setExpiry`. Nothing in the store or the service changes an expiry
@@ -308,7 +317,8 @@ carries an app id.
 | Stat card Rotation Policies, "Active policies", which counted disabled ones | Rotation policies with the hint "N enabled" | changed |
 | Stat card Audit Entries, "Logged operations" | none | dropped: a log that grows on every read has no useful total on a home page, and the audit page's caption gives the total for any filter |
 | Stat card icons (lock, flag, settings-2, layers, refresh-cw, file-text) | none | dropped: the kit's stat grid carries a label, a value and a hint |
-| Counts capped at 10000, and a store error shown as 0 | counts from `Count*`, and any failed count fails the whole query | changed |
+| Counts capped at 10000, and a store error shown as 0 | counts from `Count*`, and any failed count fails the whole query. The rotation figures come from one read of the policy list, so the total and its subsets agree | changed |
+| Card "Quick Actions", "Create new secrets, flags, or configuration entries." | none | changed: the card is gone and its three buttons live on the lists they belong to |
 | Quick action button New Secret | "New secret" on the Secrets page | changed: it lives with the list it belongs to |
 | Quick action button New Flag | "New flag" on the Flags page | changed |
 | Quick action button New Config Entry | "New config" on the Config page | changed |
@@ -393,6 +403,8 @@ that adding a key later does not encrypt it.
 | Audit Trail card, count badge, "Recent access and mutation logs for this secret." | "Recent activity", the newest 10 rows for this key, where the old card showed 20 | changed |
 | Audit table columns Action, Resource, Key, Outcome, App ID, Tenant, User, Time | action, outcome, "by" user, tenant and time on one line, with the error of a failure underneath | changed: the resource and key are the page's own, and App ID is dropped |
 | Empty text "No audit entries for this secret." | "No recorded activity yet." | changed |
+| A failed version, policy or audit read shown as "No version history available.", as no policy, or as "No audit entries for this secret." | each query fails and says so | changed |
+| The row found by listing up to 10000 secrets, so a key past that answered not found | the server reads the one secret by key | changed |
 
 Secret detail also gained what the templ page never had: "Replace value"
 (`secrets.update`, with a keep, set or remove choice for the expiry) and
@@ -414,6 +426,8 @@ Secret detail also gained what the templ page never had: "Replace value"
 | Column App ID | none | dropped: same reason as the secrets list |
 | No column for rotators | Rotator badge: "Rotator registered" or "No rotator" | changed: new |
 | Empty state "No rotation policies", "Rotation policies will appear here once configured for secrets." | "No rotation policies. Set one up from a secret's page." | changed |
+| A failed read shown as that empty state | the query fails and says so | changed |
+| No paging, every policy in one table | 25 a page with the total | changed |
 
 ### Rotation detail
 
@@ -438,6 +452,7 @@ Secret detail also gained what the templ page never had: "Replace value"
 | Record column Rotated By, "system" when empty | Rotated by, "none" when empty | changed: the word "system" was invented |
 | Record column Rotated At | Rotated at | migrated |
 | Empty text "No rotation records yet." | "No rotations recorded yet." | changed |
+| A failed record read shown as "No rotation records yet." | the query fails and says so | changed |
 
 A failed rotation is not a record here. It is a `secret.rotated` row with
 outcome `failure` on the audit page, and the overview counts the last 24 hours
@@ -446,7 +461,7 @@ of them.
 The page also gained a policy form (`rotation.savePolicy`: an interval in hours
 or days, at least 60 seconds, and an enable checkbox, with a preview of the
 next run) and "Delete policy" (`rotation.deletePolicy`, confirmed). The templ pages
-could not create or change a policy at all.
+couldn't create or change a policy at all.
 
 ### Flags
 
@@ -505,6 +520,8 @@ rule and that a disabled flag makes the rule table dead weight.
 | Override column Value | the value, with "Wrong type" when it does not fit | migrated |
 | Empty text "No tenant overrides defined." | "No tenant overrides." | changed |
 | A store error shown as "No targeting rules" or "No tenant overrides" | the query fails and says so | changed |
+| A rule of a type the table did not know, shown as a dash | "Unknown rule type X" with a "Never matches" badge | changed |
+| A missing flag answered with a raw wrapped store error | "No flag named X." with a link back to the flags | changed |
 | No rung for the default | Rung 4 "Default", "Returned when nothing above decides." | changed |
 
 The page also gained what the templ page never had: an evaluation bar (a tenant
@@ -592,6 +609,8 @@ route: it carries CodeMirror, so the shell's entry chunk does not.
 | Override column Updated | Updated | migrated |
 | Override row clickable, to the override page | none | dropped: see Override detail |
 | Empty text "No tenant overrides for this key." | "No tenant overrides." | changed |
+| A failed version or override read shown as "No version history available." or "No tenant overrides for this key." | the query fails and says so | changed |
+| A missing entry answered with a raw wrapped store error | "No config entry named X." | changed |
 
 The page also gained what the templ page never had: "Compare" for any version
 (a diff for json, side by side values otherwise), "Roll back" (`config.rollback`,
@@ -614,7 +633,7 @@ by the server.
 | Title "Create Config Entry", subtitle "Add a new runtime configuration entry." | "New config entry", "Give it a key, a type and a value. Tenant overrides come after it exists." | changed |
 | Field Key, required, "e.g. rate_limit" | Key | migrated |
 | Field App ID | none | dropped: same reason as secret create |
-| Type options string, bool, int, float, json | string, int, float, bool, json, and duration | migrated |
+| Type options string, bool, int, float, json | string, int, float, bool, json, and duration, which is new | changed |
 | Type option yaml | none | dropped: see Deliberately dropped |
 | Field Value, text, required, "e.g. 100, true, hello" | A typed input for the chosen type. Changing the type clears it | changed: the old form stored the raw string whatever the type |
 | The form trimmed the value | the value is sent as typed | changed: the trim lost leading and trailing spaces in a string |
@@ -663,6 +682,7 @@ page.
 | Column Updated | Updated | migrated |
 | Row clickable, to the override page | none | dropped: see Override detail |
 | Empty state "No overrides found", "Overrides will appear here once per-tenant values are set." | "No overrides for tenant X." or "No overrides for key X." | changed |
+| A failed tenant read shown as that empty state, and a failed per-key read skipped without a word | the query fails and says so | changed |
 | Read-only | Per row, "Revert to app default", or "Remove leftover override" for an orphan whose entry is gone. Both are confirmed | changed |
 
 ### Override detail
@@ -714,7 +734,10 @@ they would otherwise bury the writes.
 
 `pages/settings.templ`, settings panel `vault-config`. The page and the panel
 are dropped. The templ page took a nine-field struct and `renderSettings`
-passed only `AppID`, so eight rows showed a dash, `0s` or "Disabled".
+passed only `AppID`. Four rows showed a dash, `0s` or "Disabled" (Encryption
+Key Env, both durations, Audit Logging), and four showed plausible defaults that
+came from the template, not from your config (Base Path `/vault`, Routes and
+Auto-Migrate "Enabled", Grove Database "default (auto-discovered)").
 
 | templ | React | status |
 |---|---|---|
@@ -789,7 +812,8 @@ Config detail, and `OverrideTable` on Overrides.
 | "Back to ..." buttons on every detail and create page | none. The sidebar entry is one click away, and create pages keep a Cancel link | dropped |
 | Browser `hx-confirm` on Enable, Disable and Rotate Now | `ConfirmDialog` where confirmation is needed (delete, rotate, revert, roll back). Errors show inside the dialog and it cannot close while a command is pending | changed |
 | `fieldRow` | the kit's `DescriptionList` | migrated |
-| `formatValue` and `formatAny`: `%v`, cut to 20 characters | `FlagValue` and `ConfigValue`: typed display, objects as JSON | changed |
+| `formatAny`: `%v` cut to 20 characters, a dash for nil | `FlagValue` and `ConfigValue`: typed display, objects as JSON | changed |
+| `formatValue`: plain `%v`, a dash for nil | `FlagValue` and `ConfigValue`: typed display, objects as JSON | changed |
 | `formatJSON` | the JSON viewer and editor | changed |
 | `enabledStr` and `nonEmpty` | "On" and "Off" badges, and "none" cells | changed |
 | Dates formatted "Jan 02, 2006" and "Jan 02, 2006 15:04" | the kit's `Timestamp` | changed |
@@ -798,8 +822,11 @@ Config detail, and `OverrideTable` on Overrides.
 
 ## Still open
 
-These are known gaps. None of them is a regression from the templ pages, and
-none has a fix on the way.
+These are known gaps, and none has a fix on the way. Most were never in the
+templ pages. Two are regressions from them, and we'd rather say so plainly: the
+templ edit page could change a config entry's type, and the React pages can't;
+and the templ detail pages opened a key or tenant id saved with leading or
+trailing spaces (they never trimmed), and the React pages can't.
 
 - Plaintext in version history can't be counted. Versions carry no algorithm
   column, so `GetVersion` applies the secret's current algorithm to every
