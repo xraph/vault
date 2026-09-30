@@ -329,19 +329,19 @@ func (m *Manager) SetOverrideWithEntry(ctx context.Context, key, tenantID string
 		return nil, nil, err
 	}
 
-	if err = m.overrides.SetOverride(ctx, o); err != nil {
+	if err := m.overrides.SetOverride(ctx, o); err != nil {
 		return nil, nil, err
 	}
 	m.overrideChanged(ctx, audithook.ActionOverrideSet, key, tenantID)
-	stored, err := m.overrides.GetOverride(ctx, key, m.appID, tenantID)
+	stored, readErr := m.overrides.GetOverride(ctx, key, m.appID, tenantID)
 	switch {
-	case err == nil:
+	case readErr == nil:
 		return stored, entry, nil
-	case errors.Is(err, core.ErrOverrideNotFound):
+	case errors.Is(readErr, core.ErrOverrideNotFound):
 		// Deleted again after the write succeeded: the write still happened.
 		return o, entry, nil
 	default:
-		return nil, nil, err
+		return nil, nil, readErr
 	}
 }
 
