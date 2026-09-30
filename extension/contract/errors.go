@@ -8,6 +8,7 @@ import (
 	"github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/flag"
 )
 
@@ -22,11 +23,20 @@ func mapError(err error) error {
 		return nil
 	}
 	var invalid *flag.ValidationError
+	var invalidConfig *config.ValidationError
 	switch {
 	case errors.As(err, &invalid):
 		// A ValidationError describes the caller's own bad input and carries
 		// no stored data, so its text goes back to the caller as written.
 		return &contract.Error{Code: contract.CodeBadRequest, Message: invalid.Error()}
+	case errors.As(err, &invalidConfig):
+		return &contract.Error{Code: contract.CodeBadRequest, Message: invalidConfig.Error()}
+	case errors.Is(err, vault.ErrConfigNotFound):
+		return &contract.Error{Code: contract.CodeNotFound, Message: "config entry not found"}
+	case errors.Is(err, vault.ErrConfigExists):
+		return &contract.Error{Code: contract.CodeConflict, Message: "a config entry with this key already exists"}
+	case errors.Is(err, vault.ErrConfigVersionNotFound):
+		return &contract.Error{Code: contract.CodeNotFound, Message: "config version not found"}
 	case errors.Is(err, vault.ErrFlagNotFound):
 		return &contract.Error{Code: contract.CodeNotFound, Message: "flag not found"}
 	case errors.Is(err, vault.ErrFlagExists):

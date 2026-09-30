@@ -8,6 +8,7 @@ import (
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/flag"
 )
 
@@ -128,5 +129,41 @@ func TestMapError_FlagErrors(t *testing.T) {
 func TestMapError_OverrideNotFoundIsNotMappedGlobally(t *testing.T) {
 	if got := codeOf(mapError(vault.ErrOverrideNotFound)); got != dashcontract.CodeInternal {
 		t.Errorf("ErrOverrideNotFound code = %q, want INTERNAL (mapped by the flag handler, not globally)", got)
+	}
+}
+
+func TestMapError_ConfigErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		code    dashcontract.ErrorCode
+		message string
+	}{
+		{"config not found", vault.ErrConfigNotFound, dashcontract.CodeNotFound, "config entry not found"},
+		{"config exists", vault.ErrConfigExists, dashcontract.CodeConflict, "a config entry with this key already exists"},
+		{"version not found", vault.ErrConfigVersionNotFound, dashcontract.CodeNotFound, "config version not found"},
+		{
+			"validation",
+			&config.ValidationError{Field: "value", Message: "must be a whole number, got a string"},
+			dashcontract.CodeBadRequest,
+			"config: value: must be a whole number, got a string",
+		},
+		{
+			"wrapped validation",
+			fmt.Errorf("outer: %w", &config.ValidationError{Field: "key", Message: "is required"}),
+			dashcontract.CodeBadRequest,
+			"config: key: is required",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ce *dashcontract.Error
+			if !errors.As(mapError(tc.err), &ce) {
+				t.Fatalf("mapError(%v) is not a *contract.Error", tc.err)
+			}
+			if ce.Code != tc.code || ce.Message != tc.message {
+				t.Errorf("mapError = %s %q, want %s %q", ce.Code, ce.Message, tc.code, tc.message)
+			}
+		})
 	}
 }
