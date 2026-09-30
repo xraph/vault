@@ -25,7 +25,9 @@ var readActions = []string{secretReadAction}
 
 // auditListRequest is the wire request for audit.list. Every filter is
 // optional and a blank one is no filter. IncludeReads false, the default,
-// hides secret reads.
+// hides secret reads, but only when no action is named: it matters only for
+// a request that names no action, and action "secret.get" alone returns the
+// reads.
 type auditListRequest struct {
 	Resource     string `json:"resource,omitempty"`
 	Key          string `json:"key,omitempty"`
@@ -72,7 +74,9 @@ func auditListHandler(deps Deps) func(ctx context.Context, in auditListRequest, 
 			}
 			opts.Since = t
 		}
-		if !in.IncludeReads {
+		// The exclusion is the default view's, not a rule about reads: a
+		// caller who names an action has said which rows they want.
+		if !in.IncludeReads && opts.Action == "" {
 			opts.ExcludeActions = readActions
 		}
 
