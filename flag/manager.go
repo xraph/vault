@@ -112,7 +112,7 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Definition, erro
 	// are live the moment the flag is. A new flag starts empty, so they are
 	// cleared first: a failure here leaves no flag behind, and a retry finds
 	// the key free.
-	if err = m.clearOrphans(ctx, in.Key); err != nil {
+	if err := m.clearOrphans(ctx, in.Key); err != nil {
 		return nil, err
 	}
 
@@ -127,7 +127,7 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Definition, erro
 		Enabled:      in.Enabled,
 		AppID:        m.appID,
 	}
-	if err = m.store.DefineFlag(ctx, def); err != nil {
+	if err := m.store.DefineFlag(ctx, def); err != nil {
 		return nil, err
 	}
 
