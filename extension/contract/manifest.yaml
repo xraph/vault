@@ -36,6 +36,12 @@ intents:
   - { name: config.versions,  kind: query, version: 1, capability: read }
   - { name: config.resolve,   kind: query, version: 1, capability: read }
   - { name: overrides.list,   kind: query, version: 1, capability: read }
+  - { name: config.create,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, overrides.list] }
+  - { name: config.update,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve] }
+  - { name: config.delete,    kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve, overrides.list] }
+  - { name: config.rollback,  kind: command, version: 1, capability: write, invalidates: [config.list, config.detail, config.versions, config.resolve] }
+  - { name: overrides.set,    kind: command, version: 1, capability: write, invalidates: [config.detail, config.resolve, overrides.list] }
+  - { name: overrides.delete, kind: command, version: 1, capability: write, invalidates: [config.detail, config.resolve, overrides.list] }
   - { name: rotation.policies,     kind: query, version: 1, capability: read }
   - { name: rotation.detail,       kind: query, version: 1, capability: read }
   - { name: rotation.savePolicy,   kind: command, version: 1, capability: write, invalidates: [rotation.policies, rotation.detail, secrets.detail] }

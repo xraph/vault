@@ -132,3 +132,60 @@ func TestConfig_MongoShapedValuesProjectAsPlainJSON(t *testing.T) {
 		t.Errorf("resolve = %+v, %v", res, err)
 	}
 }
+
+// An update that names only the value keeps the description and the metadata
+// on a backend that stores every column, and a deleted key that is created
+// again starts with none of its old overrides.
+func TestConfigCommands_SQLite_UpdateKeepsFieldsAndDeleteClearsOverrides(t *testing.T) {
+	v := newSQLiteTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+
+	if _, err := v.ConfigManager().Create(ctx, configmgr.CreateInput{Key: "k", ValueType: "int", Description: "keep me", Value: float64(1)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	stored, err := v.Store().GetConfig(ctx, "k", testAppID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	stored.Metadata = map[string]string{"owner": "ops"}
+	if err = v.Store().SetConfig(ctx, stored); err != nil {
+		t.Fatalf("set metadata: %v", err)
+	}
+
+	out, err := configUpdateHandler(deps)(ctx, decodeCommand[configUpdateRequest](t, `{"key":"k","value":2}`), configPrincipal)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if out.Entry.Value != float64(2) || out.Entry.Description != "keep me" || !reflect.DeepEqual(out.Entry.Metadata, map[string]string{"owner": "ops"}) {
+		t.Errorf("entry = %+v, want description and metadata kept", out.Entry)
+	}
+
+	rb, err := configRollbackHandler(deps)(ctx, configRollbackRequest{Key: "k", Version: 1}, configPrincipal)
+	if err != nil || rb.Entry.Value != float64(1) || rb.Entry.Description != "keep me" || !reflect.DeepEqual(rb.Entry.Metadata, map[string]string{"owner": "ops"}) {
+		t.Errorf("rollback = %+v, %v", rb, err)
+	}
+
+	if _, err = overridesSetHandler(deps)(ctx, decodeCommand[overridesSetRequest](t, `{"key":"k","tenantId":"acme","value":9}`), configPrincipal); err != nil {
+		t.Fatalf("set override: %v", err)
+	}
+	if _, err = configDeleteHandler(deps)(ctx, configDeleteRequest{Key: "k"}, configPrincipal); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err = configCreateHandler(deps)(ctx, decodeCommand[configCreateRequest](t, `{"key":"k","valueType":"int","value":5}`), configPrincipal); err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+
+	det, err := configDetailHandler(deps)(ctx, configDetailRequest{Key: "k"}, configPrincipal)
+	if err != nil || len(det.Overrides) != 0 {
+		t.Errorf("recreated key shows overrides %+v, %v", det.Overrides, err)
+	}
+	res, err := configResolveHandler(deps)(ctx, configResolveRequest{Key: "k", TenantID: "acme"}, configPrincipal)
+	if err != nil || res.Source != sourceAppDefault || res.Value != float64(5) {
+		t.Errorf("resolve after recreate = %+v, %v", res, err)
+	}
+	list, err := overridesListHandler(deps)(ctx, overridesListRequest{TenantID: "acme"}, configPrincipal)
+	if err != nil || list.Total != 0 {
+		t.Errorf("overrides by tenant after recreate = %+v, %v", list, err)
+	}
+}

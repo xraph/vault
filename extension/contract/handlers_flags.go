@@ -283,23 +283,6 @@ type flagResponse struct {
 	Flag FlagSummary `json:"flag"`
 }
 
-// optionalValue decodes a request field that has to tell "absent" from JSON
-// null. raw is the field as json.RawMessage captured it: empty when the
-// field was not sent, the literal null when it was sent as null. Absent
-// returns nil, leaving the stored value alone; anything else returns a
-// pointer to the decoded value, so a present null is a *any holding nil,
-// which only a json flag accepts. It is the one place that decision is made.
-func optionalValue(raw json.RawMessage) (*any, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, badRequest("defaultValue is not valid JSON")
-	}
-	return &v, nil
-}
-
 // flagsCreateRequest is the wire request for flags.create. DefaultValue is a
 // plain any: for a create there is no stored value to keep, so an absent
 // default and a null one are both nil, and the manager refuses nil for every
@@ -355,7 +338,7 @@ func flagsUpdateHandler(deps Deps) func(ctx context.Context, in flagsUpdateReque
 		if err != nil {
 			return flagResponse{}, err
 		}
-		def, err := optionalValue(in.DefaultValue)
+		def, err := optionalValue("defaultValue", in.DefaultValue)
 		if err != nil {
 			return flagResponse{}, err
 		}

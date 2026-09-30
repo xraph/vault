@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/xraph/vault/audit"
 	audithook "github.com/xraph/vault/audit_hook"
 	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/configmgr"
 	"github.com/xraph/vault/override"
 	"github.com/xraph/vault/scope"
 )
@@ -380,5 +382,231 @@ func overridesListHandler(deps Deps) func(ctx context.Context, in overridesListR
 			out = append(out, projectOverride(o, entry))
 		}
 		return overridesListResponse{Overrides: out, Total: total}, nil
+	}
+}
+
+// --- commands ---
+//
+// Every command below goes through deps.Vault.ConfigManager(), never the
+// store. The manager is the one path that checks a value against its entry's
+// type, refuses to overwrite on create, keeps the fields a request did not
+// name, clears a deleted key's overrides, drops the resolver's cache and
+// records the audit row; a store write does none of that. The responses are
+// projected with the same projectors the queries use, so a command answers
+// in the shape the page then reads back.
+
+// configEntryResponse is the wire response of every command that answers
+// with the entry it changed.
+type configEntryResponse struct {
+	Entry ConfigEntrySummary `json:"entry"`
+}
+
+// configCreateRequest is the wire request for config.create. Value is a
+// plain any: a new entry has no stored value to keep, so an absent value and
+// a null one are both nil, and the manager refuses nil for every type but
+// json.
+type configCreateRequest struct {
+	Key         string `json:"key"`
+	ValueType   string `json:"valueType"`
+	Value       any    `json:"value"`
+	Description string `json:"description,omitempty"`
+}
+
+// configCreateHandler answers config.create for deps.Vault.AppID() alone. An
+// existing key is CONFLICT and the entry is left exactly as it was. The type
+// is never guessed: an absent valueType is refused.
+func configCreateHandler(deps Deps) func(ctx context.Context, in configCreateRequest, p contract.Principal) (configEntryResponse, error) {
+	return func(ctx context.Context, in configCreateRequest, _ contract.Principal) (configEntryResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return configEntryResponse{}, err
+		}
+		valueType := strings.TrimSpace(in.ValueType)
+		if valueType == "" {
+			return configEntryResponse{}, badRequest("valueType is required")
+		}
+		entry, err := deps.Vault.ConfigManager().Create(ctx, configmgr.CreateInput{
+			Key:         key,
+			ValueType:   valueType,
+			Description: in.Description,
+			Value:       in.Value,
+		})
+		if err != nil {
+			return configEntryResponse{}, deps.mapError("config.create", err)
+		}
+		return configEntryResponse{Entry: projectConfigEntry(entry)}, nil
+	}
+}
+
+// configUpdateRequest is the wire request for config.update. Every field but
+// the key is optional and only a field that is present changes. Value is a
+// json.RawMessage so an absent value (leave it) and a null one (set it to
+// null, which only a json entry accepts) can be told apart: see
+// optionalValue.
+type configUpdateRequest struct {
+	Key         string          `json:"key"`
+	Value       json.RawMessage `json:"value,omitempty"`
+	ValueType   *string         `json:"valueType,omitempty"`
+	Description *string         `json:"description,omitempty"`
+}
+
+// configUpdateHandler answers config.update for deps.Vault.AppID() alone. A
+// request that asks for what the entry already holds is not an error: the
+// entry comes back and no version is added.
+func configUpdateHandler(deps Deps) func(ctx context.Context, in configUpdateRequest, p contract.Principal) (configEntryResponse, error) {
+	return func(ctx context.Context, in configUpdateRequest, _ contract.Principal) (configEntryResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return configEntryResponse{}, err
+		}
+		value, err := optionalValue("value", in.Value)
+		if err != nil {
+			return configEntryResponse{}, err
+		}
+		var valueType *string
+		if in.ValueType != nil {
+			trimmed := strings.TrimSpace(*in.ValueType)
+			valueType = &trimmed
+		}
+		entry, err := deps.Vault.ConfigManager().Update(ctx, key, configmgr.UpdateInput{
+			Value:       value,
+			ValueType:   valueType,
+			Description: in.Description,
+		})
+		if err != nil {
+			return configEntryResponse{}, deps.mapError("config.update", err)
+		}
+		return configEntryResponse{Entry: projectConfigEntry(entry)}, nil
+	}
+}
+
+// configDeleteRequest is the wire request for config.delete.
+type configDeleteRequest struct {
+	Key string `json:"key"`
+}
+
+// configDeleteResponse is the wire response for config.delete.
+type configDeleteResponse struct {
+	OK  bool   `json:"ok"`
+	Key string `json:"key"`
+}
+
+// configDeleteHandler answers config.delete for deps.Vault.AppID() alone. The
+// manager removes the entry's versions and every override for the key with
+// it, so recreating the key never brings an old override back.
+func configDeleteHandler(deps Deps) func(ctx context.Context, in configDeleteRequest, p contract.Principal) (configDeleteResponse, error) {
+	return func(ctx context.Context, in configDeleteRequest, _ contract.Principal) (configDeleteResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return configDeleteResponse{}, err
+		}
+		if err := deps.Vault.ConfigManager().Delete(ctx, key); err != nil {
+			return configDeleteResponse{}, deps.mapError("config.delete", err)
+		}
+		return configDeleteResponse{OK: true, Key: key}, nil
+	}
+}
+
+// configRollbackRequest is the wire request for config.rollback.
+type configRollbackRequest struct {
+	Key     string `json:"key"`
+	Version int64  `json:"version"`
+}
+
+// configRollbackHandler answers config.rollback for deps.Vault.AppID() alone.
+// The entry keeps its type, description and metadata and takes the old
+// version's value as a new version. A version whose value does not fit the
+// entry's current type is refused.
+func configRollbackHandler(deps Deps) func(ctx context.Context, in configRollbackRequest, p contract.Principal) (configEntryResponse, error) {
+	return func(ctx context.Context, in configRollbackRequest, _ contract.Principal) (configEntryResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return configEntryResponse{}, err
+		}
+		entry, err := deps.Vault.ConfigManager().Rollback(ctx, key, in.Version)
+		if err != nil {
+			return configEntryResponse{}, deps.mapError("config.rollback", err)
+		}
+		return configEntryResponse{Entry: projectConfigEntry(entry)}, nil
+	}
+}
+
+// overridesSetRequest is the wire request for overrides.set. Value is a
+// json.RawMessage because absent is not null: a missing value is refused,
+// where a null is a value (only a json entry accepts it) and so is "".
+type overridesSetRequest struct {
+	Key      string          `json:"key"`
+	TenantID string          `json:"tenantId"`
+	Value    json.RawMessage `json:"value,omitempty"`
+}
+
+// overridesSetResponse is the wire response for overrides.set.
+type overridesSetResponse struct {
+	Override OverrideSummary `json:"override"`
+}
+
+// overridesSetHandler answers overrides.set for deps.Vault.AppID() alone. The
+// entry must exist and the value must be a value of its type. Setting "" is
+// an override of the empty string; taking an override away is
+// overrides.delete.
+func overridesSetHandler(deps Deps) func(ctx context.Context, in overridesSetRequest, p contract.Principal) (overridesSetResponse, error) {
+	return func(ctx context.Context, in overridesSetRequest, _ contract.Principal) (overridesSetResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return overridesSetResponse{}, err
+		}
+		value, err := optionalValue("value", in.Value)
+		if err != nil {
+			return overridesSetResponse{}, err
+		}
+		if value == nil {
+			return overridesSetResponse{}, badRequest("value is required")
+		}
+		o, err := deps.Vault.ConfigManager().SetOverride(ctx, key, in.TenantID, *value)
+		if err != nil {
+			return overridesSetResponse{}, deps.mapError("overrides.set", err)
+		}
+		// The manager has just read this entry and judged the value against
+		// it; the read here is for the projection.
+		entry, err := deps.Vault.Store().GetConfig(ctx, key, deps.Vault.AppID())
+		if err != nil {
+			return overridesSetResponse{}, deps.mapError("overrides.set", err)
+		}
+		return overridesSetResponse{Override: projectOverride(o, entry)}, nil
+	}
+}
+
+// overridesDeleteRequest is the wire request for overrides.delete.
+type overridesDeleteRequest struct {
+	Key      string `json:"key"`
+	TenantID string `json:"tenantId"`
+}
+
+// overridesDeleteResponse is the wire response for overrides.delete.
+type overridesDeleteResponse struct {
+	OK       bool   `json:"ok"`
+	Key      string `json:"key"`
+	TenantID string `json:"tenantId"`
+}
+
+// overridesDeleteHandler answers overrides.delete for deps.Vault.AppID()
+// alone: the tenant reads the app default again. A tenant with no override is
+// NOT_FOUND. The sentinel behind that is shared with the flag overrides, so
+// mapError does not map it; this handler does, because here it can only mean
+// a tenant's config override.
+func overridesDeleteHandler(deps Deps) func(ctx context.Context, in overridesDeleteRequest, p contract.Principal) (overridesDeleteResponse, error) {
+	return func(ctx context.Context, in overridesDeleteRequest, _ contract.Principal) (overridesDeleteResponse, error) {
+		key, err := requireKey(in.Key)
+		if err != nil {
+			return overridesDeleteResponse{}, err
+		}
+		tenantID := strings.TrimSpace(in.TenantID)
+		if err := deps.Vault.ConfigManager().DeleteOverride(ctx, key, in.TenantID); err != nil {
+			if errors.Is(err, vault.ErrOverrideNotFound) {
+				return overridesDeleteResponse{}, &contract.Error{Code: contract.CodeNotFound, Message: "tenant override not found"}
+			}
+			return overridesDeleteResponse{}, deps.mapError("overrides.delete", err)
+		}
+		return overridesDeleteResponse{OK: true, Key: key, TenantID: tenantID}, nil
 	}
 }

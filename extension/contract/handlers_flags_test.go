@@ -902,7 +902,7 @@ func TestOptionalValue(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := optionalValue(json.RawMessage(tt.raw))
+			got, err := optionalValue("defaultValue", json.RawMessage(tt.raw))
 			if err != nil {
 				t.Fatalf("optionalValue: %v", err)
 			}
@@ -914,9 +914,10 @@ func TestOptionalValue(t *testing.T) {
 			}
 		})
 	}
-	if _, err := optionalValue(json.RawMessage(`{`)); codeOf(err) != dashcontract.CodeBadRequest {
-		t.Errorf("malformed raw value: %v, want BAD_REQUEST", err)
-	}
+	_, err := optionalValue("defaultValue", json.RawMessage(`{`))
+	wantCode(t, err, dashcontract.CodeBadRequest, "defaultValue is not valid JSON")
+	_, err = optionalValue("value", json.RawMessage(`{`))
+	wantCode(t, err, dashcontract.CodeBadRequest, "value is not valid JSON")
 }
 
 // --- flags.create ---

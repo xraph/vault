@@ -132,6 +132,24 @@ func Register(
 		{"overrides.list", func() error {
 			return dispatcher.RegisterQuery(d, c, "overrides.list", 1, overridesListHandler(deps))
 		}},
+		{"config.create", func() error {
+			return dispatcher.RegisterCommand(d, c, "config.create", 1, configCreateHandler(deps))
+		}},
+		{"config.update", func() error {
+			return dispatcher.RegisterCommand(d, c, "config.update", 1, configUpdateHandler(deps))
+		}},
+		{"config.delete", func() error {
+			return dispatcher.RegisterCommand(d, c, "config.delete", 1, configDeleteHandler(deps))
+		}},
+		{"config.rollback", func() error {
+			return dispatcher.RegisterCommand(d, c, "config.rollback", 1, configRollbackHandler(deps))
+		}},
+		{"overrides.set", func() error {
+			return dispatcher.RegisterCommand(d, c, "overrides.set", 1, overridesSetHandler(deps))
+		}},
+		{"overrides.delete", func() error {
+			return dispatcher.RegisterCommand(d, c, "overrides.delete", 1, overridesDeleteHandler(deps))
+		}},
 		{"rotation.policies", func() error {
 			return dispatcher.RegisterQuery(d, c, "rotation.policies", 1, rotationPoliciesHandler(deps))
 		}},

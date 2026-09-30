@@ -23,9 +23,9 @@ import (
 // invalidates. The handlers return none of their own, so the client learns
 // what to refetch only if the transport merges the manifest's list in.
 // forge v1.10.0 did not, and against it no dashboard write refreshed any
-// read; this test pins the forge version that does. It runs one secrets
-// command and one flags command, so both halves of the manifest are held to
-// it.
+// read; this test pins the forge version that does. It runs one command from
+// each of secrets, flags and config, so every part of the manifest is held
+// to it.
 func TestCommandInvalidatesReachTheClient(t *testing.T) {
 	tests := []struct {
 		intent  string
@@ -33,11 +33,14 @@ func TestCommandInvalidatesReachTheClient(t *testing.T) {
 	}{
 		{"secrets.create", `{"key":"transport/check","value":"v1"}`},
 		{"flags.setEnabled", `{"key":"transport-flag","enabled":false}`},
+		{"overrides.delete", `{"key":"transport-cfg","tenantId":"acme"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.intent, func(t *testing.T) {
 			v, _ := newTestVault(t)
 			seedFlag(t, v, "transport-flag", flag.TypeBool, false, true)
+			seedConfig(t, v, "transport-cfg", "string", "app")
+			seedOverride(t, v, "transport-cfg", "acme", "tenant")
 
 			reg := dashcontract.NewRegistry()
 			wreg := dashcontract.NewWardenRegistry()
