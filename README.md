@@ -2,15 +2,15 @@
 
 Composable secrets, feature flags, and runtime config for Go.
 
-Vault is a Go library that unifies three capabilities behind a single API surface: **encrypted secrets**, **rule-based feature flags**, and **hot-reloadable runtime configuration**. It is a library, not a service — you import it, bring your own database and encryption key, and control the process lifecycle. Vault provides the plumbing: encryption, versioning, tenant-scoped evaluation, rotation, audit, and a plugin system for extending every subsystem.
+Vault is a Go library that unifies three capabilities behind a single API surface: **encrypted secrets**, **rule-based feature flags**, and **hot-reloadable runtime configuration**. It is a library, not a service: you import it, bring your own database and encryption key, and control the process lifecycle. Vault provides the plumbing: encryption, versioning, tenant-scoped evaluation, rotation, audit, and a plugin system for extending every subsystem.
 
-Vault is part of the Forge ecosystem and integrates cleanly with [Forge](https://github.com/xraph/forge) extensions, [Grove](https://github.com/xraph/grove) ORM stores, and [Confy](https://github.com/xraph/confy) config sources — but none of them are required to use it standalone.
+Vault is part of the Forge ecosystem and integrates cleanly with [Forge](https://github.com/xraph/forge) extensions, [Grove](https://github.com/xraph/grove) ORM stores, and [Confy](https://github.com/xraph/confy) config sources, but none of them are required to use it standalone.
 
 ## Features
 
 **Secrets**
 - AES-256-GCM encryption at rest, transparent decryption on read
-- Auto-versioning — every `Set` archives the previous value; fetch any historical version by number
+- Auto-versioning: every `Set` archives the previous value; fetch any historical version by number
 - Environment-variable key provider with hex/base64 auto-detection
 - Optional metadata (expiration, custom fields)
 
@@ -28,11 +28,11 @@ Vault is part of the Forge ecosystem and integrates cleanly with [Forge](https:/
 - Composable sources: memory, env, database, priority chain
 
 **Cross-cutting**
-- **Tenant isolation by design** — `scope.WithTenantID(ctx, ...)` propagates to every service via `context.Context`; cross-tenant reads are structurally impossible
-- **Secret rotation** — background manager with per-key `Rotator` callbacks, automatic versioning, and record-keeping
-- **Audit logging** — append-only trail of action/resource/outcome with full scope context; optional hook for forwarding to external systems
-- **Plugin system** — register plugins that implement any subset of eight capability interfaces (`OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, `RotationStrategy`)
-- **TypeID identifiers** — every entity uses type-prefixed, K-sortable UUIDv7 IDs (`sec_`, `flag_`, `cfg_`, …); passing the wrong prefix fails at parse time
+- **Tenant isolation by design**: `scope.WithTenantID(ctx, ...)` propagates to every service via `context.Context`; cross-tenant reads are structurally impossible
+- **Secret rotation**: background manager with per-key `Rotator` callbacks, automatic versioning, and record-keeping
+- **Audit logging**: append-only trail of action/resource/outcome with full scope context; optional hook for forwarding to external systems
+- **Plugin system**: register plugins that implement any subset of eight capability interfaces (`OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, `RotationStrategy`)
+- **TypeID identifiers**: every entity uses type-prefixed, K-sortable UUIDv7 IDs (`sec_`, `flag_`, `cfg_`, …); passing the wrong prefix fails at parse time
 
 ## Install
 
@@ -68,19 +68,19 @@ func main() {
         log.Fatal(err)
     }
 
-    // Secrets — encrypted, auto-versioned
+    // Secrets: encrypted, auto-versioned
     secrets := secret.NewService(store, enc, secret.WithAppID("myapp"))
     meta, _ := secrets.Set(ctx, "openai-api-key", []byte("sk-abc123"), "myapp")
     sec, _ := secrets.Get(ctx, "openai-api-key", "myapp")
     fmt.Printf("secret v%d = %s\n", meta.Version, sec.Value)
 
-    // Feature flags — evaluated against context scope
+    // Feature flags: evaluated against context scope
     flags := flag.NewService(flag.NewEngine(store), flag.WithAppID("myapp"))
     if flags.Bool(ctx, "new-dashboard", false) {
         fmt.Println("new dashboard enabled")
     }
 
-    // Runtime config — typed accessors with defaults
+    // Runtime config: typed accessors with defaults
     cfg := config.NewService(store, config.WithAppID("myapp"))
     _ = cfg.Set(ctx, "rate-limit", 100, "myapp")
     fmt.Printf("rate limit = %d\n", cfg.Int(ctx, "rate-limit", 50))
@@ -91,7 +91,7 @@ See [docs/content/docs/getting-started.mdx](docs/content/docs/getting-started.md
 
 ## Storage backends
 
-Every backend satisfies the same composite [`store.Store`](store/store.go) interface — secrets, flags, config, overrides, rotation, and audit — so switching stores is a single type change. All expose `Migrate`, `Ping`, and `Close`.
+Every backend satisfies the same composite [`store.Store`](store/store.go) interface (secrets, flags, config, overrides, rotation and audit), so switching stores is a single type change. All expose `Migrate`, `Ping`, and `Close`.
 
 | Backend | Import | Use case |
 | --- | --- | --- |
@@ -124,9 +124,9 @@ The root [`Config`](config.go) struct controls instance-wide behaviour. All fiel
 
 | Field | Purpose | Default |
 | --- | --- | --- |
-| `AppID` | Application identifier used to scope secrets, flags, and config | — |
-| `EncryptionKey` | 32-byte AES-256-GCM master key | — |
-| `EncryptionKeyEnv` | Fallback environment variable holding the key (hex or base64) | — |
+| `AppID` | Application identifier used to scope secrets, flags, and config | none |
+| `EncryptionKey` | 32-byte AES-256-GCM master key | none |
+| `EncryptionKeyEnv` | Fallback environment variable holding the key (hex or base64) | none |
 | `FlagCacheTTL` | TTL for the flag evaluation cache | `30s` |
 | `SourcePollInterval` | Interval for polling database-backed config sources | `30s` |
 
@@ -154,16 +154,16 @@ Requires Go 1.25+. See [go.mod](go.mod) for the full dependency set.
 
 A full documentation site lives under [docs/](docs/) and can be served locally with `make docs`. Key pages:
 
-- [Getting started](docs/content/docs/getting-started.mdx) — eight-step walkthrough from install to Postgres
-- [Architecture](docs/content/docs/architecture.mdx) — package diagram, request flow, plugin system, package index
-- Concepts — [entities](docs/content/docs/concepts/entities.mdx), [multi-tenancy](docs/content/docs/concepts/multi-tenancy.mdx), [identity](docs/content/docs/concepts/identity.mdx), [errors](docs/content/docs/concepts/errors.mdx)
-- Subsystems — [secrets](docs/content/docs/subsystems/secrets.mdx), [feature flags](docs/content/docs/subsystems/feature-flags.mdx), [runtime config](docs/content/docs/subsystems/runtime-config.mdx), [overrides](docs/content/docs/subsystems/overrides.mdx), [rotation](docs/content/docs/subsystems/rotation.mdx), [audit](docs/content/docs/subsystems/audit.mdx), [encryption](docs/content/docs/subsystems/encryption.mdx), [sources](docs/content/docs/subsystems/sources.mdx), [plugins](docs/content/docs/subsystems/plugins.mdx), [observability](docs/content/docs/subsystems/observability.mdx)
-- Stores — [memory](docs/content/docs/stores/memory.mdx), [postgres](docs/content/docs/stores/postgres.mdx), [sqlite](docs/content/docs/stores/sqlite.mdx), [mongo](docs/content/docs/stores/mongo.mdx), [grove](docs/content/docs/stores/grove.mdx)
-- Guides — [full example](docs/content/docs/guides/full-example.mdx), [custom store](docs/content/docs/guides/custom-store.mdx), [Forge extension](docs/content/docs/guides/forge-extension.mdx), [Confy integration](docs/content/docs/guides/confy-integration.mdx), [multi-tenant patterns](docs/content/docs/guides/multi-tenant-patterns.mdx)
+- [Getting started](docs/content/docs/getting-started.mdx): eight-step walkthrough from install to Postgres
+- [Architecture](docs/content/docs/architecture.mdx): package diagram, request flow, plugin system, package index
+- Concepts: [entities](docs/content/docs/concepts/entities.mdx), [multi-tenancy](docs/content/docs/concepts/multi-tenancy.mdx), [identity](docs/content/docs/concepts/identity.mdx), [errors](docs/content/docs/concepts/errors.mdx)
+- Subsystems: [secrets](docs/content/docs/subsystems/secrets.mdx), [feature flags](docs/content/docs/subsystems/feature-flags.mdx), [runtime config](docs/content/docs/subsystems/runtime-config.mdx), [overrides](docs/content/docs/subsystems/overrides.mdx), [rotation](docs/content/docs/subsystems/rotation.mdx), [audit](docs/content/docs/subsystems/audit.mdx), [encryption](docs/content/docs/subsystems/encryption.mdx), [sources](docs/content/docs/subsystems/sources.mdx), [plugins](docs/content/docs/subsystems/plugins.mdx), [observability](docs/content/docs/subsystems/observability.mdx)
+- Stores: [memory](docs/content/docs/stores/memory.mdx), [postgres](docs/content/docs/stores/postgres.mdx), [sqlite](docs/content/docs/stores/sqlite.mdx), [mongo](docs/content/docs/stores/mongo.mdx), [grove](docs/content/docs/stores/grove.mdx)
+- Guides: [full example](docs/content/docs/guides/full-example.mdx), [custom store](docs/content/docs/guides/custom-store.mdx), [Forge extension](docs/content/docs/guides/forge-extension.mdx), [Confy integration](docs/content/docs/guides/confy-integration.mdx), [multi-tenant patterns](docs/content/docs/guides/multi-tenant-patterns.mdx)
 
 ## Status
 
-Actively developed. Core service APIs (secret, flag, config) are stable; storage backends and the Forge/Confy integrations continue to evolve — see recent commits on `main`.
+Actively developed. Core service APIs (secret, flag, config) are stable; storage backends and the Forge/Confy integrations continue to evolve. See recent commits on `main`.
 
 ## License
 
