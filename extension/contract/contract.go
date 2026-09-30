@@ -2,9 +2,9 @@
 // registers the `vault` contributor with the dashboard's contract registry
 // and answers its intents from the live Vault instance.
 //
-// Vault's templ dashboard still renders server-side for now. This package is
-// the parallel surface the React shell reads, and it will outlive the templ
-// one.
+// This package is the surface the React dashboard shell reads. The templ
+// dashboard it once ran beside is gone; MIGRATION.md at the repo root records
+// what moved.
 package contract
 
 import (

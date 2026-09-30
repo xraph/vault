@@ -3,7 +3,7 @@ title: Forge Integration
 description: Using Vault with the Forge framework.
 ---
 
-This guide covers patterns for integrating Vault into a [Forge](https://github.com/xraph/forge)-style application. While Vault does not ship a pre-built Forge extension, the patterns below show how to wire stores, services, middleware, and lifecycle management into Forge's architecture.
+Vault ships a Forge extension in `extension/`. Register it with your app and it builds the store, sets up encryption and audit hooks, and exposes the dashboard contract, so most apps never need more than that. This guide covers the same ground by hand, for when you want more control: your own scope middleware, service registration, lifecycle handling and router. The later sections on Grove, confy mounting and the dashboard describe what the extension itself does.
 
 ## HTTP middleware for scope injection
 

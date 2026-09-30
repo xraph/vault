@@ -105,10 +105,10 @@ Every backend satisfies the same composite [`store.Store`](store/store.go) inter
 
 Vault is organised as a root package with shared types, six service packages implementing domain logic, supporting packages for encryption/scoping/sources, and a set of store backends implementing one composite interface.
 
-- Services — [secret/](secret/), [flag/](flag/), [config/](config/), [override/](override/), [rotation/](rotation/), [audit/](audit/)
-- Supporting — [crypto/](crypto/) (AES-256-GCM), [id/](id/) (TypeID), [scope/](scope/) (context keys), [source/](source/) (memory/env/database/chain), [plugin/](plugin/), [audit_hook/](audit_hook/), [metrics/](metrics/)
-- Stores — [store/memory/](store/memory/), [store/postgres/](store/postgres/), [store/sqlite/](store/sqlite/), [store/mongo/](store/mongo/), [store/grovestore/](store/grovestore/)
-- Integrations — [extension/](extension/) (Forge), [confy/](confy/) (Confy), [extension/contract/](extension/contract/) (dashboard contract)
+- Services: [secret/](secret/), [flag/](flag/), [config/](config/), [override/](override/), [rotation/](rotation/), [audit/](audit/)
+- Supporting: [crypto/](crypto/) (AES-256-GCM), [id/](id/) (TypeID), [scope/](scope/) (context keys), [source/](source/) (memory/env/database/chain), [plugin/](plugin/), [audit_hook/](audit_hook/), [metrics/](metrics/)
+- Stores: [store/memory/](store/memory/), [store/postgres/](store/postgres/), [store/sqlite/](store/sqlite/), [store/mongo/](store/mongo/), [store/grovestore/](store/grovestore/)
+- Integrations: [extension/](extension/) (Forge), [confy/](confy/) (Confy), [extension/contract/](extension/contract/) (dashboard contract)
 
 Every operation follows the same three-phase flow: **scope** the context → **resolve** the value (tenant override → rule match → default) → **respond** with a coerced type or the caller's default on error. See [docs/content/docs/architecture.mdx](docs/content/docs/architecture.mdx) for the full package diagram and request-flow breakdown.
 
