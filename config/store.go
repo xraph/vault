@@ -13,7 +13,9 @@ type Store interface {
 	// DeleteConfig removes a config entry.
 	DeleteConfig(ctx context.Context, key, appID string) error
 
-	// ListConfig returns config entries for an app.
+	// ListConfig returns the config entries for an app in key order, filtered
+	// by opts.KeyPrefix and then paged. An empty result is an empty slice,
+	// never nil.
 	ListConfig(ctx context.Context, appID string, opts ListOpts) ([]*Entry, error)
 
 	// GetConfigVersion retrieves a specific version of a config entry.
@@ -25,4 +27,9 @@ type Store interface {
 	// CountConfig returns the total number of config entries for an app,
 	// independent of any paging.
 	CountConfig(ctx context.Context, appID string) (int64, error)
+
+	// CountConfigMatching returns the number of config entries for an app
+	// that match opts.KeyPrefix. Limit and Offset are ignored, so it is the
+	// total behind a page returned by ListConfig with the same opts.
+	CountConfigMatching(ctx context.Context, appID string, opts ListOpts) (int64, error)
 }

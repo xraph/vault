@@ -37,4 +37,9 @@ type ListOpts struct {
 	Limit  int
 	Offset int
 	AppID  string
+
+	// KeyPrefix restricts the list to keys that start with it, matched as a
+	// literal: %, _ and regex characters carry no special meaning. Empty
+	// means every key.
+	KeyPrefix string
 }

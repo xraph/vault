@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/xraph/vault"
@@ -134,6 +135,9 @@ func (s *Store) ListConfig(ctx context.Context, appID string, opts cfgpkg.ListOp
 	q := s.pgdb().NewSelect(&models).
 		Where("app_id = ?", appID).
 		OrderExpr("key ASC")
+	if opts.KeyPrefix != "" {
+		q = q.Where(`key LIKE ? ESCAPE '\'`, escapeLike(opts.KeyPrefix)+"%")
+	}
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -203,4 +207,20 @@ func (s *Store) CountConfig(ctx context.Context, appID string) (int64, error) {
 	return s.pgdb().NewSelect((*ConfigModel)(nil)).
 		Where("app_id = ?", appID).
 		Count(ctx)
+}
+
+// CountConfigMatching returns the number of config entries belonging to appID
+// whose key starts with opts.KeyPrefix. Limit and Offset are ignored.
+func (s *Store) CountConfigMatching(ctx context.Context, appID string, opts cfgpkg.ListOpts) (int64, error) {
+	q := s.pgdb().NewSelect((*ConfigModel)(nil)).Where("app_id = ?", appID)
+	if opts.KeyPrefix != "" {
+		q = q.Where(`key LIKE ? ESCAPE '\'`, escapeLike(opts.KeyPrefix)+"%")
+	}
+	return q.Count(ctx)
+}
+
+// escapeLike escapes the LIKE wildcards in a literal prefix, for use with
+// ESCAPE '\'.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	log "github.com/xraph/go-utils/log"
@@ -618,7 +619,7 @@ func (s *Store) DeleteConfig(ctx context.Context, key, appID string) error {
 func (s *Store) ListConfig(ctx context.Context, appID string, opts cfgpkg.ListOpts) ([]*cfgpkg.Entry, error) {
 	var models []ConfigModel
 	q := s.mdb.NewFind(&models).
-		Filter(bson.M{"app_id": appID}).
+		Filter(configFilter(bson.M{"app_id": appID}, opts)).
 		Sort(bson.D{{Key: "key", Value: 1}})
 
 	if opts.Limit > 0 {
@@ -980,6 +981,23 @@ func flagFilter(f bson.M, opts flag.ListOpts) bson.M {
 // CountConfig returns the number of config entries belonging to appID.
 func (s *Store) CountConfig(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*ConfigModel)(nil)).Filter(bson.M{"app_id": appID}).Count(ctx)
+}
+
+// CountConfigMatching returns the number of config entries belonging to appID
+// whose key starts with opts.KeyPrefix. Limit and Offset are ignored.
+func (s *Store) CountConfigMatching(ctx context.Context, appID string, opts cfgpkg.ListOpts) (int64, error) {
+	return s.mdb.NewFind((*ConfigModel)(nil)).
+		Filter(configFilter(bson.M{"app_id": appID}, opts)).
+		Count(ctx)
+}
+
+// configFilter adds an anchored, literal key-prefix match to a config filter
+// when opts asks for one.
+func configFilter(f bson.M, opts cfgpkg.ListOpts) bson.M {
+	if opts.KeyPrefix != "" {
+		f["key"] = bson.M{"$regex": "^" + regexp.QuoteMeta(opts.KeyPrefix)}
+	}
+	return f
 }
 
 // CountOverrides returns the number of tenant overrides belonging to appID.

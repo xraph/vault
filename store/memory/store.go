@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -467,7 +468,7 @@ func (m *Store) ListConfig(_ context.Context, appID string, opts config.ListOpts
 
 	result := make([]*config.Entry, 0, len(m.configs))
 	for _, e := range m.configs {
-		if e.AppID != appID {
+		if e.AppID != appID || !strings.HasPrefix(e.Key, opts.KeyPrefix) {
 			continue
 		}
 		cp := *e
@@ -847,7 +848,7 @@ func applyPaginationCfg(result []*config.Entry, offset, limit int) []*config.Ent
 	if offset > 0 && offset < len(result) {
 		result = result[offset:]
 	} else if offset >= len(result) {
-		return nil
+		return []*config.Entry{}
 	}
 	if limit > 0 && limit < len(result) {
 		result = result[:limit]
@@ -916,6 +917,21 @@ func (m *Store) CountConfig(_ context.Context, appID string) (int64, error) {
 	var n int64
 	for _, e := range m.configs {
 		if e.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountConfigMatching returns the number of config entries belonging to appID
+// whose key starts with opts.KeyPrefix. Limit and Offset are ignored.
+func (m *Store) CountConfigMatching(_ context.Context, appID string, opts config.ListOpts) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, e := range m.configs {
+		if e.AppID == appID && strings.HasPrefix(e.Key, opts.KeyPrefix) {
 			n++
 		}
 	}
