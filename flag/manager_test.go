@@ -618,3 +618,80 @@ func TestManagerHookGetsTheCallerContext(t *testing.T) {
 		t.Errorf("hook = %q %q %q", gotAction, gotKey, gotApp)
 	}
 }
+
+// failingStore lets a test make one store call fail. The embedded memory
+// store does everything else.
+type failingStore struct {
+	*memory.Store
+	failSetRules bool
+	failListOv   bool
+	failGetAfter int // when > 0, the Nth GetFlagDefinition call and later fail
+	gets         int
+}
+
+var errInjected = errors.New("injected store failure")
+
+func (f *failingStore) SetFlagRules(ctx context.Context, key, appID string, rules []*flag.Rule) error {
+	if f.failSetRules {
+		return errInjected
+	}
+	return f.Store.SetFlagRules(ctx, key, appID, rules)
+}
+
+func (f *failingStore) ListFlagTenantOverrides(ctx context.Context, key, appID string) ([]*flag.TenantOverride, error) {
+	if f.failListOv {
+		return nil, errInjected
+	}
+	return f.Store.ListFlagTenantOverrides(ctx, key, appID)
+}
+
+func (f *failingStore) GetFlagDefinition(ctx context.Context, key, appID string) (*flag.Definition, error) {
+	f.gets++
+	if f.failGetAfter > 0 && f.gets >= f.failGetAfter {
+		return nil, errInjected
+	}
+	return f.Store.GetFlagDefinition(ctx, key, appID)
+}
+
+// A create that cannot clear what a key left behind must leave nothing
+// behind of its own: the flag is defined only after the clearing succeeded.
+func TestManagerCreateFailedOrphanClearLeavesNoFlag(t *testing.T) {
+	for name, set := range map[string]func(*failingStore){
+		"rules":     func(f *failingStore) { f.failSetRules = true },
+		"overrides": func(f *failingStore) { f.failListOv = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Both memory (rules refuse a missing flag) and a backend that
+			// accepts them can reach this path; a rules failure that is
+			// not ErrFlagNotFound must abort the create.
+			fs := &failingStore{Store: memory.New()}
+			set(fs)
+			m := flag.NewManager(fs, nil, flag.WithManagerAppID(mgrApp))
+
+			_, err := m.Create(bg(), flag.CreateInput{Key: "half", Type: flag.TypeBool, DefaultValue: false, Enabled: true})
+			if !errors.Is(err, errInjected) {
+				t.Fatalf("Create error = %v, want the injected failure", err)
+			}
+			if _, gerr := fs.Store.GetFlagDefinition(bg(), "half", mgrApp); !errors.Is(gerr, vault.ErrFlagNotFound) {
+				t.Errorf("flag after a failed create: err = %v, want ErrFlagNotFound (nothing half-created)", gerr)
+			}
+		})
+	}
+}
+
+// If the store misbehaves once the flag is defined, the flag exists, so the
+// write must still be audited and the cache dropped before Create returns.
+func TestManagerCreateAuditsEvenWhenTheReadBackFails(t *testing.T) {
+	fs := &failingStore{Store: memory.New(), failGetAfter: 2} // 1st: existence check, 2nd: read back
+	var actions []string
+	m := flag.NewManager(fs, nil, flag.WithManagerAppID(mgrApp),
+		flag.WithOnFlagMutate(func(_ context.Context, action, _, _ string) { actions = append(actions, action) }))
+
+	_, err := m.Create(bg(), flag.CreateInput{Key: "made", Type: flag.TypeBool, DefaultValue: false, Enabled: true})
+	if !errors.Is(err, errInjected) {
+		t.Fatalf("Create error = %v, want the injected failure", err)
+	}
+	if len(actions) != 1 || actions[0] != audithook.ActionFlagCreated {
+		t.Errorf("audit actions = %v, want [%s]: the flag was defined", actions, audithook.ActionFlagCreated)
+	}
+}

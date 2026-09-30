@@ -107,6 +107,15 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Definition, erro
 		return nil, err
 	}
 
+	// Rules and overrides written for this key before the flag existed
+	// (a delete that failed part way, or an override set on a missing flag)
+	// are live the moment the flag is. A new flag starts empty, so they are
+	// cleared first: a failure here leaves no flag behind, and a retry finds
+	// the key free.
+	if err = m.clearOrphans(ctx, in.Key); err != nil {
+		return nil, err
+	}
+
 	def := &Definition{
 		Entity:       core.NewEntity(),
 		ID:           id.NewFlagID(),
@@ -118,31 +127,37 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Definition, erro
 		Enabled:      in.Enabled,
 		AppID:        m.appID,
 	}
-	err = m.store.DefineFlag(ctx, def)
-	if err != nil {
+	if err = m.store.DefineFlag(ctx, def); err != nil {
 		return nil, err
 	}
 
-	// Rules and overrides written for this key before the flag existed
-	// (a delete that failed part way, or an override set on a missing flag)
-	// are live the moment the flag is. A new flag starts empty.
-	err = m.store.SetFlagRules(ctx, in.Key, m.appID, []*Rule{})
-	if err != nil {
-		return nil, err
-	}
-	orphans, err := m.store.ListFlagTenantOverrides(ctx, in.Key, m.appID)
-	if err != nil {
-		return nil, err
-	}
-	for _, o := range orphans {
-		if err := m.store.DeleteFlagTenantOverride(ctx, in.Key, m.appID, o.TenantID); err != nil && !errors.Is(err, core.ErrOverrideNotFound) {
-			return nil, err
-		}
-	}
-
+	// The flag exists from here on, so whatever happens next it is audited
+	// and the cache is dropped before Create returns.
 	m.invalidate(in.Key)
 	m.audit(ctx, audithook.ActionFlagCreated, in.Key)
 	return m.store.GetFlagDefinition(ctx, in.Key, m.appID)
+}
+
+// clearOrphans drops the rules and tenant overrides stored under a key that
+// has no flag. A backend that refuses rules for a missing flag (memory
+// returns ErrFlagNotFound) has nothing to clear there, so that one error is
+// not a failure.
+func (m *Manager) clearOrphans(ctx context.Context, key string) error {
+	err := m.store.SetFlagRules(ctx, key, m.appID, []*Rule{})
+	if err != nil && !errors.Is(err, core.ErrFlagNotFound) {
+		return err
+	}
+	orphans, err := m.store.ListFlagTenantOverrides(ctx, key, m.appID)
+	if err != nil {
+		return err
+	}
+	for _, o := range orphans {
+		err = m.store.DeleteFlagTenantOverride(ctx, key, m.appID, o.TenantID)
+		if err != nil && !errors.Is(err, core.ErrOverrideNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // Update changes the description, default value or tags of an existing flag.
