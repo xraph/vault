@@ -14,6 +14,11 @@ import (
 )
 
 // Rotator produces a new secret value from the current one.
+//
+// The error a Rotator returns is stored verbatim in the audit log's metadata
+// and shown to dashboard viewers, so a Rotator must never put a secret value
+// in its error text: not the current value, not the new one, not a credential
+// it used along the way. Describe what failed, not what it held.
 type Rotator func(ctx context.Context, currentValue []byte) ([]byte, error)
 
 // ManagerOption configures the Manager.
@@ -61,10 +66,15 @@ func WithClaimLease(d time.Duration) ManagerOption {
 
 // WithOnRotate registers a callback invoked once for every RotateNow attempt,
 // whether it came from the scheduled loop or a manual call. err is nil after a
-// successful rotation, and only once the rotation record is written; any
-// other outcome (no rotator, a failed read, a rotator error, a failed write)
+// successful rotation: it is nil once the new value is stored, and a failed
+// write of the rotation record is logged, not reported. Any other outcome (no
+// rotator, a failed read, a rotator error, a failed store of the new value)
 // passes the error RotateNow returns. The callback runs under the context
 // RotateNow was given, so a caller's scope reaches it.
+//
+// The vault's own callback stores the error text verbatim in the audit log,
+// where dashboard viewers read it, so a Rotator must never put a secret value
+// in its error.
 func WithOnRotate(fn func(ctx context.Context, key, appID string, err error)) ManagerOption {
 	return func(m *Manager) { m.onRotate = fn }
 }
@@ -108,6 +118,10 @@ func NewManager(store Store, secretSvc *secret.Service, opts ...ManagerOption) *
 }
 
 // RegisterRotator registers a rotator function for the given secret key.
+//
+// If r fails, its error text is stored verbatim in the audit log's metadata
+// and shown to dashboard viewers, so r must never put a secret value in its
+// error.
 func (m *Manager) RegisterRotator(secretKey string, r Rotator) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
