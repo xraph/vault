@@ -562,13 +562,10 @@ func overridesSetHandler(deps Deps) func(ctx context.Context, in overridesSetReq
 		if value == nil {
 			return overridesSetResponse{}, badRequest("value is required")
 		}
-		o, err := deps.Vault.ConfigManager().SetOverride(ctx, key, in.TenantID, *value)
-		if err != nil {
-			return overridesSetResponse{}, deps.mapError("overrides.set", err)
-		}
-		// The manager has just read this entry and judged the value against
-		// it; the read here is for the projection.
-		entry, err := deps.Vault.Store().GetConfig(ctx, key, deps.Vault.AppID())
+		// The entry is the one the manager judged the value against. Reading
+		// it again here would let a delete that lands after the write turn a
+		// stored override into an error response.
+		o, entry, err := deps.Vault.ConfigManager().SetOverrideWithEntry(ctx, key, in.TenantID, *value)
 		if err != nil {
 			return overridesSetResponse{}, deps.mapError("overrides.set", err)
 		}

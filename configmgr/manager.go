@@ -285,19 +285,28 @@ func (m *Manager) Delete(ctx context.Context, key string) error {
 // tenant silently read the caller's fallback instead of the app value. An
 // existing override for the tenant keeps its id, creation time and metadata.
 func (m *Manager) SetOverride(ctx context.Context, key, tenantID string, value any) (*override.Override, error) {
+	o, _, err := m.SetOverrideWithEntry(ctx, key, tenantID, value)
+	return o, err
+}
+
+// SetOverrideWithEntry is SetOverride that also returns the entry the value
+// was judged against, so a caller that projects the override next to its
+// entry need not read the entry again and risk a concurrent delete turning a
+// stored override into an error.
+func (m *Manager) SetOverrideWithEntry(ctx context.Context, key, tenantID string, value any) (*override.Override, *config.Entry, error) {
 	entry, err := m.store.GetConfig(ctx, key, m.appID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	tenantID, err = validateTenant(tenantID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if !config.KnownType(entry.ValueType) {
-		return nil, unsupportedType(entry.ValueType)
+		return nil, nil, unsupportedType(entry.ValueType)
 	}
 	if verr := validateValue(entry.ValueType, value); verr != nil {
-		return nil, verr
+		return nil, nil, verr
 	}
 
 	o := &override.Override{
@@ -317,14 +326,23 @@ func (m *Manager) SetOverride(ctx context.Context, key, tenantID string, value a
 		o.Metadata = existing.Metadata
 	case errors.Is(err, core.ErrOverrideNotFound):
 	default:
-		return nil, err
+		return nil, nil, err
 	}
 
-	if err := m.overrides.SetOverride(ctx, o); err != nil {
-		return nil, err
+	if err = m.overrides.SetOverride(ctx, o); err != nil {
+		return nil, nil, err
 	}
 	m.overrideChanged(ctx, audithook.ActionOverrideSet, key, tenantID)
-	return m.overrides.GetOverride(ctx, key, m.appID, tenantID)
+	stored, err := m.overrides.GetOverride(ctx, key, m.appID, tenantID)
+	switch {
+	case err == nil:
+		return stored, entry, nil
+	case errors.Is(err, core.ErrOverrideNotFound):
+		// Deleted again after the write succeeded: the write still happened.
+		return o, entry, nil
+	default:
+		return nil, nil, err
+	}
 }
 
 // DeleteOverride removes a tenant's override. It does not read the entry: an

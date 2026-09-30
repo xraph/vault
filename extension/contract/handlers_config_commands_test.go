@@ -10,7 +10,9 @@ import (
 	dashcontract "github.com/xraph/forge/extensions/dashboard/contract"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/config"
 	"github.com/xraph/vault/configmgr"
+	"github.com/xraph/vault/store/memory"
 )
 
 // --- helpers ---
@@ -424,5 +426,46 @@ func TestOverridesDelete_RemovesAnOrphan(t *testing.T) {
 	list, err := overridesListHandler(deps)(ctx, overridesListRequest{Key: "gone"}, configPrincipal)
 	if err != nil || list.Total != 0 {
 		t.Errorf("orphan still listed: %+v, %v", list, err)
+	}
+}
+
+// flakyReadStore refuses every GetConfig after the first for its key, the way
+// a concurrent delete would.
+type flakyReadStore struct {
+	armed bool
+	*memory.Store
+	reads int
+}
+
+func (s *flakyReadStore) GetConfig(ctx context.Context, key, appID string) (*config.Entry, error) {
+	s.reads++
+	if s.armed && s.reads > 1 {
+		return nil, vault.ErrConfigNotFound
+	}
+	return s.Store.GetConfig(ctx, key, appID)
+}
+
+// overrides.set answers from the entry the manager already read, so an entry
+// deleted between the write and the response cannot turn a stored override
+// into an error.
+func TestOverridesSet_DoesNotReadTheEntryASecondTime(t *testing.T) {
+	st := &flakyReadStore{Store: memory.New()}
+	v, err := vault.New(vault.WithStore(st), vault.WithAppID(testAppID), vault.WithEncryptionKey(testEncryptionKey))
+	if err != nil {
+		t.Fatalf("vault.New: %v", err)
+	}
+	seedConfig(t, v, "k", "string", "app")
+	st.reads, st.armed = 0, true
+
+	out, err := overridesSetHandler(Deps{Vault: v})(context.Background(),
+		decodeCommand[overridesSetRequest](t, `{"key":"k","tenantId":"acme","value":"tenant"}`), configPrincipal)
+	if err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if o := out.Override; o.Key != "k" || o.TenantID != "acme" || o.Value != "tenant" || !o.KeyExists || !o.ValueMatchesType {
+		t.Errorf("override = %+v", o)
+	}
+	if st.reads != 1 {
+		t.Errorf("the entry was read %d times, want once", st.reads)
 	}
 }
