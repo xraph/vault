@@ -114,7 +114,7 @@ Every operation follows the same three-phase flow: **scope** the context → **r
 
 ## Ecosystem integration
 
-**Forge extension.** Mount Vault as a Forge extension to auto-wire the store, encryption, audit hooks, and the dashboard contract into your Forge app. The React dashboard plugin, `@forge-go/dashboard-plugin-vault`, reads that contract (see [MIGRATION.md](MIGRATION.md) for what moved from the old templ pages). See [extension/](extension/) and [docs/content/docs/guides/forge-extension.mdx](docs/content/docs/guides/forge-extension.mdx).
+**Forge extension.** Mount Vault as a Forge extension to auto-wire the store, encryption and the dashboard contract into your Forge app (audit is always on). The React dashboard plugin, `@forge-go/dashboard-plugin-vault`, reads that contract (see [MIGRATION.md](MIGRATION.md) for what moved from the old templ pages). See [extension/](extension/) and [docs/content/docs/guides/forge-extension.mdx](docs/content/docs/guides/forge-extension.mdx).
 
 **Confy source.** Adapt Vault as a Confy `ConfigSource` and `SecretProvider` so a single `confy.Load` call pulls typed config and encrypted secrets through Vault alongside your other sources. See [confy/](confy/) and [docs/content/docs/guides/confy-integration.mdx](docs/content/docs/guides/confy-integration.mdx).
 
