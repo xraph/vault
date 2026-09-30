@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -949,10 +950,8 @@ func (s *Store) ListAudit(ctx context.Context, appID string, opts audit.ListOpts
 	var models []AuditModel
 	q := s.sdb.NewSelect(&models).
 		Where("app_id = ?", appID).
-		OrderExpr("created_at DESC")
-	if opts.Resource != "" {
-		q = q.Where("resource = ?", opts.Resource)
-	}
+		OrderExpr("created_at DESC, id DESC")
+	q = whereAudit(q, opts)
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -974,14 +973,13 @@ func (s *Store) ListAudit(ctx context.Context, appID string, opts audit.ListOpts
 
 // ListAuditByKey returns audit entries for a specific key within an app.
 func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audit.ListOpts) ([]*audit.Entry, error) {
+	opts.Key = "" // the key argument decides; a second key would only conflict
 	var models []AuditModel
 	q := s.sdb.NewSelect(&models).
 		Where("key = ?", key).
 		Where("app_id = ?", appID).
-		OrderExpr("created_at DESC")
-	if opts.Resource != "" {
-		q = q.Where("resource = ?", opts.Resource)
-	}
+		OrderExpr("created_at DESC, id DESC")
+	q = whereAudit(q, opts)
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -1068,8 +1066,33 @@ func (s *Store) CountAudit(ctx context.Context, appID string) (int64, error) {
 // that match opts. Limit and Offset are ignored.
 func (s *Store) CountAuditMatching(ctx context.Context, appID string, opts audit.ListOpts) (int64, error) {
 	q := s.sdb.NewSelect((*AuditModel)(nil)).Where("app_id = ?", appID)
+	return whereAudit(q, opts).Count(ctx)
+}
+
+// whereAudit applies every filter opts sets to an audit query, so the page and
+// the count are built from the same conditions. An unset filter adds nothing.
+func whereAudit(q *sqlitedriver.SelectQuery, opts audit.ListOpts) *sqlitedriver.SelectQuery {
 	if opts.Resource != "" {
 		q = q.Where("resource = ?", opts.Resource)
 	}
-	return q.Count(ctx)
+	if opts.Key != "" {
+		q = q.Where("key = ?", opts.Key)
+	}
+	if opts.Action != "" {
+		q = q.Where("action = ?", opts.Action)
+	}
+	if opts.Outcome != "" {
+		q = q.Where("outcome = ?", opts.Outcome)
+	}
+	if !opts.Since.IsZero() {
+		q = q.Where("created_at >= ?", dbTime(opts.Since))
+	}
+	if n := len(opts.ExcludeActions); n > 0 {
+		args := make([]any, n)
+		for i, a := range opts.ExcludeActions {
+			args[i] = a
+		}
+		q = q.Where("action NOT IN ("+strings.TrimSuffix(strings.Repeat("?, ", n), ", ")+")", args...)
+	}
+	return q
 }

@@ -915,7 +915,7 @@ func (s *Store) ListAudit(ctx context.Context, appID string, opts audit.ListOpts
 	var models []AuditModel
 	q := s.mdb.NewFind(&models).
 		Filter(auditFilter(bson.M{"app_id": appID}, opts)).
-		Sort(bson.D{{Key: "created_at", Value: -1}})
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -937,10 +937,11 @@ func (s *Store) ListAudit(ctx context.Context, appID string, opts audit.ListOpts
 
 // ListAuditByKey returns audit entries for a specific key within an app.
 func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audit.ListOpts) ([]*audit.Entry, error) {
+	opts.Key = "" // the key argument decides; a second key would only conflict
 	var models []AuditModel
 	q := s.mdb.NewFind(&models).
 		Filter(auditFilter(bson.M{"key": key, "app_id": appID}, opts)).
-		Sort(bson.D{{Key: "created_at", Value: -1}})
+		Sort(bson.D{{Key: "created_at", Value: -1}, {Key: "_id", Value: -1}})
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -1035,11 +1036,32 @@ func (s *Store) CountAuditMatching(ctx context.Context, appID string, opts audit
 		Count(ctx)
 }
 
-// auditFilter adds the resource equality to an audit filter when opts asks
-// for one.
+// auditFilter adds every condition opts sets to an audit filter, so a page and
+// its count are built from the same filter. An unset field adds nothing.
+//
+// Action and ExcludeActions share one field, so they are merged into a single
+// condition rather than set as two keys that would overwrite each other. Mongo
+// stores times to the millisecond, so Since is compared at that precision too.
 func auditFilter(f bson.M, opts audit.ListOpts) bson.M {
 	if opts.Resource != "" {
 		f["resource"] = opts.Resource
+	}
+	if opts.Key != "" {
+		f["key"] = opts.Key
+	}
+	if opts.Outcome != "" {
+		f["outcome"] = opts.Outcome
+	}
+	switch {
+	case opts.Action != "" && len(opts.ExcludeActions) > 0:
+		f["action"] = bson.M{"$eq": opts.Action, "$nin": opts.ExcludeActions}
+	case opts.Action != "":
+		f["action"] = opts.Action
+	case len(opts.ExcludeActions) > 0:
+		f["action"] = bson.M{"$nin": opts.ExcludeActions}
+	}
+	if !opts.Since.IsZero() {
+		f["created_at"] = bson.M{"$gte": opts.Since.UTC()}
 	}
 	return f
 }

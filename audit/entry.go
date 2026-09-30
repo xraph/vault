@@ -30,4 +30,25 @@ type ListOpts struct {
 	// Resource restricts the result to entries whose Resource matches
 	// exactly. Empty means every resource.
 	Resource string
+
+	// Key restricts the result to entries whose Key matches exactly. Empty
+	// means every key. ListAuditByKey takes its key as an argument and
+	// ignores this field.
+	Key string
+
+	// Action restricts the result to entries whose Action matches exactly.
+	// Empty means every action.
+	Action string
+
+	// Outcome restricts the result to entries whose Outcome matches exactly
+	// ("success" or "failure"). Empty means every outcome.
+	Outcome string
+
+	// Since keeps only entries created at or after it (created_at >= Since).
+	// The zero time means no lower bound.
+	Since time.Time
+
+	// ExcludeActions drops entries whose Action is any of these. Empty means
+	// nothing is excluded.
+	ExcludeActions []string
 }

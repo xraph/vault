@@ -5,6 +5,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -743,19 +744,19 @@ func (m *Store) ListAudit(_ context.Context, appID string, opts audit.ListOpts) 
 
 	result := make([]*audit.Entry, 0, len(m.auditEntries))
 	for _, e := range m.auditEntries {
-		if e.AppID != appID || !matchesResource(e, opts) {
+		if e.AppID != appID || !matchesAudit(e, opts) {
 			continue
 		}
 		cp := *e
 		result = append(result, &cp)
 	}
 
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	sortAuditNewestFirst(result)
 
 	if opts.Offset > 0 && opts.Offset < len(result) {
 		result = result[opts.Offset:]
 	} else if opts.Offset >= len(result) {
-		return nil, nil
+		return []*audit.Entry{}, nil
 	}
 	if opts.Limit > 0 && opts.Limit < len(result) {
 		result = result[:opts.Limit]
@@ -766,24 +767,25 @@ func (m *Store) ListAudit(_ context.Context, appID string, opts audit.ListOpts) 
 
 // ListAuditByKey returns audit entries for a specific key within an app.
 func (m *Store) ListAuditByKey(_ context.Context, key, appID string, opts audit.ListOpts) ([]*audit.Entry, error) {
+	opts.Key = "" // the key argument decides; a second key would only conflict
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	result := make([]*audit.Entry, 0, len(m.auditEntries))
 	for _, e := range m.auditEntries {
-		if e.AppID != appID || e.Key != key || !matchesResource(e, opts) {
+		if e.AppID != appID || e.Key != key || !matchesAudit(e, opts) {
 			continue
 		}
 		cp := *e
 		result = append(result, &cp)
 	}
 
-	sort.Slice(result, func(i, j int) bool { return result[i].CreatedAt.After(result[j].CreatedAt) })
+	sortAuditNewestFirst(result)
 
 	if opts.Offset > 0 && opts.Offset < len(result) {
 		result = result[opts.Offset:]
 	} else if opts.Offset >= len(result) {
-		return nil, nil
+		return []*audit.Entry{}, nil
 	}
 	if opts.Limit > 0 && opts.Limit < len(result) {
 		result = result[:opts.Limit]
@@ -989,15 +991,43 @@ func (m *Store) CountAuditMatching(_ context.Context, appID string, opts audit.L
 
 	var n int64
 	for _, e := range m.auditEntries {
-		if e.AppID == appID && matchesResource(e, opts) {
+		if e.AppID == appID && matchesAudit(e, opts) {
 			n++
 		}
 	}
 	return n, nil
 }
 
-// matchesResource reports whether e passes opts.Resource. An empty Resource
-// matches every entry.
-func matchesResource(e *audit.Entry, opts audit.ListOpts) bool {
-	return opts.Resource == "" || e.Resource == opts.Resource
+// matchesAudit reports whether e passes every filter opts sets. An unset
+// filter matches every entry.
+func matchesAudit(e *audit.Entry, opts audit.ListOpts) bool {
+	if opts.Resource != "" && e.Resource != opts.Resource {
+		return false
+	}
+	if opts.Key != "" && e.Key != opts.Key {
+		return false
+	}
+	if opts.Action != "" && e.Action != opts.Action {
+		return false
+	}
+	if opts.Outcome != "" && e.Outcome != opts.Outcome {
+		return false
+	}
+	if !opts.Since.IsZero() && e.CreatedAt.Before(opts.Since) {
+		return false
+	}
+	return !slices.Contains(opts.ExcludeActions, e.Action)
+}
+
+// sortAuditNewestFirst orders entries created_at DESC, id DESC. The id breaks
+// ties between entries with the same timestamp, so a page boundary never
+// repeats or skips a row. Ids are compared as strings, which is how the SQL
+// backends compare them.
+func sortAuditNewestFirst(rows []*audit.Entry) {
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].CreatedAt.After(rows[j].CreatedAt)
+		}
+		return rows[i].ID.String() > rows[j].ID.String()
+	})
 }
