@@ -596,23 +596,35 @@ func (s *Store) SetConfig(ctx context.Context, e *cfgpkg.Entry) error {
 	return err
 }
 
-// DeleteConfig removes a config entry and all its versions.
+// DeleteConfig removes a config entry's versions, then the entry.
+//
+// Mongo has no transaction here, so the order is the guarantee: the entry
+// goes last. If the version delete fails, the entry is still there and a
+// retry finds it and cleans up again. Deleting the entry first would make
+// that retry return ErrConfigNotFound before it reached the versions, and the
+// orphaned versions would collide with the unique (config_key, app_id,
+// version) index when the key is recreated at version 1.
+//
+// ErrConfigNotFound is returned only when nothing at all was deleted, so a
+// retry after a partial failure succeeds.
 func (s *Store) DeleteConfig(ctx context.Context, key, appID string) error {
+	versions, err := s.mdb.NewDelete((*ConfigVersionModel)(nil)).
+		Many().
+		Filter(bson.M{"config_key": key, "app_id": appID}).
+		Exec(ctx)
+	if err != nil {
+		return err
+	}
 	res, err := s.mdb.NewDelete((*ConfigModel)(nil)).
 		Filter(bson.M{"key": key, "app_id": appID}).
 		Exec(ctx)
 	if err != nil {
 		return err
 	}
-	if res.DeletedCount() == 0 {
+	if res.DeletedCount() == 0 && versions.DeletedCount() == 0 {
 		return vault.ErrConfigNotFound
 	}
-
-	_, err = s.mdb.NewDelete((*ConfigVersionModel)(nil)).
-		Many().
-		Filter(bson.M{"config_key": key, "app_id": appID}).
-		Exec(ctx)
-	return err
+	return nil
 }
 
 // ListConfig returns config entries for an app.
