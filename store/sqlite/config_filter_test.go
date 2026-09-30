@@ -92,6 +92,42 @@ func TestListConfigFiltersByKeyPrefix(t *testing.T) {
 	}
 }
 
+// The key prefix is matched by exact characters, like the memory, postgres and
+// mongo backends: SQLite's LIKE folds ASCII case, which would show billing/
+// keys under Billing/.
+func TestListConfigKeyPrefixIsCaseSensitive(t *testing.T) {
+	s := testStore(t)
+	ctx := bg()
+	for _, key := range []string{"billing/plans", "Billing/invoices", "ünï/a", "Ünï/b", "b"} {
+		if err := s.SetConfig(bg(), &config.Entry{ID: id.NewConfigID(), Key: key, Value: key, AppID: "app1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		prefix string
+		want   []string
+	}{
+		{"Billing/", []string{"Billing/invoices"}},
+		{"billing/", []string{"billing/plans"}},
+		{"BILLING/", nil},
+		{"ün", []string{"ünï/a"}},
+		{"Ün", []string{"Ünï/b"}},
+		{"billing/plans/extra", nil},
+	}
+	for _, c := range cases {
+		got, err := s.ListConfig(ctx, "app1", config.ListOpts{KeyPrefix: c.prefix})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k := configKeys(got); len(k) != len(c.want) || (len(k) == 1 && k[0] != c.want[0]) {
+			t.Errorf("prefix %q: got %v, want %v", c.prefix, k, c.want)
+		}
+		if n := countMatching(ctx, t, s, "app1", config.ListOpts{KeyPrefix: c.prefix}); n != int64(len(c.want)) {
+			t.Errorf("count prefix %q: got %d, want %d", c.prefix, n, len(c.want))
+		}
+	}
+}
+
 func TestListConfigPagesWithinKeyPrefix(t *testing.T) {
 	s := testStore(t)
 	ctx := bg()

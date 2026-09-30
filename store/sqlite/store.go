@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+	"unicode/utf8"
 
 	log "github.com/xraph/go-utils/log"
 
@@ -656,7 +656,7 @@ func (s *Store) ListConfig(ctx context.Context, appID string, opts cfgpkg.ListOp
 		Where("app_id = ?", appID).
 		OrderExpr("key ASC")
 	if opts.KeyPrefix != "" {
-		q = q.Where(`key LIKE ? ESCAPE '\'`, escapeLike(opts.KeyPrefix)+"%")
+		q = wherePrefix(q, opts.KeyPrefix)
 	}
 
 	if opts.Limit > 0 {
@@ -1015,10 +1015,13 @@ func (s *Store) CountFlagDefinitions(ctx context.Context, appID string) (int64, 
 	return s.sdb.NewSelect((*FlagModel)(nil)).Where("app_id = ?", appID).Count(ctx)
 }
 
-// escapeLike escapes the LIKE wildcards in a literal prefix, for use with
-// ESCAPE '\'.
-func escapeLike(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+// wherePrefix limits q to keys that start with prefix, character for
+// character. It is not LIKE: SQLite's LIKE folds ASCII case, which the other
+// backends do not, and would need its wildcards escaped besides. substr
+// counts characters (not bytes) for a text value and = compares with the
+// column's default BINARY collation.
+func wherePrefix(q *sqlitedriver.SelectQuery, prefix string) *sqlitedriver.SelectQuery {
+	return q.Where("substr(key, 1, ?) = ?", utf8.RuneCountInString(prefix), prefix)
 }
 
 // CountConfigMatching returns the number of config entries belonging to appID
@@ -1026,7 +1029,7 @@ func escapeLike(s string) string {
 func (s *Store) CountConfigMatching(ctx context.Context, appID string, opts cfgpkg.ListOpts) (int64, error) {
 	q := s.sdb.NewSelect((*ConfigModel)(nil)).Where("app_id = ?", appID)
 	if opts.KeyPrefix != "" {
-		q = q.Where(`key LIKE ? ESCAPE '\'`, escapeLike(opts.KeyPrefix)+"%")
+		q = wherePrefix(q, opts.KeyPrefix)
 	}
 	return q.Count(ctx)
 }
