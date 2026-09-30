@@ -405,8 +405,10 @@ type OverrideSummary struct {
 	// false when the entry no longer exists.
 	ValueMatchesType bool `json:"valueMatchesType"`
 	// KeyExists is false for an orphan: an override whose config entry is
-	// gone. It resolves for no one, and deleting the key normally removes
-	// the overrides with it, so an orphan is an older or foreign write.
+	// gone. It still resolves for its tenant, because the resolver returns
+	// an override before it reads the entry. Deleting the key normally
+	// removes the overrides with it, so an orphan is an older or foreign
+	// write, and overrides.delete can remove it.
 	KeyExists bool   `json:"keyExists"`
 	UpdatedAt string `json:"updatedAt"`
 }

@@ -321,12 +321,12 @@ func (m *Manager) SetOverride(ctx context.Context, key, tenantID string, value a
 	return m.overrides.GetOverride(ctx, key, m.appID, tenantID)
 }
 
-// DeleteOverride removes a tenant's override. A tenant with none returns
-// core.ErrOverrideNotFound from the store.
+// DeleteOverride removes a tenant's override. It does not read the entry: an
+// override whose entry is gone still resolves for its tenant (the resolver
+// answers from the override before it reads the entry), so it has to be
+// removable. A tenant with no override returns core.ErrOverrideNotFound from
+// the store, whether or not the key exists.
 func (m *Manager) DeleteOverride(ctx context.Context, key, tenantID string) error {
-	if _, err := m.store.GetConfig(ctx, key, m.appID); err != nil {
-		return err
-	}
 	tenantID, err := validateTenant(tenantID)
 	if err != nil {
 		return err

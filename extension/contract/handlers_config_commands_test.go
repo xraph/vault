@@ -393,11 +393,36 @@ func TestOverridesDelete_Refusals(t *testing.T) {
 	if !errors.As(err, &ce) || ce.Message != "tenant override not found" {
 		t.Errorf("message = %v, want exactly %q", err, "tenant override not found")
 	}
-	// A missing entry stays an entry not found.
+	// The entry is not read, so a missing key with no override is the same
+	// answer as a present key with none.
 	_, err = overridesDeleteHandler(deps)(ctx, overridesDeleteRequest{Key: "ghost", TenantID: "nobody"}, configPrincipal)
-	wantCode(t, err, dashcontract.CodeNotFound, "config entry not found")
+	if !errors.As(err, &ce) || ce.Code != dashcontract.CodeNotFound || ce.Message != "tenant override not found" {
+		t.Errorf("missing key err = %v, want NOT_FOUND %q", err, "tenant override not found")
+	}
 	_, err = overridesDeleteHandler(deps)(ctx, overridesDeleteRequest{Key: "k", TenantID: " "}, configPrincipal)
 	wantCode(t, err, dashcontract.CodeBadRequest, "tenantId")
 	_, err = overridesDeleteHandler(deps)(ctx, overridesDeleteRequest{TenantID: "x"}, configPrincipal)
 	wantCode(t, err, dashcontract.CodeBadRequest, "key is required")
+}
+
+// An override whose entry is gone still resolves for its tenant, so
+// overrides.delete must remove it.
+func TestOverridesDelete_RemovesAnOrphan(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	deps := Deps{Vault: v}
+	seedConfig(t, v, "gone", "string", "app")
+	seedOverride(t, v, "gone", "acme", "tenant")
+	if err := v.Store().DeleteConfig(ctx, "gone", testAppID); err != nil {
+		t.Fatalf("delete entry: %v", err)
+	}
+
+	out, err := overridesDeleteHandler(deps)(ctx, overridesDeleteRequest{Key: "gone", TenantID: "acme"}, configPrincipal)
+	if err != nil || !out.OK || out.Key != "gone" || out.TenantID != "acme" {
+		t.Fatalf("delete of an orphan = %+v, %v", out, err)
+	}
+	list, err := overridesListHandler(deps)(ctx, overridesListRequest{Key: "gone"}, configPrincipal)
+	if err != nil || list.Total != 0 {
+		t.Errorf("orphan still listed: %+v, %v", list, err)
+	}
 }

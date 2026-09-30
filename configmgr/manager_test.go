@@ -512,8 +512,10 @@ func TestOverrides(t *testing.T) {
 		if err = m.DeleteOverride(bg(), "n", "t1"); !errors.Is(err, vault.ErrOverrideNotFound) {
 			t.Errorf("second delete err = %v, want ErrOverrideNotFound", err)
 		}
-		if err = m.DeleteOverride(bg(), "ghost", "t1"); !errors.Is(err, vault.ErrConfigNotFound) {
-			t.Errorf("delete on a missing key err = %v, want ErrConfigNotFound", err)
+		// The entry is not read: a missing override is a missing override
+		// whether or not its key exists.
+		if err = m.DeleteOverride(bg(), "ghost", "t1"); !errors.Is(err, vault.ErrOverrideNotFound) {
+			t.Errorf("delete on a missing key err = %v, want ErrOverrideNotFound", err)
 		}
 		wantValidation(t, m.DeleteOverride(bg(), "n", ""), "tenantId")
 	})
@@ -695,4 +697,60 @@ func TestHookGetsTheMutationDetails(t *testing.T) {
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("hook calls = %+v, want %+v", got, want)
 	}
+}
+
+// An override whose entry is gone still resolves for its tenant, so it must
+// be removable: the manager deletes it without reading the entry.
+func TestDeleteOverrideRemovesAnOrphan(t *testing.T) {
+	backends(t, func(t *testing.T, v *vault.Vault) {
+		m := v.ConfigManager()
+		mustCreate(t, v, configmgr.CreateInput{Key: "orph", ValueType: config.TypeString, Value: "app"})
+		if _, err := m.SetOverride(bg(), "orph", "acme", "tenant"); err != nil {
+			t.Fatal(err)
+		}
+		// Delete the key through the store, which leaves the override behind.
+		if err := v.Store().DeleteConfig(bg(), "orph", mgrApp); err != nil {
+			t.Fatal(err)
+		}
+		acme := scope.WithTenantID(bg(), "acme")
+		if got, err := v.Overrides().Resolve(acme, "orph", mgrApp); err != nil || got != "tenant" {
+			t.Fatalf("orphan Resolve = %v, %v, want it to still resolve", got, err)
+		}
+
+		before := len(auditRows(t, v, "override"))
+		if err := m.DeleteOverride(bg(), "orph", " acme "); err != nil {
+			t.Fatalf("DeleteOverride of an orphan: %v", err)
+		}
+		rows := auditRows(t, v, "override")
+		if len(rows)-before != 1 {
+			t.Fatalf("wrote %d override audit rows, want 1", len(rows)-before)
+		}
+		found := false
+		for _, e := range rows {
+			if e.Action == "override.deleted" && e.Key == "orph" && e.TenantID == "acme" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no override.deleted row for tenant acme in %+v", rows)
+		}
+		if got, err := v.Overrides().Resolve(acme, "orph", mgrApp); err == nil {
+			t.Errorf("Resolve after removing the orphan = %v, want an error", got)
+		}
+		if ovs, _ := v.Store().ListOverridesByKey(bg(), "orph", mgrApp); len(ovs) != 0 {
+			t.Errorf("%d overrides left", len(ovs))
+		}
+	})
+}
+
+func TestDeleteOverrideOnAMissingKeyIsOverrideNotFound(t *testing.T) {
+	backends(t, func(t *testing.T, v *vault.Vault) {
+		err := v.ConfigManager().DeleteOverride(bg(), "nothing", "acme")
+		if !errors.Is(err, vault.ErrOverrideNotFound) {
+			t.Errorf("err = %v, want ErrOverrideNotFound", err)
+		}
+		if rows := auditRows(t, v, "override"); len(rows) != 0 {
+			t.Errorf("a failed delete wrote %d audit rows", len(rows))
+		}
+	})
 }
