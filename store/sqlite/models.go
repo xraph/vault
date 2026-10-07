@@ -111,6 +111,7 @@ type SecretVersionModel struct {
 	AppID           string    `grove:"app_id,notnull"`
 	Version         int64     `grove:"version,notnull"`
 	EncryptedValue  []byte    `grove:"encrypted_value"`
+	EncryptionAlg   *string   `grove:"encryption_alg"`
 	CreatedBy       string    `grove:"created_by"`
 	CreatedAt       time.Time `grove:"created_at,notnull"`
 }
@@ -119,7 +120,8 @@ func (m *SecretVersionModel) toEntity() *secret.Version {
 	return &secret.Version{
 		ID: mustParseID(m.ID), SecretKey: m.SecretKey, AppID: m.AppID,
 		Version: m.Version, EncryptedValue: m.EncryptedValue,
-		CreatedBy: m.CreatedBy, CreatedAt: m.CreatedAt,
+		EncryptionAlg: m.EncryptionAlg,
+		CreatedBy:     m.CreatedBy, CreatedAt: m.CreatedAt,
 	}
 }
 

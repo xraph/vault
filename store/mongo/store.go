@@ -234,10 +234,12 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 		return err
 	}
 
-	// Record version.
+	// Record version, with the algorithm its bytes were written under.
+	versionAlg := sec.EncryptionAlg
 	vm := &SecretVersionModel{
 		ID: id.NewVersionID().String(), SecretKey: sec.Key, AppID: sec.AppID,
-		Version: sec.Version, EncryptedValue: sec.EncryptedValue, CreatedAt: t,
+		Version: sec.Version, EncryptedValue: sec.EncryptedValue,
+		EncryptionAlg: &versionAlg, CreatedAt: t,
 	}
 	_, err = s.mdb.NewInsert(vm).Exec(ctx)
 	return err
@@ -308,6 +310,9 @@ func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version
 	sec.Version = version
 	sec.EncryptedValue = vm.EncryptedValue
 	sec.CreatedAt = vm.CreatedAt
+	if vm.EncryptionAlg != nil {
+		sec.EncryptionAlg = *vm.EncryptionAlg
+	}
 	return sec, nil
 }
 
@@ -959,6 +964,60 @@ func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audi
 		result[i] = models[i].toEntity()
 	}
 	return result, nil
+}
+
+// ListUnrecordedVersions returns up to limit version rows of appID whose
+// encryption algorithm was never recorded, in ascending id order, after the
+// id after. A missing field and a null both count as never recorded: the
+// filter {encryption_alg: null} matches both.
+func (s *Store) ListUnrecordedVersions(ctx context.Context, appID, after string, limit int) ([]*secret.Version, error) {
+	filter := bson.M{"app_id": appID, "encryption_alg": nil}
+	if after != "" {
+		filter["_id"] = bson.M{"$gt": after}
+	}
+	models := make([]SecretVersionModel, 0)
+	q := s.mdb.NewFind(&models).
+		Filter(filter).
+		Sort(bson.D{{Key: "_id", Value: 1}})
+	if limit > 0 {
+		q = q.Limit(int64(limit))
+	}
+	if err := q.Scan(ctx); err != nil {
+		return nil, err
+	}
+
+	result := make([]*secret.Version, len(models))
+	for i := range models {
+		result[i] = models[i].toEntity()
+	}
+	return result, nil
+}
+
+// SetVersionEncryption records the algorithm of the version row with the
+// given id. An unknown id updates nothing and is not an error.
+func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg string) error {
+	_, err := s.mdb.NewUpdate((*SecretVersionModel)(nil)).
+		Filter(bson.M{"_id": versionID.String()}).
+		Set("encryption_alg", alg).
+		Exec(ctx)
+	return err
+}
+
+// CountVersionEncryption tallies appID's version rows by recorded algorithm.
+func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
+	plain, err := s.mdb.NewFind((*SecretVersionModel)(nil)).
+		Filter(bson.M{"app_id": appID, "encryption_alg": ""}).
+		Count(ctx)
+	if err != nil {
+		return secret.VersionEncryptionCounts{}, err
+	}
+	unrecorded, err := s.mdb.NewFind((*SecretVersionModel)(nil)).
+		Filter(bson.M{"app_id": appID, "encryption_alg": nil}).
+		Count(ctx)
+	if err != nil {
+		return secret.VersionEncryptionCounts{}, err
+	}
+	return secret.VersionEncryptionCounts{Plaintext: plain, Unrecorded: unrecorded}, nil
 }
 
 // ──────────────────────────────────────────────────

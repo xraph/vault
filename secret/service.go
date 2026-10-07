@@ -219,21 +219,18 @@ func (s *Service) List(ctx context.Context, appID string, opts ListOpts) ([]*Met
 
 // GetVersion retrieves a specific version of a secret and decrypts it.
 //
-// Version rows carry no algorithm of their own, so the secret's CURRENT
-// EncryptionAlg decides how every version is read. When the secret's history
-// spans a change of key configuration, the result depends on the direction:
+// Each version row records the algorithm its own bytes were written with, and
+// the store hands that back, so a version is read the way it was written
+// whatever the secret's current algorithm or this service's key is now:
 //
-//   - Older version written without a key, current one encrypted: the old
-//     plaintext is handed to Decrypt, which rejects it, so GetVersion
-//     returns an error.
-//   - Older version encrypted, current one written with no key configured:
-//     the current EncryptionAlg is "", so the older version's CIPHERTEXT
-//     comes back as Value with a nil error. Nothing tells the caller the
-//     bytes are wrong.
+//   - A version written without a key reads back as its plaintext once a key
+//     is configured.
+//   - A version written encrypted is refused with core.ErrDecryptionFailed
+//     when no key is configured. Its ciphertext is never returned as a value.
 //
-// So a version read across a key change is unreliable, and it can fail
-// silently. That holds until version rows carry their own algorithm, which
-// needs a schema column in every backend.
+// A row from before versions recorded an algorithm falls back to the secret's
+// current one, which can be wrong across a change of key configuration.
+// BackfillVersionEncryption classifies those rows it can decrypt.
 func (s *Service) GetVersion(ctx context.Context, key, appID string, version int64) (*Secret, error) {
 	appID = s.resolveAppID(appID)
 

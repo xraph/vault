@@ -121,13 +121,16 @@ func (m *Store) SetSecret(_ context.Context, s *secret.Secret) error {
 		s.Version = 1
 	}
 
-	// Store the current version as a version record.
+	// Store the current version as a version record, with the algorithm its
+	// bytes were written under.
+	versionAlg := s.EncryptionAlg
 	ver := &secret.Version{
 		ID:             id.NewVersionID(),
 		SecretKey:      s.Key,
 		AppID:          s.AppID,
 		Version:        s.Version,
 		EncryptedValue: copyBytes(s.EncryptedValue),
+		EncryptionAlg:  &versionAlg,
 		CreatedAt:      time.Now().UTC(),
 	}
 	m.secretVersions[k] = append(m.secretVersions[k], ver)
@@ -195,6 +198,9 @@ func (m *Store) GetSecretVersion(_ context.Context, key, appID string, version i
 		cp.Version = v.Version
 		cp.EncryptedValue = copyBytes(v.EncryptedValue)
 		cp.CreatedAt = v.CreatedAt
+		if v.EncryptionAlg != nil {
+			cp.EncryptionAlg = *v.EncryptionAlg
+		}
 		return &cp, nil
 	}
 	return nil, vault.ErrSecretNotFound
@@ -213,11 +219,85 @@ func (m *Store) ListSecretVersions(_ context.Context, key, appID string) ([]*sec
 
 	result := make([]*secret.Version, len(versions))
 	for i, v := range versions {
-		cp := *v
-		cp.EncryptedValue = copyBytes(v.EncryptedValue)
-		result[i] = &cp
+		result[i] = copyVersion(v)
 	}
 	return result, nil
+}
+
+// copyVersion returns a copy of v that shares no memory with it.
+func copyVersion(v *secret.Version) *secret.Version {
+	cp := *v
+	cp.EncryptedValue = copyBytes(v.EncryptedValue)
+	if v.EncryptionAlg != nil {
+		alg := *v.EncryptionAlg
+		cp.EncryptionAlg = &alg
+	}
+	return &cp
+}
+
+// ListUnrecordedVersions returns up to limit version rows of appID whose
+// encryption algorithm was never recorded, in ascending id order, after the
+// id after.
+func (m *Store) ListUnrecordedVersions(_ context.Context, appID, after string, limit int) ([]*secret.Version, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]*secret.Version, 0)
+	for _, versions := range m.secretVersions {
+		for _, v := range versions {
+			if v.AppID != appID || v.EncryptionAlg != nil {
+				continue
+			}
+			if after != "" && v.ID.String() <= after {
+				continue
+			}
+			result = append(result, copyVersion(v))
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID.String() < result[j].ID.String() })
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	return result, nil
+}
+
+// SetVersionEncryption records the algorithm of the version row with the
+// given id. An unknown id is not an error.
+func (m *Store) SetVersionEncryption(_ context.Context, versionID id.ID, alg string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, versions := range m.secretVersions {
+		for _, v := range versions {
+			if v.ID == versionID {
+				v.EncryptionAlg = &alg
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
+// CountVersionEncryption tallies appID's version rows by recorded algorithm.
+func (m *Store) CountVersionEncryption(_ context.Context, appID string) (secret.VersionEncryptionCounts, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var c secret.VersionEncryptionCounts
+	for _, versions := range m.secretVersions {
+		for _, v := range versions {
+			if v.AppID != appID {
+				continue
+			}
+			switch {
+			case v.EncryptionAlg == nil:
+				c.Unrecorded++
+			case *v.EncryptionAlg == "":
+				c.Plaintext++
+			}
+		}
+	}
+	return c, nil
 }
 
 // ──────────────────────────────────────────────────

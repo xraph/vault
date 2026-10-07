@@ -1,6 +1,10 @@
 package secret
 
-import "context"
+import (
+	"context"
+
+	"github.com/xraph/vault/id"
+)
 
 // Store defines the persistence interface for secrets.
 type Store interface {
@@ -16,7 +20,10 @@ type Store interface {
 	// ListSecrets returns secret metadata (never values) for an app.
 	ListSecrets(ctx context.Context, appID string, opts ListOpts) ([]*Meta, error)
 
-	// GetSecretVersion retrieves a specific version of a secret.
+	// GetSecretVersion retrieves a specific version of a secret. The returned
+	// secret's EncryptionAlg is the version's own recorded algorithm when it
+	// has one, and the secret's current algorithm otherwise (a row written
+	// before versions recorded theirs).
 	GetSecretVersion(ctx context.Context, key, appID string, version int64) (*Secret, error)
 
 	// ListSecretVersions returns all versions of a secret.
@@ -31,4 +38,20 @@ type Store interface {
 	// while no encryption key was configured. It counts in the store and
 	// never loads a value.
 	CountSecretsUnencrypted(ctx context.Context, appID string) (int64, error)
+
+	// ListUnrecordedVersions returns up to limit version rows of an app whose
+	// encryption algorithm was never recorded, in ascending version id order,
+	// starting after the id after (empty means from the start). Callers page
+	// by passing the last id of the previous page, so rows they decline to
+	// classify are not fetched again.
+	ListUnrecordedVersions(ctx context.Context, appID, after string, limit int) ([]*Version, error)
+
+	// SetVersionEncryption records the algorithm of one version row. An empty
+	// alg records "stored without encryption". An unknown id returns nil: the
+	// row was already set or has been removed.
+	SetVersionEncryption(ctx context.Context, versionID id.ID, alg string) error
+
+	// CountVersionEncryption tallies an app's version rows by recorded
+	// algorithm, without loading any value.
+	CountVersionEncryption(ctx context.Context, appID string) (VersionEncryptionCounts, error)
 }

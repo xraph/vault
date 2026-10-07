@@ -284,5 +284,19 @@ func init() {
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_secret_version_encryption_alg",
+			Version: "20240101120011",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Nullable on purpose: NULL means "never recorded", which is
+				// different from '' ("recorded as stored without encryption").
+				_, err := exec.Exec(ctx, `ALTER TABLE vault_secret_versions ADD COLUMN IF NOT EXISTS encryption_alg TEXT`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `ALTER TABLE vault_secret_versions DROP COLUMN IF EXISTS encryption_alg`)
+				return err
+			},
+		},
 	)
 }

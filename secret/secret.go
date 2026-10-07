@@ -43,13 +43,28 @@ type Meta struct {
 
 // Version represents a historical version of a secret.
 type Version struct {
-	ID             id.ID     `json:"id"`
-	SecretKey      string    `json:"secret_key"`
-	AppID          string    `json:"app_id"`
-	Version        int64     `json:"version"`
-	EncryptedValue []byte    `json:"-"`
-	CreatedBy      string    `json:"created_by"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             id.ID  `json:"id"`
+	SecretKey      string `json:"secret_key"`
+	AppID          string `json:"app_id"`
+	Version        int64  `json:"version"`
+	EncryptedValue []byte `json:"-"`
+	// EncryptionAlg is the algorithm this version's bytes were written with.
+	// nil means the row predates the column and nobody has classified it yet:
+	// readers fall back to the secret's current algorithm. A non-nil empty
+	// string means the version was recorded as stored without encryption.
+	EncryptionAlg *string   `json:"-"`
+	CreatedBy     string    `json:"created_by"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// VersionEncryptionCounts tallies the version rows of one app by what is
+// known about their encryption.
+type VersionEncryptionCounts struct {
+	// Plaintext is the number of versions recorded as stored without
+	// encryption (algorithm recorded as empty).
+	Plaintext int64
+	// Unrecorded is the number of versions whose algorithm was never recorded.
+	Unrecorded int64
 }
 
 // ListOpts configures list queries for secrets.

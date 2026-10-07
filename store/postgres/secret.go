@@ -80,9 +80,12 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	}
 	_ = metaJSON // metadata not stored in version table
 
+	// The version records the algorithm its bytes were written under.
+	versionAlg := sec.EncryptionAlg
 	vm := &SecretVersionModel{
 		ID: id.NewVersionID().String(), SecretKey: sec.Key, AppID: sec.AppID,
-		Version: sec.Version, EncryptedValue: sec.EncryptedValue, CreatedAt: now,
+		Version: sec.Version, EncryptedValue: sec.EncryptedValue,
+		EncryptionAlg: &versionAlg, CreatedAt: now,
 	}
 	if _, err := tx.NewInsert(vm).Exec(ctx); err != nil {
 		return err
@@ -172,6 +175,9 @@ func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version
 	sec.Version = version
 	sec.EncryptedValue = vm.EncryptedValue
 	sec.CreatedAt = vm.CreatedAt
+	if vm.EncryptionAlg != nil {
+		sec.EncryptionAlg = *vm.EncryptionAlg
+	}
 	return sec, nil
 }
 
@@ -208,4 +214,50 @@ func (s *Store) CountSecretsUnencrypted(ctx context.Context, appID string) (int6
 		Where("app_id = ?", appID).
 		Where("encryption_alg = ''").
 		Count(ctx)
+}
+
+// ListUnrecordedVersions returns up to limit version rows of appID whose
+// encryption algorithm was never recorded, in ascending id order, after the
+// id after.
+func (s *Store) ListUnrecordedVersions(ctx context.Context, appID, after string, limit int) ([]*secret.Version, error) {
+	models := make([]SecretVersionModel, 0)
+	q := s.pgdb().NewSelect(&models).
+		Where("app_id = ?", appID).
+		Where("encryption_alg IS NULL").
+		Where("id > ?", after).
+		OrderExpr("id ASC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if err := q.Scan(ctx); err != nil {
+		return nil, err
+	}
+
+	result := make([]*secret.Version, len(models))
+	for i := range models {
+		result[i] = models[i].toEntity()
+	}
+	return result, nil
+}
+
+// SetVersionEncryption records the algorithm of the version row with the
+// given id. An unknown id updates nothing and is not an error.
+func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg string) error {
+	_, err := s.pgdb().NewUpdate((*SecretVersionModel)(nil)).
+		Set("encryption_alg = ?", alg).
+		Where("id = ?", versionID.String()).
+		Exec(ctx)
+	return err
+}
+
+// CountVersionEncryption tallies appID's version rows by recorded algorithm
+// in one pass.
+func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
+	var c secret.VersionEncryptionCounts
+	err := s.pgdb().QueryRow(ctx,
+		`SELECT COUNT(*) FILTER (WHERE encryption_alg = ''),
+		        COUNT(*) FILTER (WHERE encryption_alg IS NULL)
+		   FROM vault_secret_versions WHERE app_id = $1`, appID).
+		Scan(&c.Plaintext, &c.Unrecorded)
+	return c, err
 }

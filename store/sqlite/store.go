@@ -164,10 +164,12 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 		return err
 	}
 
-	// Record version.
+	// Record version, with the algorithm its bytes were written under.
+	versionAlg := sec.EncryptionAlg
 	vm := &SecretVersionModel{
 		ID: id.NewVersionID().String(), SecretKey: sec.Key, AppID: sec.AppID,
-		Version: sec.Version, EncryptedValue: sec.EncryptedValue, CreatedAt: t,
+		Version: sec.Version, EncryptedValue: sec.EncryptedValue,
+		EncryptionAlg: &versionAlg, CreatedAt: t,
 	}
 	if _, err := tx.NewInsert(vm).Exec(ctx); err != nil {
 		return err
@@ -257,6 +259,9 @@ func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version
 	sec.Version = version
 	sec.EncryptedValue = vm.EncryptedValue
 	sec.CreatedAt = vm.CreatedAt
+	if vm.EncryptionAlg != nil {
+		sec.EncryptionAlg = *vm.EncryptionAlg
+	}
 	return sec, nil
 }
 
@@ -1050,6 +1055,59 @@ func (s *Store) CountConfig(ctx context.Context, appID string) (int64, error) {
 // CountOverrides returns the number of tenant overrides belonging to appID.
 func (s *Store) CountOverrides(ctx context.Context, appID string) (int64, error) {
 	return s.sdb.NewSelect((*OverrideModel)(nil)).Where("app_id = ?", appID).Count(ctx)
+}
+
+// ListUnrecordedVersions returns up to limit version rows of appID whose
+// encryption algorithm was never recorded, in ascending id order, after the
+// id after.
+func (s *Store) ListUnrecordedVersions(ctx context.Context, appID, after string, limit int) ([]*secret.Version, error) {
+	models := make([]SecretVersionModel, 0)
+	q := s.sdb.NewSelect(&models).
+		Where("app_id = ?", appID).
+		Where("encryption_alg IS NULL").
+		Where("id > ?", after).
+		OrderExpr("id ASC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	if err := q.Scan(ctx); err != nil {
+		return nil, err
+	}
+
+	result := make([]*secret.Version, len(models))
+	for i := range models {
+		result[i] = models[i].toEntity()
+	}
+	return result, nil
+}
+
+// SetVersionEncryption records the algorithm of the version row with the
+// given id. An unknown id updates nothing and is not an error.
+func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg string) error {
+	_, err := s.sdb.NewUpdate((*SecretVersionModel)(nil)).
+		Set("encryption_alg = ?", alg).
+		Where("id = ?", versionID.String()).
+		Exec(ctx)
+	return err
+}
+
+// CountVersionEncryption tallies appID's version rows by recorded algorithm.
+func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
+	plain, err := s.sdb.NewSelect((*SecretVersionModel)(nil)).
+		Where("app_id = ?", appID).
+		Where("encryption_alg = ''").
+		Count(ctx)
+	if err != nil {
+		return secret.VersionEncryptionCounts{}, err
+	}
+	unrecorded, err := s.sdb.NewSelect((*SecretVersionModel)(nil)).
+		Where("app_id = ?", appID).
+		Where("encryption_alg IS NULL").
+		Count(ctx)
+	if err != nil {
+		return secret.VersionEncryptionCounts{}, err
+	}
+	return secret.VersionEncryptionCounts{Plaintext: plain, Unrecorded: unrecorded}, nil
 }
 
 // CountSecretsUnencrypted returns the number of secrets belonging to appID

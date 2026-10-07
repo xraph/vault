@@ -282,5 +282,21 @@ CREATE INDEX IF NOT EXISTS idx_audit_key ON vault_audit (key, app_id, created_at
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_secret_version_encryption_alg",
+			Version: "20240101120011",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Nullable on purpose: NULL means "never recorded", which is
+				// different from '' ("recorded as stored without encryption").
+				_, err := exec.Exec(ctx, `ALTER TABLE vault_secret_versions ADD COLUMN encryption_alg TEXT`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				// SQLite before 3.35 cannot drop a column. The modernc driver
+				// this store runs on is newer, and supports it.
+				_, err := exec.Exec(ctx, `ALTER TABLE vault_secret_versions DROP COLUMN encryption_alg`)
+				return err
+			},
+		},
 	)
 }

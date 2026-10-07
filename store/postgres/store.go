@@ -81,6 +81,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 
+	// The CREATE statements above do not alter a table that already exists, so
+	// a column added after the first release is added here as well, mirroring
+	// the "add_secret_version_encryption_alg" migration.
+	if _, err := pgdb.Exec(ctx, alterVersionsAddAlg); err != nil {
+		return err
+	}
+
 	s.logger.Info("postgres: migrations complete")
 	return nil
 }
@@ -97,6 +104,8 @@ func (s *Store) Close() error {
 
 // DDL statements for Migrate().
 const (
+	alterVersionsAddAlg = `ALTER TABLE vault_secret_versions ADD COLUMN IF NOT EXISTS encryption_alg TEXT`
+
 	createSecretsTable = `CREATE TABLE IF NOT EXISTS vault_secrets (
 		id              TEXT        PRIMARY KEY,
 		key             TEXT        NOT NULL,
