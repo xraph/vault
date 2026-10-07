@@ -54,6 +54,16 @@ minute. The loop also returns at once when the app id is empty
 application code with `RegisterRotator`, and a policy for a key nobody
 registered a rotator for does nothing.
 
+The extension also runs a version-encryption backfill on every start, on every
+replica, in the background. Start doesn't wait for it, and Stop cancels it and
+waits for it to return. It looks at the version rows whose algorithm was never
+recorded (every version written before this release) and tries the configured
+key on each. A row the key decrypts is marked encrypted. A row it can't decrypt
+is left alone, because a failed decrypt can't tell plaintext from a value
+sealed with some other key, so those rows are read again on each start. With
+no key configured it reads nothing. When it finishes it logs how many rows it
+marked.
+
 `enable_audit` is deprecated, and so is `WithEnableAudit`. Audit is always on,
 whatever you set. Drop the setting the next time you touch your config.
 
@@ -85,13 +95,40 @@ If you call Vault from Go, you will notice these changes:
   `ClaimDueRotation`, above). `audit.Store` gets `CountAudit` and
   `CountAuditMatching`. A `...Matching` count and its list must apply the same
   filter, or a page and its total disagree.
+- `secret.Store` has four more methods for version encryption and expiry.
+  `CountSecretsMatching(ctx, appID, opts)` counts what `ListSecrets` would list
+  for the same options. `ListUnrecordedVersions(ctx, appID, after, limit)`
+  returns version rows whose algorithm was never recorded, in ascending id
+  order, starting strictly after the id `after` (empty means from the start).
+  `SetVersionEncryption(ctx, versionID, alg)` records one row's algorithm, and
+  an unknown id returns nil. `CountVersionEncryption(ctx, appID)` tallies the
+  earlier version rows recorded as plaintext and the ones never recorded,
+  leaving out each secret's current version, which `CountSecretsUnencrypted`
+  already covers. If your `ListUnrecordedVersions` ignores `after`, the
+  backfill stops with an error the first time a full page doesn't move past
+  the cursor.
+- A custom store's `SetSecret` has to record the version row's algorithm too:
+  a non-nil `Version.EncryptionAlg`, set to the secret's `EncryptionAlg` (empty
+  for plaintext). Its `GetSecretVersion` has to return the version's own
+  algorithm when one is recorded, and the current row's only when it isn't.
+  Without that, a version written before a key change is read with the current
+  row's algorithm, and decrypts wrongly or not at all.
+- `secret.Service.GetVersion` now refuses an encrypted version with
+  `core.ErrDecryptionFailed` when no key is configured. It used to hand back
+  the ciphertext as the value.
 - The audit log writes `secret.get` when a secret is read. The declared constant
   `audit_hook.ActionSecretAccessed` (`secret.accessed`) is never written, so
   filter on `secret.get`.
 - The list options grew filters that every backend must honour in the query
   itself, never after paging: `audit.ListOpts` takes `Resource`, `Key`,
   `Action`, `Outcome`, `Since` and `ExcludeActions`; `flag.ListOpts` takes
-  `Type`; `config.ListOpts` takes `KeyPrefix`, matched case-sensitively.
+  `Type`; `config.ListOpts` takes `KeyPrefix`, matched case-sensitively;
+  `secret.ListOpts` takes `ExpiresAfter` (exclusive, `expires_at > t`) and
+  `ExpiresBefore` (inclusive, `expires_at <= t`). When either is set, a secret
+  with no expiry is left out and the list is ordered by expiry, then key.
+  `CountSecretsMatching` must apply exactly the same bounds. Expired is
+  `ExpiresBefore = now`, so a secret that expires exactly now is expired and
+  never also "expiring".
 - `secret.Meta` has an `EncryptionAlg` field. Empty means the row is stored
   unencrypted. A custom store's `ListSecrets` has to fill it in.
 - `confy.NewVaultSecretProvider` and `confy.NewVaultConfigSource` take a secret
@@ -107,7 +144,44 @@ If you call Vault from Go, you will notice these changes:
 - `Entity` and the sentinel errors moved to `vault/core`. `vault.Entity` and
   `vault.Err...` are aliases of the same values, so `errors.Is` keeps matching.
 
-There is no schema change, and `Migrate` has nothing new to run.
+This release changes the schema, and `Migrate` (or the `Migrations` group
+your host runs) has new steps:
+
+- Postgres and sqlite `20240101120011` adds a nullable `encryption_alg` column
+  to `vault_secret_versions`. `NULL` means never recorded, `''` plaintext.
+- Postgres and sqlite `20240101120012` adds the indexes
+  `idx_secrets_app_expires` on `(app_id, expires_at)` and
+  `idx_secret_versions_app_alg` on `(app_id, encryption_alg)`. Postgres's
+  `Store.Migrate()` runs the same statements as its group.
+- Mongo `20240101000012` adds the same two indexes.
+- Mongo `20240101000013` fixes the validators the group put on every vault
+  collection. They typed a flag's default, a rule's return value and every
+  config or override value as a string, and refused a null map or list, so on
+  a host that ran the group a secret saved without metadata, a boolean flag
+  and most audit rows were rejected. The migration regenerates each validator
+  with those value fields untyped and maps and lists allowed to be null, at
+  the moderate level. The store now writes `{}` and `[]` for empty maps and
+  lists as well. `Store.Migrate()` never created validators, so hosts on it
+  saw none of this.
+
+One limit remains, and nothing on the dashboard fixes it. A version written as plaintext before this release has no recorded
+algorithm, and the backfill can't classify it (a failed decrypt looks the same
+for plaintext and for another key). It shows as "Unknown" in the secret's
+history and counts in the overview's "Vault can't tell how N older versions
+were stored". While the secret's current value is plaintext, that old version
+still reads back correctly. Once you replace the current value with a key
+configured, reading the old version fails with a decrypt error. It never
+returns the wrong bytes. If you know those rows were stored in the clear, set
+the algorithm to empty in the store and they read and count as plaintext from
+then on:
+
+```sql
+UPDATE vault_secret_versions SET encryption_alg = ''
+ WHERE app_id = '<app>' AND secret_key = '<key>' AND version = <n>;
+```
+
+On mongo, `$set: {encryption_alg: ""}` on the same rows in
+`vault_secret_versions`.
 
 ## Bugs found on the way
 
@@ -250,12 +324,6 @@ Everything else that was dropped is explained where it appears below.
   templ page's `yaml`). It is shown read-only with the reason. The way out is a
   retype that comes with a valid value: `config.update` accepts `valueType`, but
   no React page sends it, so today you make that call from your own client.
-- Counting plaintext left in version history. Versions carry no algorithm
-  column, so a secret whose current value is encrypted can still hold plaintext
-  in an older version, and nothing can count it without reading every version.
-  The overview says so instead of implying it's fixed.
-- Secrets that expire soon. No store method answers it without reading every
-  row, so the overview leaves it out.
 - An overrides list with no tenant or key chosen. The templ page listed
   overrides with no filter, but it only ever reached the first 100 keys. The
   store can list overrides by tenant or by key and no other way, so the React
@@ -329,10 +397,15 @@ carries an app id.
 | A failed audit read shown as that empty state | the query fails and says so | changed |
 
 The overview also gained what the templ page never had: a "Needs attention"
-list (secrets stored without encryption, overdue rotation policies, enabled
-policies with no rotator, rotation attempts that failed in the last 24 hours,
-each linking to where you fix it), and a line saying whether new secrets are
-encrypted and with which algorithm.
+list (secrets stored without encryption, expired secrets, secrets expiring
+within 30 days, earlier versions stored without encryption, overdue rotation
+policies, enabled policies with no rotator, rotation attempts that failed in
+the last 24 hours, each linking to where you fix it), and a line saying whether
+new secrets are encrypted and with which algorithm. With a key configured, that
+line also says how many earlier versions are stored without encryption and how
+many older versions vault can't vouch for. The expired and expiring lines open
+the Secrets list already filtered. The plaintext-versions line opens the plain
+list, because no page lists versions across secrets.
 
 ### Secrets
 
@@ -351,7 +424,8 @@ encrypted and with which algorithm.
 | Column Updated | Updated | migrated |
 | No column for encryption | Encryption badge: the algorithm, or "Not encrypted" | changed: new, and the reason the page can no longer imply everything is safe |
 | No paging, 100 rows at most | 25 a page with the total | changed |
-| Empty state "No secrets found", "Secrets will appear here once they are created." | "No secrets yet." with a New secret button | changed |
+| No filter on expiry | An Expiry select: All, Expired, Expires within 7 days, Expires within 30 days. It filters on the server, so the page and the total agree, and it orders by expiry, then key. The choice is kept in the URL as `?expiry=` | changed: new |
+| Empty state "No secrets found", "Secrets will appear here once they are created." | "No secrets yet." with a New secret button, or "No secrets match this expiry filter." when a filter is on | changed |
 | A failed read shown as that empty state | the query fails and says so | changed |
 
 When a row on the page is "Not encrypted", a line under the header says why and
@@ -395,6 +469,7 @@ that adding a key later does not encrypt it.
 | Version History card, count badge, "All versions of this secret." | "Versions (N)", a list newest first | changed: a timeline instead of a table, because there is nothing to diff |
 | Version table column Version "vN" | Version, with a "Current" mark on the newest | changed |
 | Version table column Created By, a dash when empty | Author, "none" when empty | migrated |
+| No encryption per version | A badge on each version: Encrypted, Not encrypted, or Unknown for a row stored before vault recorded it (its title says why) | changed: new. A version keeps the algorithm it was written with, so replacing a value doesn't change the badges below it |
 | Version table column Created At | the time beside the author | migrated |
 | Empty text "No version history available." | "No versions recorded." | changed |
 | Rotation Policy card, only when a policy exists | "Rotation" pane; with no policy it says so and links "Set up rotation" | changed |
@@ -830,12 +905,10 @@ templ edit page could change a config entry's type, and the React pages can't;
 and the templ detail pages opened a key or tenant id saved with leading or
 trailing spaces (they never trimmed), and the React pages can't.
 
-- Plaintext in version history can't be counted. Versions carry no algorithm
-  column, so `GetVersion` applies the secret's current algorithm to every
-  version, and a history that spans a key change reads wrongly. The fix is a
-  per-version column on four backends. The overview says it can't count these.
-- Expiring soon is not shown. No store method answers it without reading every
-  row.
+- A version stored as plaintext before this release stays "Unknown" for good,
+  and fails to decrypt once its secret's current value is encrypted. Nothing on
+  the dashboard can fix it. See "What you need to do" for the one-line store
+  update.
 - Nothing purges the audit log. Every secret read through confy writes a row, so
   the table grows without bound, and a total over millions of rows is slow.
 - `audit_hook` is never attached. `audit.WithHook` exists and nothing calls it
@@ -866,5 +939,6 @@ trailing spaces (they never trimmed), and the React pages can't.
 - `overrides.list` reads every override for a tenant or a key before paging,
   because the store can't page or count them.
 - The CodeMirror editor exists twice, in relay and in vault. One shared editor
-  in the kit is the follow-up. Postgres and mongo were exercised only in
-  throwaway containers, and there is no mongo harness in the repo.
+  in the kit is the follow-up. The postgres and mongo suites skip unless you
+  point `VAULT_TEST_PG_URL` (with `-tags integration`) or
+  `VAULT_TEST_MONGO_URL` at a server, so CI runs neither unless you set one up.
