@@ -281,13 +281,17 @@ func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg s
 }
 
 // CountVersionEncryption tallies appID's version rows by recorded algorithm
-// in one pass.
+// in one pass, leaving out each secret's current version.
 func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
 	var c secret.VersionEncryptionCounts
 	err := s.pgdb().QueryRow(ctx,
-		`SELECT COUNT(*) FILTER (WHERE encryption_alg = ''),
-		        COUNT(*) FILTER (WHERE encryption_alg IS NULL)
-		   FROM vault_secret_versions WHERE app_id = $1`, appID).
+		`SELECT COUNT(*) FILTER (WHERE v.encryption_alg = ''),
+		        COUNT(*) FILTER (WHERE v.encryption_alg IS NULL)
+		   FROM vault_secret_versions v
+		  WHERE v.app_id = $1
+		    AND NOT EXISTS (SELECT 1 FROM vault_secrets s
+		                     WHERE s.key = v.secret_key AND s.app_id = v.app_id
+		                       AND s.version = v.version)`, appID).
 		Scan(&c.Plaintext, &c.Unrecorded)
 	return c, err
 }

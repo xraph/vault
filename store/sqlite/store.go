@@ -1120,23 +1120,20 @@ func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg s
 	return err
 }
 
-// CountVersionEncryption tallies appID's version rows by recorded algorithm.
+// CountVersionEncryption tallies appID's version rows by recorded algorithm
+// in one pass, leaving out each secret's current version.
 func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
-	plain, err := s.sdb.NewSelect((*SecretVersionModel)(nil)).
-		Where("app_id = ?", appID).
-		Where("encryption_alg = ''").
-		Count(ctx)
-	if err != nil {
-		return secret.VersionEncryptionCounts{}, err
-	}
-	unrecorded, err := s.sdb.NewSelect((*SecretVersionModel)(nil)).
-		Where("app_id = ?", appID).
-		Where("encryption_alg IS NULL").
-		Count(ctx)
-	if err != nil {
-		return secret.VersionEncryptionCounts{}, err
-	}
-	return secret.VersionEncryptionCounts{Plaintext: plain, Unrecorded: unrecorded}, nil
+	var c secret.VersionEncryptionCounts
+	err := s.sdb.QueryRow(ctx,
+		`SELECT COALESCE(SUM(CASE WHEN v.encryption_alg = '' THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(CASE WHEN v.encryption_alg IS NULL THEN 1 ELSE 0 END), 0)
+		   FROM vault_secret_versions v
+		  WHERE v.app_id = ?
+		    AND NOT EXISTS (SELECT 1 FROM vault_secrets s
+		                     WHERE s.key = v.secret_key AND s.app_id = v.app_id
+		                       AND s.version = v.version)`, appID).
+		Scan(&c.Plaintext, &c.Unrecorded)
+	return c, err
 }
 
 // CountSecretsUnencrypted returns the number of secrets belonging to appID

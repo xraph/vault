@@ -303,7 +303,8 @@ func (m *Store) SetVersionEncryption(_ context.Context, versionID id.ID, alg str
 	return nil
 }
 
-// CountVersionEncryption tallies appID's version rows by recorded algorithm.
+// CountVersionEncryption tallies appID's version rows by recorded algorithm,
+// leaving out each secret's current version.
 func (m *Store) CountVersionEncryption(_ context.Context, appID string) (secret.VersionEncryptionCounts, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -312,6 +313,9 @@ func (m *Store) CountVersionEncryption(_ context.Context, appID string) (secret.
 	for _, versions := range m.secretVersions {
 		for _, v := range versions {
 			if v.AppID != appID {
+				continue
+			}
+			if cur, ok := m.secrets[sKey(v.SecretKey, v.AppID)]; ok && cur.Version == v.Version {
 				continue
 			}
 			switch {

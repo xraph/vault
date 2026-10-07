@@ -1021,21 +1021,50 @@ func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg s
 	return err
 }
 
-// CountVersionEncryption tallies appID's version rows by recorded algorithm.
+// CountVersionEncryption tallies appID's version rows by recorded algorithm,
+// leaving out each secret's current version. Only plaintext and unrecorded
+// rows reach the $lookup; it drops a row whose secret's current version is
+// that row's version. {encryption_alg: null} inside $in also matches a row
+// with no field at all.
 func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
-	plain, err := s.mdb.NewFind((*SecretVersionModel)(nil)).
-		Filter(bson.M{"app_id": appID, "encryption_alg": ""}).
-		Count(ctx)
+	var rows []struct {
+		Plaintext bool  `bson:"_id"`
+		N         int64 `bson:"n"`
+	}
+	err := s.mdb.NewAggregate(colSecretVersions).
+		Match(bson.M{"app_id": appID, "encryption_alg": bson.M{"$in": bson.A{"", nil}}}).
+		Lookup(bson.M{
+			"from": colSecrets,
+			"let":  bson.M{"key": "$secret_key", "app": "$app_id", "version": "$version"},
+			"pipeline": bson.A{
+				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
+					bson.M{"$eq": bson.A{"$key", "$$key"}},
+					bson.M{"$eq": bson.A{"$app_id", "$$app"}},
+					bson.M{"$eq": bson.A{"$version", "$$version"}},
+				}}}},
+				bson.M{"$limit": 1},
+				bson.M{"$project": bson.M{"_id": 1}},
+			},
+			"as": "current",
+		}).
+		Match(bson.M{"current": bson.M{"$size": 0}}).
+		Group(bson.M{
+			"_id": bson.M{"$eq": bson.A{"$encryption_alg", ""}},
+			"n":   bson.M{"$sum": 1},
+		}).
+		Scan(ctx, &rows)
 	if err != nil {
 		return secret.VersionEncryptionCounts{}, err
 	}
-	unrecorded, err := s.mdb.NewFind((*SecretVersionModel)(nil)).
-		Filter(bson.M{"app_id": appID, "encryption_alg": nil}).
-		Count(ctx)
-	if err != nil {
-		return secret.VersionEncryptionCounts{}, err
+	var c secret.VersionEncryptionCounts
+	for _, r := range rows {
+		if r.Plaintext {
+			c.Plaintext = r.N
+		} else {
+			c.Unrecorded = r.N
+		}
 	}
-	return secret.VersionEncryptionCounts{Plaintext: plain, Unrecorded: unrecorded}, nil
+	return c, nil
 }
 
 // ──────────────────────────────────────────────────

@@ -57,8 +57,9 @@ type Version struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-// VersionEncryptionCounts tallies the version rows of one app by what is
-// known about their encryption.
+// VersionEncryptionCounts tallies the earlier version rows of one app (every
+// version row except each secret's current one) by what is known about their
+// encryption.
 type VersionEncryptionCounts struct {
 	// Plaintext is the number of versions recorded as stored without
 	// encryption (algorithm recorded as empty).

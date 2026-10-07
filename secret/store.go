@@ -59,7 +59,10 @@ type Store interface {
 	// row was already set or has been removed.
 	SetVersionEncryption(ctx context.Context, versionID id.ID, alg string) error
 
-	// CountVersionEncryption tallies an app's version rows by recorded
-	// algorithm, without loading any value.
+	// CountVersionEncryption tallies an app's earlier version rows by
+	// recorded algorithm, without loading any value. A secret's current
+	// version row is not counted: SetSecret writes one for the current value
+	// too, and CountSecretsUnencrypted already covers current values, so a
+	// row counted here is history only.
 	CountVersionEncryption(ctx context.Context, appID string) (VersionEncryptionCounts, error)
 }

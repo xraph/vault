@@ -49,9 +49,10 @@ type overviewStatsResponse struct {
 	// RotationFailures24h counts failed rotation attempts, manual or
 	// scheduled, in the last 24 hours.
 	RotationFailures24h int64 `json:"rotationFailures24h"`
-	// PlaintextVersions counts version rows recorded as stored without
-	// encryption. UnrecordedVersions counts rows from before versions
-	// recorded an algorithm that the backfill has not classified.
+	// PlaintextVersions counts earlier version rows (never a secret's
+	// current one, which UnencryptedSecrets covers) recorded as stored
+	// without encryption. UnrecordedVersions counts earlier rows from before
+	// versions recorded an algorithm that the backfill has not classified.
 	PlaintextVersions  int64 `json:"plaintextVersions"`
 	UnrecordedVersions int64 `json:"unrecordedVersions"`
 	// ExpiredSecrets counts secrets whose expiry is at or before now.

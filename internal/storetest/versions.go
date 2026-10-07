@@ -230,14 +230,23 @@ func RunVersionEncryption(t *testing.T, newStore VersionEncryptionFactory) {
 			t.Fatalf("empty store: got %+v", zero)
 		}
 
-		put(t, s, "app", "plain", "")
-		put(t, s, "app", "plain", "")
+		put(t, s, "app", "plain", "") // v1 earlier, counted
+		put(t, s, "app", "plain", "") // v2 current, not counted
+		put(t, s, "app", "only", "")  // current, not counted
+		put(t, s, "app", "upgraded", "")
+		put(t, s, "app", "upgraded", Alg) // v1 plaintext under encrypted v2
 		put(t, s, "app", "sealed", Alg)
 		put(t, s, "app", "old", Alg)
+		put(t, s, "app", "old", Alg)
 		put(t, s, "app", "older", Alg)
-		legacy("old", "app", 1)
-		legacy("older", "app", 1)
+		legacy("old", "app", 1)   // earlier, counted
+		legacy("older", "app", 1) // current, not counted
+		// The other app's "plain" has one more version, so a count that
+		// matched current rows by key alone would drop its v2.
 		put(t, s, "other", "plain", "")
+		put(t, s, "other", "plain", "")
+		put(t, s, "other", "plain", "")
+		put(t, s, "other", "old", Alg)
 		put(t, s, "other", "old", Alg)
 		legacy("old", "other", 1)
 
@@ -245,7 +254,7 @@ func RunVersionEncryption(t *testing.T, newStore VersionEncryptionFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := secret.VersionEncryptionCounts{Plaintext: 2, Unrecorded: 2}
+		want := secret.VersionEncryptionCounts{Plaintext: 2, Unrecorded: 1}
 		if got != want {
 			t.Errorf("app: got %+v, want %+v", got, want)
 		}
@@ -253,8 +262,29 @@ func RunVersionEncryption(t *testing.T, newStore VersionEncryptionFactory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if other != (secret.VersionEncryptionCounts{Plaintext: 1, Unrecorded: 1}) {
+		if other != (secret.VersionEncryptionCounts{Plaintext: 2, Unrecorded: 1}) {
 			t.Errorf("other: got %+v", other)
+		}
+	})
+
+	t.Run("CountVersionEncryption leaves out the current version", func(t *testing.T) {
+		s, _ := newStore(t)
+		put(t, s, "app", "k", "")
+		got, err := s.CountVersionEncryption(t.Context(), "app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != (secret.VersionEncryptionCounts{}) {
+			t.Errorf("only version plaintext: got %+v, want zero", got)
+		}
+
+		put(t, s, "app", "k", Alg)
+		got, err = s.CountVersionEncryption(t.Context(), "app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != (secret.VersionEncryptionCounts{Plaintext: 1}) {
+			t.Errorf("plaintext v1 under encrypted v2: got %+v, want Plaintext 1", got)
 		}
 	})
 }

@@ -35,7 +35,8 @@ func noopRotator(_ context.Context, cur []byte) ([]byte, error) { return cur, ni
 // seedOverviewVault builds a vault where every stat has a distinct,
 // non-zero answer:
 //
-//	secrets 4 (3 encrypted, 1 written by a vault with no key)
+//	secrets 4 (3 encrypted, 1 written twice by a vault with no key, so one
+//	earlier plaintext version sits behind its plaintext current one)
 //	flags 2, config entries 3, config overrides 2
 //	policies 4: ok (enabled, rotatable, due later), overdue (enabled,
 //	rotatable, due before now), bare (enabled, no rotator, due before now),
@@ -55,8 +56,10 @@ func seedOverviewVault(t *testing.T) *vault.Vault {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := plain.Secrets().Set(ctx, "clear", []byte("v"), testAppID); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if _, err := plain.Secrets().Set(ctx, "clear", []byte("v"), testAppID); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	seedFlag(t, v, "f1", flag.TypeBool, false, true)
@@ -345,7 +348,10 @@ func TestOverviewStats_ExpiredAndExpiringFromASeededVault(t *testing.T) {
 	}
 }
 
-// Version counts come straight from the store's tally.
+// Version counts come straight from the store's tally, which leaves out each
+// secret's current version: three plaintext writes of one key leave two
+// earlier plaintext versions, and the current one is counted as an
+// unencrypted secret instead.
 func TestOverviewStats_VersionEncryptionCounts(t *testing.T) {
 	v, st := newTestVault(t)
 	ctx := context.Background()
@@ -365,8 +371,11 @@ func TestOverviewStats_VersionEncryptionCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.PlaintextVersions != 3 {
-		t.Errorf("plaintextVersions = %d, want 3", out.PlaintextVersions)
+	if out.PlaintextVersions != 2 {
+		t.Errorf("plaintextVersions = %d, want 2", out.PlaintextVersions)
+	}
+	if out.UnencryptedSecrets != 1 {
+		t.Errorf("unencryptedSecrets = %d, want 1", out.UnencryptedSecrets)
 	}
 }
 
