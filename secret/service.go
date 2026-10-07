@@ -255,3 +255,44 @@ func (s *Service) ListVersions(ctx context.Context, key, appID string) ([]*Versi
 	appID = s.resolveAppID(appID)
 	return s.store.ListSecretVersions(ctx, key, appID)
 }
+
+// backfillPageSize is how many unrecorded version rows the backfill reads at
+// a time.
+const backfillPageSize = 500
+
+// BackfillVersionEncryption records EncryptionAlgorithm on every version row
+// of the service's default app whose algorithm was never recorded and that the
+// configured key decrypts, and returns how many it marked.
+//
+// It classifies by trying the key: a row the key cannot decrypt is plaintext,
+// or sealed with some other key, and the backfill cannot tell which, so it
+// leaves that row alone. With no key configured nothing can be proven, so it
+// reads nothing and marks nothing. It pages by version id, so rows it leaves
+// unrecorded are not fetched again, and a second run marks nothing new.
+func (s *Service) BackfillVersionEncryption(ctx context.Context) (marked int, err error) {
+	if s.encryptor == nil {
+		return 0, nil
+	}
+	appID := s.resolveAppID("")
+
+	cursor := ""
+	for {
+		page, listErr := s.store.ListUnrecordedVersions(ctx, appID, cursor, backfillPageSize)
+		if listErr != nil {
+			return marked, fmt.Errorf("secret: list unrecorded versions: %w", listErr)
+		}
+		for _, v := range page {
+			if _, decErr := s.encryptor.Decrypt(v.EncryptedValue); decErr != nil {
+				continue
+			}
+			if setErr := s.store.SetVersionEncryption(ctx, v.ID, EncryptionAlgorithm); setErr != nil {
+				return marked, fmt.Errorf("secret: record version encryption: %w", setErr)
+			}
+			marked++
+		}
+		if len(page) < backfillPageSize {
+			return marked, nil
+		}
+		cursor = page[len(page)-1].ID.String()
+	}
+}
