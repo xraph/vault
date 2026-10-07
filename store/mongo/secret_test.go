@@ -24,6 +24,18 @@ import (
 func testStore(t *testing.T) *mongostore.Store {
 	t.Helper()
 
+	s := mongostore.New(testDB(t))
+	if err := s.Migrate(t.Context()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return s
+}
+
+// testDB opens an empty database named for the test and drops it when the
+// test ends. Nothing is migrated.
+func testDB(t *testing.T) *grove.DB {
+	t.Helper()
+
 	uri := os.Getenv("VAULT_TEST_MONGO_URL")
 	if uri == "" {
 		t.Skip("VAULT_TEST_MONGO_URL not set; skipping integration test")
@@ -53,12 +65,7 @@ func testStore(t *testing.T) *mongostore.Store {
 		}
 		db.Close()
 	})
-
-	s := mongostore.New(db)
-	if err := s.Migrate(t.Context()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	return s
+	return db
 }
 
 // legacyVersionRow resets a version row to how one from before the column

@@ -15,6 +15,31 @@ import (
 	"github.com/xraph/vault/secret"
 )
 
+// Grove's mongo driver builds insert and update documents from grove tags and
+// ignores the bson tags' omitempty: a nil map, slice or pointer is written as
+// an explicit null, never left out. The collections the Migrations group
+// creates validate each field's type, and before 20240101000013 they typed
+// maps as object and slices as array, so a null there was rejected. The
+// constructors below therefore write {} and [] for nil maps and slices.
+
+// emptyIfNil returns m, or an empty map when m is nil, so the field is stored
+// as {} rather than null.
+func emptyIfNil[K comparable, V any](m map[K]V) map[K]V {
+	if m == nil {
+		return map[K]V{}
+	}
+	return m
+}
+
+// emptySliceIfNil returns v, or an empty slice when v is nil, so the field is
+// stored as [] rather than null.
+func emptySliceIfNil[T any](v []T) []T {
+	if v == nil {
+		return []T{}
+	}
+	return v
+}
+
 // mustParseID parses a TypeID string from the database.
 // IDs stored in the DB are always valid, so parse errors indicate data corruption.
 func mustParseID(s string) id.ID {
@@ -47,7 +72,7 @@ func secretModelFromEntity(s *secret.Secret) *SecretModel {
 		ID: s.ID.String(), Key: s.Key, AppID: s.AppID,
 		EncryptedValue: s.EncryptedValue, EncryptionAlg: s.EncryptionAlg,
 		EncryptionKeyID: s.EncryptionKeyID, Version: s.Version,
-		Metadata: s.Metadata, ExpiresAt: s.ExpiresAt,
+		Metadata: emptyIfNil(s.Metadata), ExpiresAt: s.ExpiresAt,
 		CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
 	}
 }
@@ -77,6 +102,11 @@ func (m *SecretModel) toMeta() *secret.Meta {
 }
 
 // SecretVersionModel is the Grove model for vault_secret_versions (MongoDB).
+//
+// EncryptionAlg's omitempty has no effect: grove writes a nil pointer as an
+// explicit null. Rows from before the field existed have no field at all.
+// Both mean "never recorded", so filters for it use {encryption_alg: null},
+// which matches both, and never {$exists: false}.
 type SecretVersionModel struct {
 	grove.BaseModel `grove:"table:vault_secret_versions"`
 	ID              string    `grove:"id,pk"              bson:"_id"`
@@ -123,8 +153,8 @@ func flagModelFromEntity(f *flag.Definition) *FlagModel {
 	return &FlagModel{
 		ID: f.ID.String(), Key: f.Key, Type: string(f.Type),
 		DefaultValue: f.DefaultValue, Description: f.Description,
-		Tags: f.Tags, Variants: f.Variants,
-		Enabled: f.Enabled, AppID: f.AppID, Metadata: f.Metadata,
+		Tags: emptySliceIfNil(f.Tags), Variants: emptySliceIfNil(f.Variants),
+		Enabled: f.Enabled, AppID: f.AppID, Metadata: emptyIfNil(f.Metadata),
 		CreatedAt: f.CreatedAt, UpdatedAt: f.UpdatedAt,
 	}
 }
@@ -350,7 +380,7 @@ func auditModelFromEntity(e *audit.Entry) *AuditModel {
 		ID: e.ID.String(), Action: e.Action, Resource: e.Resource,
 		Key: e.Key, AppID: e.AppID, TenantID: e.TenantID,
 		UserID: e.UserID, IP: e.IP, Outcome: e.Outcome,
-		Metadata: e.Metadata, CreatedAt: e.CreatedAt,
+		Metadata: emptyIfNil(e.Metadata), CreatedAt: e.CreatedAt,
 	}
 }
 

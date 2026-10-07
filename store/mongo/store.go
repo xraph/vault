@@ -599,7 +599,7 @@ func (s *Store) SetConfig(ctx context.Context, e *cfgpkg.Entry) error {
 		ID: e.ID.String(), Key: e.Key, Value: e.Value,
 		ValueType: e.ValueType, Version: e.Version,
 		Description: e.Description, AppID: e.AppID,
-		Metadata: e.Metadata, CreatedAt: t, UpdatedAt: t,
+		Metadata: emptyIfNil(e.Metadata), CreatedAt: t, UpdatedAt: t,
 	}
 
 	_, err = s.mdb.NewUpdate(m).
@@ -740,7 +740,7 @@ func (s *Store) SetOverride(ctx context.Context, o *override.Override) error {
 	m := &OverrideModel{
 		ID: o.ID.String(), Key: o.Key, Value: o.Value,
 		AppID: o.AppID, TenantID: o.TenantID,
-		Metadata: o.Metadata, CreatedAt: t, UpdatedAt: t,
+		Metadata: emptyIfNil(o.Metadata), CreatedAt: t, UpdatedAt: t,
 	}
 
 	_, err := s.mdb.NewUpdate(m).

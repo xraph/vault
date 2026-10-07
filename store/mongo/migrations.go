@@ -3,6 +3,8 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -346,5 +348,104 @@ func init() {
 				return db.Collection(colSecretVersions).Indexes().DropOne(ctx, "app_id_1_encryption_alg_1")
 			},
 		},
+		&migrate.Migration{
+			Name:    "relax_vault_validators",
+			Version: "20240101000013",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				for _, model := range validatedModels() {
+					if err := setValidator(ctx, mexec, model, relaxedSchema); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				for _, model := range validatedModels() {
+					if err := setValidator(ctx, mexec, model, nil); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	)
+}
+
+// validatedModels lists the model of every collection the group validates.
+func validatedModels() []any {
+	return []any{
+		(*SecretModel)(nil), (*SecretVersionModel)(nil),
+		(*FlagModel)(nil), (*FlagRuleModel)(nil), (*FlagOverrideModel)(nil),
+		(*ConfigModel)(nil), (*ConfigVersionModel)(nil), (*OverrideModel)(nil),
+		(*RotationPolicyModel)(nil), (*RotationRecordModel)(nil), (*AuditModel)(nil),
+	}
+}
+
+// setValidator replaces the $jsonSchema validator on model's collection with
+// the one grove generates for model, passed through relax when it is non-nil.
+// A nil relax restores grove's generated validator unchanged.
+//
+// The level is moderate, so a document stored before the validator changed
+// can still be updated even if it does not match.
+func setValidator(ctx context.Context, mexec *mongomigrate.Executor, model any, relax func(bson.M, reflect.Type)) error {
+	q := mexec.DB().NewCreateCollection(model)
+	schema, err := q.BuildSchema()
+	if err != nil {
+		return fmt.Errorf("build %s validator: %w", q.GetCollection(), err)
+	}
+	if relax != nil {
+		relax(schema, reflect.TypeOf(model).Elem())
+	}
+	cmd := bson.D{
+		{Key: "collMod", Value: q.GetCollection()},
+		{Key: "validator", Value: bson.M{"$jsonSchema": schema}},
+		{Key: "validationLevel", Value: "moderate"},
+		{Key: "validationAction", Value: "error"},
+	}
+	if err := mexec.DB().Database().RunCommand(ctx, cmd).Err(); err != nil {
+		return fmt.Errorf("collMod %s: %w", q.GetCollection(), err)
+	}
+	return nil
+}
+
+// relaxedSchema loosens grove's generated schema for model type t where it
+// rejects rows vault writes. Grove types an interface field (a flag's default
+// or a config value, which may be a bool, number, string or object) as
+// string; the field loses its bsonType so any value passes. Maps and slices
+// may also be null, which is how vault wrote nil ones before it wrote {} and
+// [], so an older replica still running during a rolling deploy is not
+// rejected either.
+func relaxedSchema(schema bson.M, t reflect.Type) {
+	props, ok := schema["properties"].(bson.M)
+	if !ok {
+		return
+	}
+	for i := range t.NumField() {
+		f := t.Field(i)
+		col, _, _ := strings.Cut(f.Tag.Get("grove"), ",")
+		if col == "" || col == "id" || strings.HasPrefix(col, "table:") {
+			continue
+		}
+		prop, ok := props[col].(bson.M)
+		if !ok {
+			continue
+		}
+		switch f.Type.Kind() {
+		case reflect.Interface:
+			delete(prop, "bsonType")
+		case reflect.Map, reflect.Slice:
+			if base, isString := prop["bsonType"].(string); isString {
+				prop["bsonType"] = bson.A{base, "null"}
+			}
+		default:
+		}
+	}
 }
