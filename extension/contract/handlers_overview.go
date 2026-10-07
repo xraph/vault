@@ -8,10 +8,14 @@ import (
 
 	"github.com/xraph/vault/audit"
 	audithook "github.com/xraph/vault/audit_hook"
+	"github.com/xraph/vault/secret"
 )
 
 // overviewRecentActivityLimit is how many audit rows the overview shows.
 const overviewRecentActivityLimit = 10
+
+// expiringSoonDays is how far ahead the overview counts secrets as expiring.
+const expiringSoonDays = 30
 
 // rotationFailureWindow is how far back the overview counts failed rotations.
 const rotationFailureWindow = 24 * time.Hour
@@ -44,7 +48,16 @@ type overviewStatsResponse struct {
 	RotationWithoutRotator int64 `json:"rotationWithoutRotator"`
 	// RotationFailures24h counts failed rotation attempts, manual or
 	// scheduled, in the last 24 hours.
-	RotationFailures24h int64          `json:"rotationFailures24h"`
+	RotationFailures24h int64 `json:"rotationFailures24h"`
+	// PlaintextVersions counts version rows recorded as stored without
+	// encryption. UnrecordedVersions counts rows from before versions
+	// recorded an algorithm that the backfill has not classified.
+	PlaintextVersions  int64 `json:"plaintextVersions"`
+	UnrecordedVersions int64 `json:"unrecordedVersions"`
+	// ExpiredSecrets counts secrets whose expiry is at or before now.
+	// ExpiringSecrets counts those expiring after now and within 30 days.
+	ExpiredSecrets      int64          `json:"expiredSecrets"`
+	ExpiringSecrets     int64          `json:"expiringSecrets"`
 	EncryptionEnabled   bool           `json:"encryptionEnabled"`
 	EncryptionAlgorithm string         `json:"encryptionAlgorithm"`
 	RecentActivity      []AuditSummary `json:"recentActivity"`
@@ -75,6 +88,21 @@ func overviewStatsHandler(deps Deps) func(ctx context.Context, in overviewStatsR
 			return overviewStatsResponse{}, deps.mapError(intent, err)
 		}
 		if out.ConfigOverrides, err = st.CountOverrides(ctx, appID); err != nil {
+			return overviewStatsResponse{}, deps.mapError(intent, err)
+		}
+
+		versions, err := st.CountVersionEncryption(ctx, appID)
+		if err != nil {
+			return overviewStatsResponse{}, deps.mapError(intent, err)
+		}
+		out.PlaintextVersions = versions.Plaintext
+		out.UnrecordedVersions = versions.Unrecorded
+
+		soon := now.AddDate(0, 0, expiringSoonDays)
+		if out.ExpiredSecrets, err = st.CountSecretsMatching(ctx, appID, secret.ListOpts{ExpiresBefore: &now}); err != nil {
+			return overviewStatsResponse{}, deps.mapError(intent, err)
+		}
+		if out.ExpiringSecrets, err = st.CountSecretsMatching(ctx, appID, secret.ListOpts{ExpiresAfter: &now, ExpiresBefore: &soon}); err != nil {
 			return overviewStatsResponse{}, deps.mapError(intent, err)
 		}
 

@@ -30,9 +30,15 @@ const (
 const recentAuditLimit = 10
 
 // secretsListRequest is the wire request for secrets.list.
+//
+// Expiry is optional: "" lists every secret as before, "expired" lists
+// those whose expiry has passed, "7d" and "30d" list those expiring within
+// that many days. A filtered list contains only secrets that have an expiry,
+// ordered soonest first.
 type secretsListRequest struct {
-	Limit  int `json:"limit"`
-	Offset int `json:"offset"`
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
+	Expiry string `json:"expiry,omitempty"`
 }
 
 // secretsListResponse is the wire response for secrets.list.
@@ -59,11 +65,25 @@ func secretsListHandler(deps Deps) func(ctx context.Context, in secretsListReque
 			offset = 0
 		}
 
-		metas, err := deps.Vault.Secrets().List(ctx, appID, secret.ListOpts{Limit: limit, Offset: offset})
+		after, before, err := parseExpiry(in.Expiry, time.Now().UTC())
+		if err != nil {
+			return secretsListResponse{}, err
+		}
+		opts := secret.ListOpts{Limit: limit, Offset: offset, ExpiresAfter: after, ExpiresBefore: before}
+
+		metas, err := deps.Vault.Secrets().List(ctx, appID, opts)
 		if err != nil {
 			return secretsListResponse{}, deps.mapError("secrets.list", err)
 		}
-		total, err := deps.Vault.Store().CountSecrets(ctx, appID)
+		// The page and its total must describe the same set, so a filtered
+		// list counts with the same bounds; an unfiltered one counts as it
+		// always has.
+		var total int64
+		if opts.HasExpiryBound() {
+			total, err = deps.Vault.Store().CountSecretsMatching(ctx, appID, opts)
+		} else {
+			total, err = deps.Vault.Store().CountSecrets(ctx, appID)
+		}
 		if err != nil {
 			return secretsListResponse{}, deps.mapError("secrets.list", err)
 		}
@@ -400,4 +420,28 @@ func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteR
 // already carries the operator.
 func logPolicyDeleted(ctx context.Context, deps Deps, key, appID string) {
 	deps.Vault.Audit().LogAccess(scope.WithAppID(ctx, appID), key, audithook.ActionRotationPolicyDeleted, audithook.ResourceRotation)
+}
+
+// expiringWindows maps the secrets.list expiry filter values that mean
+// "expiring within N days" to N.
+var expiringWindows = map[string]int{"7d": 7, "30d": 30}
+
+// parseExpiry turns a secrets.list expiry filter into half-open bounds
+// measured from the one now the caller read for the request. "" means no
+// filter. "expired" is everything at or before now. "7d" and "30d" are
+// everything after now up to and including now plus that many days, so a
+// secret is never both expired and expiring. Anything else is a bad request.
+func parseExpiry(raw string, now time.Time) (after, before *time.Time, err error) {
+	switch raw {
+	case "":
+		return nil, nil, nil
+	case "expired":
+		return nil, &now, nil
+	}
+	days, ok := expiringWindows[raw]
+	if !ok {
+		return nil, nil, badRequest(`expiry must be "", "expired", "7d" or "30d"`)
+	}
+	end := now.AddDate(0, 0, days)
+	return &now, &end, nil
 }

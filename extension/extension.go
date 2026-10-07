@@ -54,6 +54,12 @@ type Extension struct {
 	vaultOpts []vault.Option
 	store     store.Store
 	useGrove  bool
+
+	// backfillCancel and backfillDone belong to the version-encryption
+	// backfill Start launches. Stop cancels it and waits for it before the
+	// store is closed.
+	backfillCancel context.CancelFunc
+	backfillDone   chan struct{}
 }
 
 // New creates a new Vault Forge extension with the given options.
@@ -196,20 +202,61 @@ func (e *Extension) buildVault() (*vault.Vault, error) {
 // and a registered rotator never rotates on schedule. The loop is started
 // with context.Background() rather than the context Start receives, which
 // may be cancelled or time out well before the extension itself stops.
+//
+// It also starts the version-encryption backfill in the background, so Start
+// does not wait on a large table. The backfill only records what the
+// configured key proves, so running it on every start is safe and a second
+// run marks nothing.
 func (e *Extension) Start(_ context.Context) error {
 	if e.v != nil {
 		if err := e.v.Rotation().Start(context.Background()); err != nil {
 			return err
 		}
+		e.startBackfill()
 	}
 	e.MarkStarted()
 	return nil
+}
+
+// startBackfill runs the version-encryption backfill in a goroutine that Stop
+// can cancel and wait for.
+func (e *Extension) startBackfill() {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	e.backfillCancel, e.backfillDone = cancel, done
+	v := e.v
+	go func() {
+		defer close(done)
+		marked, err := v.Secrets().BackfillVersionEncryption(ctx)
+		logger := e.Logger()
+		if logger == nil {
+			return
+		}
+		if err != nil {
+			logger.Warn("vault: version encryption backfill failed", forge.F("marked", marked), forge.F("error", err.Error()))
+			return
+		}
+		logger.Info("vault: version encryption backfill finished", forge.F("marked", marked))
+	}()
+}
+
+// stopBackfill cancels the backfill and waits for it, bounded by ctx.
+func (e *Extension) stopBackfill(ctx context.Context) {
+	if e.backfillCancel == nil {
+		return
+	}
+	e.backfillCancel()
+	select {
+	case <-e.backfillDone:
+	case <-ctx.Done():
+	}
 }
 
 // Stop implements [forge.Extension]. The rotation loop is stopped before
 // the store is closed, so no in-flight rotation check can run against a
 // closed store.
 func (e *Extension) Stop(ctx context.Context) error {
+	e.stopBackfill(ctx)
 	if e.v != nil {
 		if err := e.v.Rotation().Stop(ctx); err != nil {
 			e.MarkStopped()

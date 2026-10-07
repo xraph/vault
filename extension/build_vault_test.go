@@ -5,12 +5,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/xraph/forge"
 
 	"github.com/xraph/vault"
+	"github.com/xraph/vault/crypto"
+	"github.com/xraph/vault/id"
+	"github.com/xraph/vault/secret"
 	"github.com/xraph/vault/store/memory"
 )
 
@@ -160,5 +164,110 @@ func TestAuditIsOnEvenWhenEnableAuditIsFalse(t *testing.T) {
 	}
 	if count == 0 {
 		t.Error("expected audit entries to exist, but CountAudit returned 0; auditing should always be on")
+	}
+}
+
+// legacyRowStore reports one version row whose algorithm was never recorded
+// and remembers the algorithm the backfill records for it, standing in for a
+// row written before versions carried one. Every other call passes through to
+// the embedded memory store.
+type legacyRowStore struct {
+	*memory.Store
+	row *secret.Version
+
+	mu       sync.Mutex
+	recorded string
+}
+
+func (l *legacyRowStore) ListUnrecordedVersions(_ context.Context, _, after string, _ int) ([]*secret.Version, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.recorded != "" || l.row.ID.String() <= after {
+		return []*secret.Version{}, nil
+	}
+	return []*secret.Version{l.row}, nil
+}
+
+func (l *legacyRowStore) SetVersionEncryption(_ context.Context, _ id.ID, alg string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.recorded = alg
+	return nil
+}
+
+func (l *legacyRowStore) recordedAlg() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.recorded
+}
+
+// TestStartBackfillsVersionEncryption proves Start classifies a legacy row the
+// configured key decrypts, without Start itself waiting on it.
+func TestStartBackfillsVersionEncryption(t *testing.T) {
+	key := mustTestKey(t)
+	enc, err := crypto.NewEncryptor(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := enc.Encrypt([]byte("legacy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &legacyRowStore{
+		Store: memory.New(),
+		row:   &secret.Version{ID: id.NewVersionID(), SecretKey: "old", AppID: "app1", Version: 1, EncryptedValue: sealed},
+	}
+	e := &Extension{
+		BaseExtension: forge.NewBaseExtension(ExtensionName, ExtensionVersion, ExtensionDescription),
+		config:        Config{AppID: "app1"},
+		store:         st,
+		vaultOpts:     []vault.Option{vault.WithEncryptionKey(key)},
+	}
+	v, err := e.buildVault()
+	if err != nil {
+		t.Fatalf("buildVault() returned an error: %v", err)
+	}
+	e.v = v
+
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for st.recordedAlg() == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := st.recordedAlg(); got != secret.EncryptionAlgorithm {
+		t.Errorf("recorded algorithm = %q after Start, want %q", got, secret.EncryptionAlgorithm)
+	}
+	if err := e.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+}
+
+// TestStartWithoutAKeyMarksNothing: with no key the backfill proves nothing,
+// so it records nothing.
+func TestStartWithoutAKeyMarksNothing(t *testing.T) {
+	st := &legacyRowStore{
+		Store: memory.New(),
+		row:   &secret.Version{ID: id.NewVersionID(), SecretKey: "old", AppID: "app1", Version: 1, EncryptedValue: []byte("plain")},
+	}
+	e := &Extension{
+		BaseExtension: forge.NewBaseExtension(ExtensionName, ExtensionVersion, ExtensionDescription),
+		config:        Config{AppID: "app1"},
+		store:         st,
+	}
+	v, err := e.buildVault()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.v = v
+	if err := e.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.recordedAlg(); got != "" {
+		t.Errorf("recorded %q with no key configured, want nothing", got)
 	}
 }

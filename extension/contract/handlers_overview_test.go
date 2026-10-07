@@ -15,6 +15,7 @@ import (
 	"github.com/xraph/vault/flag"
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/rotation"
+	"github.com/xraph/vault/secret"
 	"github.com/xraph/vault/store"
 	"github.com/xraph/vault/store/memory"
 )
@@ -102,6 +103,10 @@ func TestOverviewStats_EveryStatOnASeededVault(t *testing.T) {
 		"rotationOverdue":        {out.RotationOverdue, 1},
 		"rotationWithoutRotator": {out.RotationWithoutRotator, 1},
 		"rotationFailures24h":    {out.RotationFailures24h, 1},
+		"plaintextVersions":      {out.PlaintextVersions, 1},
+		"unrecordedVersions":     {out.UnrecordedVersions, 0},
+		"expiredSecrets":         {out.ExpiredSecrets, 0},
+		"expiringSecrets":        {out.ExpiringSecrets, 0},
 	}
 	for name, p := range want {
 		if p[0] != p[1] {
@@ -239,6 +244,20 @@ func (s failingStore) CountConfig(ctx context.Context, appID string) (int64, err
 	return s.Store.CountConfig(ctx, appID)
 }
 
+func (s failingStore) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
+	if err := s.boom("CountVersionEncryption"); err != nil {
+		return secret.VersionEncryptionCounts{}, err
+	}
+	return s.Store.CountVersionEncryption(ctx, appID)
+}
+
+func (s failingStore) CountSecretsMatching(ctx context.Context, appID string, opts secret.ListOpts) (int64, error) {
+	if err := s.boom("CountSecretsMatching"); err != nil {
+		return 0, err
+	}
+	return s.Store.CountSecretsMatching(ctx, appID, opts)
+}
+
 func (s failingStore) CountOverrides(ctx context.Context, appID string) (int64, error) {
 	if err := s.boom("CountOverrides"); err != nil {
 		return 0, err
@@ -271,7 +290,7 @@ func (s failingStore) ListAudit(ctx context.Context, appID string, opts audit.Li
 func TestOverviewStats_AnyStoreErrorFailsTheQuery(t *testing.T) {
 	for _, fail := range []string{
 		"CountSecrets", "CountSecretsUnencrypted", "CountFlagDefinitions", "CountConfig", "CountOverrides",
-		"ListRotationPolicies", "CountAuditMatching", "ListAudit",
+		"ListRotationPolicies", "CountAuditMatching", "ListAudit", "CountVersionEncryption", "CountSecretsMatching",
 	} {
 		t.Run(fail, func(t *testing.T) {
 			v, err := vault.New(vault.WithStore(failingStore{Store: memory.New(), fail: fail}), vault.WithAppID(testAppID), vault.WithEncryptionKey(testEncryptionKey))
@@ -288,3 +307,94 @@ func TestOverviewStats_AnyStoreErrorFailsTheQuery(t *testing.T) {
 		})
 	}
 }
+
+// The expired and expiring figures use the same half-open bounds as the
+// secrets.list filter: expired is before now, expiring is after now and
+// within 30 days, a secret with no expiry is neither, and the two never
+// overlap.
+func TestOverviewStats_ExpiredAndExpiringFromASeededVault(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	seeds := map[string]*time.Time{
+		"gone-long-ago": ptrTime(now.Add(-90 * 24 * time.Hour)),
+		"gone-just-now": ptrTime(now.Add(-time.Minute)),
+		"in-an-hour":    ptrTime(now.Add(time.Hour)),
+		"in-29-days":    ptrTime(now.Add(29 * 24 * time.Hour)),
+		"in-31-days":    ptrTime(now.Add(31 * 24 * time.Hour)),
+		"never":         nil,
+	}
+	for k, exp := range seeds {
+		var opts []secret.SetOption
+		if exp != nil {
+			opts = append(opts, secret.WithExpiresAt(*exp))
+		}
+		if _, err := v.Secrets().Set(ctx, k, []byte("v"), testAppID, opts...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := overviewStatsHandler(Deps{Vault: v})(ctx, overviewStatsRequest{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ExpiredSecrets != 2 || out.ExpiringSecrets != 2 {
+		t.Errorf("expired %d expiring %d, want 2 2", out.ExpiredSecrets, out.ExpiringSecrets)
+	}
+	if out.PlaintextVersions != 0 || out.UnrecordedVersions != 0 {
+		t.Errorf("plaintext %d unrecorded %d, want 0 0", out.PlaintextVersions, out.UnrecordedVersions)
+	}
+}
+
+// Version counts come straight from the store's tally.
+func TestOverviewStats_VersionEncryptionCounts(t *testing.T) {
+	v, st := newTestVault(t)
+	ctx := context.Background()
+	plain, err := vault.New(vault.WithStore(st), vault.WithAppID(testAppID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err = plain.Secrets().Set(ctx, "clear", []byte("v"), testAppID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = v.Secrets().Set(ctx, "sealed", []byte("v"), testAppID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := overviewStatsHandler(Deps{Vault: v})(ctx, overviewStatsRequest{}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.PlaintextVersions != 3 {
+		t.Errorf("plaintextVersions = %d, want 3", out.PlaintextVersions)
+	}
+}
+
+// secondMatchingFails passes the first CountSecretsMatching call and fails
+// the second, so the expiring count's error path is covered on its own.
+type secondMatchingFails struct {
+	store.Store
+	calls int
+}
+
+func (s *secondMatchingFails) CountSecretsMatching(ctx context.Context, appID string, opts secret.ListOpts) (int64, error) {
+	s.calls++
+	if s.calls == 2 {
+		return 0, errStoreBoom
+	}
+	return s.Store.CountSecretsMatching(ctx, appID, opts)
+}
+
+func TestOverviewStats_ExpiringCountErrorFailsTheQuery(t *testing.T) {
+	st := &secondMatchingFails{Store: memory.New()}
+	v, err := vault.New(vault.WithStore(st), vault.WithAppID(testAppID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = overviewStatsHandler(Deps{Vault: v})(context.Background(), overviewStatsRequest{}, dashcontract.Principal{})
+	if codeOf(err) != dashcontract.CodeInternal {
+		t.Errorf("code = %q (%v), want INTERNAL", codeOf(err), err)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

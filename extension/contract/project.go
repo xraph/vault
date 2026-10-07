@@ -39,6 +39,10 @@ type SecretVersionSummary struct {
 	Version   int64  `json:"version"`
 	CreatedBy string `json:"createdBy,omitempty"`
 	CreatedAt string `json:"createdAt"`
+	// Encryption is "encrypted", "plaintext", or "unknown" for a version
+	// written before versions recorded how they were stored and not yet
+	// classified.
+	Encryption string `json:"encryption"`
 }
 
 // RotationPolicySummary is the wire projection of a rotation policy.
@@ -118,10 +122,25 @@ func projectSecretSummary(m *secret.Meta) SecretSummary {
 // projectSecretVersionSummary projects a secret.Version onto its wire type.
 func projectSecretVersionSummary(v *secret.Version) SecretVersionSummary {
 	return SecretVersionSummary{
-		ID:        v.ID.String(),
-		Version:   v.Version,
-		CreatedBy: v.CreatedBy,
-		CreatedAt: formatTime(v.CreatedAt),
+		ID:         v.ID.String(),
+		Version:    v.Version,
+		CreatedBy:  v.CreatedBy,
+		CreatedAt:  formatTime(v.CreatedAt),
+		Encryption: versionEncryption(v.EncryptionAlg),
+	}
+}
+
+// versionEncryption maps a version's recorded algorithm to its wire word:
+// nil is not recorded, an empty string is plaintext, anything else is an
+// algorithm name.
+func versionEncryption(alg *string) string {
+	switch {
+	case alg == nil:
+		return "unknown"
+	case *alg == "":
+		return "plaintext"
+	default:
+		return "encrypted"
 	}
 }
 

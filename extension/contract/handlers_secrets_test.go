@@ -18,6 +18,7 @@ import (
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/rotation"
 	"github.com/xraph/vault/secret"
+	"github.com/xraph/vault/store"
 	"github.com/xraph/vault/store/memory"
 )
 
@@ -870,5 +871,255 @@ func walkWireType(t *testing.T, typ reflect.Type, visited map[reflect.Type]bool)
 			t.Errorf("%s.%s has JSON name %q: a wire type must never carry a raw secret value", typ.Name(), f.Name, name)
 		}
 		walkWireType(t, f.Type, visited)
+	}
+}
+
+// --- secrets.list expiry filter ---
+
+// recordingStore records the options secrets.list reaches the store with,
+// and which of the two count methods it used for the total.
+type recordingStore struct {
+	store.Store
+	listOpts     []secret.ListOpts
+	matchingOpts []secret.ListOpts
+	totalCalls   int
+}
+
+func (r *recordingStore) ListSecrets(ctx context.Context, appID string, opts secret.ListOpts) ([]*secret.Meta, error) {
+	r.listOpts = append(r.listOpts, opts)
+	return r.Store.ListSecrets(ctx, appID, opts)
+}
+
+func (r *recordingStore) CountSecretsMatching(ctx context.Context, appID string, opts secret.ListOpts) (int64, error) {
+	r.matchingOpts = append(r.matchingOpts, opts)
+	return r.Store.CountSecretsMatching(ctx, appID, opts)
+}
+
+func (r *recordingStore) CountSecrets(ctx context.Context, appID string) (int64, error) {
+	r.totalCalls++
+	return r.Store.CountSecrets(ctx, appID)
+}
+
+func newRecordingVault(t *testing.T) (*vault.Vault, *recordingStore) {
+	t.Helper()
+	rs := &recordingStore{Store: memory.New()}
+	v, err := vault.New(vault.WithStore(rs), vault.WithAppID(testAppID), vault.WithEncryptionKey(testEncryptionKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v, rs
+}
+
+func TestParseExpiry(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	after, before, err := parseExpiry("", now)
+	if err != nil || after != nil || before != nil {
+		t.Errorf("empty: %v %v %v, want no bounds", after, before, err)
+	}
+	after, before, err = parseExpiry("expired", now)
+	if err != nil || after != nil || before == nil || !before.Equal(now) {
+		t.Errorf("expired: after=%v before=%v err=%v, want before=now only", after, before, err)
+	}
+	for raw, days := range map[string]int{"7d": 7, "30d": 30} {
+		after, before, err = parseExpiry(raw, now)
+		if err != nil || after == nil || before == nil {
+			t.Fatalf("%s: %v %v %v", raw, after, before, err)
+		}
+		if !after.Equal(now) || !before.Equal(now.AddDate(0, 0, days)) {
+			t.Errorf("%s: window %v to %v, want %v to %v", raw, after, before, now, now.AddDate(0, 0, days))
+		}
+	}
+	for _, bad := range []string{"soon", "7D", " 7d", "1d", "expiring"} {
+		if _, _, err = parseExpiry(bad, now); codeOf(err) != dashcontract.CodeBadRequest {
+			t.Errorf("%q: code = %q, want BAD_REQUEST", bad, codeOf(err))
+		}
+	}
+}
+
+func TestSecretsList_ExpiryFilterPassesBoundsAndCountsTheSameSet(t *testing.T) {
+	v, rs := newRecordingVault(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	seeds := []struct {
+		key string
+		exp *time.Time
+	}{
+		{"expired", ptrTime(now.Add(-time.Hour))},
+		{"soon-b", ptrTime(now.Add(2 * 24 * time.Hour))},
+		{"soon-a", ptrTime(now.Add(24 * time.Hour))},
+		{"later", ptrTime(now.Add(20 * 24 * time.Hour))},
+		{"never", nil},
+	}
+	for _, s := range seeds {
+		var opts []secret.SetOption
+		if s.exp != nil {
+			opts = append(opts, secret.WithExpiresAt(*s.exp))
+		}
+		if _, err := v.Secrets().Set(ctx, s.key, []byte("v"), testAppID, opts...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := secretsListHandler(Deps{Vault: v})
+
+	cases := []struct {
+		expiry string
+		want   []string
+	}{
+		{"expired", []string{"expired"}},
+		{"7d", []string{"soon-a", "soon-b"}},
+		{"30d", []string{"soon-a", "soon-b", "later"}},
+	}
+	for _, c := range cases {
+		rs.listOpts, rs.matchingOpts, rs.totalCalls = nil, nil, 0
+		out, err := handler(ctx, secretsListRequest{Expiry: c.expiry}, dashcontract.Principal{})
+		if err != nil {
+			t.Fatalf("%s: %v", c.expiry, err)
+		}
+		var got []string
+		for _, s := range out.Secrets {
+			got = append(got, s.Key)
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: keys %v, want %v", c.expiry, got, c.want)
+		}
+		if out.Total != int64(len(c.want)) {
+			t.Errorf("%s: total %d, want %d", c.expiry, out.Total, len(c.want))
+		}
+		if rs.totalCalls != 0 || len(rs.matchingOpts) != 1 || len(rs.listOpts) != 1 {
+			t.Fatalf("%s: calls total=%d matching=%d list=%d, want 0 1 1", c.expiry, rs.totalCalls, len(rs.matchingOpts), len(rs.listOpts))
+		}
+		l, m := rs.listOpts[0], rs.matchingOpts[0]
+		if !sameTime(l.ExpiresAfter, m.ExpiresAfter) || !sameTime(l.ExpiresBefore, m.ExpiresBefore) {
+			t.Errorf("%s: page bounds %v/%v differ from count bounds %v/%v", c.expiry, l.ExpiresAfter, l.ExpiresBefore, m.ExpiresAfter, m.ExpiresBefore)
+		}
+		if c.expiry == "expired" && (l.ExpiresAfter != nil || l.ExpiresBefore == nil) {
+			t.Errorf("expired bounds = %v/%v, want before only", l.ExpiresAfter, l.ExpiresBefore)
+		}
+		if c.expiry != "expired" && (l.ExpiresAfter == nil || l.ExpiresBefore == nil) {
+			t.Errorf("%s bounds = %v/%v, want both", c.expiry, l.ExpiresAfter, l.ExpiresBefore)
+		}
+	}
+
+	// A filtered page still pages: the total stays the filtered total.
+	out, err := handler(ctx, secretsListRequest{Expiry: "30d", Limit: 1, Offset: 1}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Secrets) != 1 || out.Secrets[0].Key != "soon-b" || out.Total != 3 {
+		t.Errorf("page 2 = %+v total %d, want [soon-b] 3", out.Secrets, out.Total)
+	}
+}
+
+func TestSecretsList_UnknownExpiryIsBadRequestAndReadsNothing(t *testing.T) {
+	v, rs := newRecordingVault(t)
+	_, err := secretsListHandler(Deps{Vault: v})(context.Background(), secretsListRequest{Expiry: "soon"}, dashcontract.Principal{})
+	if codeOf(err) != dashcontract.CodeBadRequest {
+		t.Fatalf("code = %q (%v), want BAD_REQUEST", codeOf(err), err)
+	}
+	if len(rs.listOpts) != 0 || len(rs.matchingOpts) != 0 || rs.totalCalls != 0 {
+		t.Errorf("store was read for a bad request: %d %d %d", len(rs.listOpts), len(rs.matchingOpts), rs.totalCalls)
+	}
+}
+
+func TestSecretsList_OmittedExpiryBehavesAsBefore(t *testing.T) {
+	v, rs := newRecordingVault(t)
+	ctx := context.Background()
+	future := time.Now().UTC().Add(time.Hour)
+	if _, err := v.Secrets().Set(ctx, "a", []byte("v"), testAppID, secret.WithExpiresAt(future)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Secrets().Set(ctx, "b", []byte("v"), testAppID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := secretsListHandler(Deps{Vault: v})(ctx, secretsListRequest{Limit: 10}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Secrets) != 2 || out.Total != 2 {
+		t.Errorf("got %d secrets total %d, want 2 2", len(out.Secrets), out.Total)
+	}
+	if rs.totalCalls != 1 || len(rs.matchingOpts) != 0 {
+		t.Errorf("total calls %d matching calls %d, want 1 0", rs.totalCalls, len(rs.matchingOpts))
+	}
+	if len(rs.listOpts) != 1 || rs.listOpts[0].HasExpiryBound() || rs.listOpts[0].Limit != 10 {
+		t.Errorf("list opts = %+v, want limit 10 and no bounds", rs.listOpts)
+	}
+}
+
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+// --- secrets.versions encryption ---
+
+// unrecordedVersions hides the recorded algorithm of every version it lists,
+// as a row from before versions recorded one would.
+type unrecordedVersions struct{ store.Store }
+
+func (u unrecordedVersions) ListSecretVersions(ctx context.Context, key, appID string) ([]*secret.Version, error) {
+	vs, err := u.Store.ListSecretVersions(ctx, key, appID)
+	for _, v := range vs {
+		v.EncryptionAlg = nil
+	}
+	return vs, err
+}
+
+func TestSecretsVersions_ProjectsEncryption(t *testing.T) {
+	ctx := context.Background()
+	st := memory.New()
+	sealed, err := vault.New(vault.WithStore(st), vault.WithAppID(testAppID), vault.WithEncryptionKey(testEncryptionKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := vault.New(vault.WithStore(st), vault.WithAppID(testAppID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// v1 written without a key, v2 with one.
+	if _, err = plain.Secrets().Set(ctx, "mixed", []byte("v"), testAppID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = sealed.Secrets().Set(ctx, "mixed", []byte("v"), testAppID); err != nil {
+		t.Fatal(err)
+	}
+	out, err := secretsVersionsHandler(Deps{Vault: sealed})(ctx, secretsVersionsRequest{Key: "mixed"}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]string{}
+	for _, v := range out.Versions {
+		got[v.Version] = v.Encryption
+	}
+	if got[1] != "plaintext" || got[2] != "encrypted" {
+		t.Errorf("encryption by version = %v, want 1 plaintext, 2 encrypted", got)
+	}
+
+	legacy, err := vault.New(vault.WithStore(unrecordedVersions{st}), vault.WithAppID(testAppID), vault.WithEncryptionKey(testEncryptionKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = secretsVersionsHandler(Deps{Vault: legacy})(ctx, secretsVersionsRequest{Key: "mixed"}, dashcontract.Principal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range out.Versions {
+		if v.Encryption != "unknown" {
+			t.Errorf("version %d encryption = %q, want unknown", v.Version, v.Encryption)
+		}
+	}
+}
+
+func TestVersionEncryption(t *testing.T) {
+	empty, alg := "", "AES-256-GCM"
+	for name, c := range map[string]struct {
+		in   *string
+		want string
+	}{"nil": {nil, "unknown"}, "empty": {&empty, "plaintext"}, "alg": {&alg, "encrypted"}} {
+		if got := versionEncryption(c.in); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
 	}
 }
