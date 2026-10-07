@@ -33,12 +33,14 @@ The plugin's pages use Tailwind classes of their own, so the shell's stylesheet
 has to scan the package. If your shell declares its sources with `@source`, add
 `@source "<path to>/packages/plugin-vault/src";` next to the others.
 
-Vault now needs forge v1.11.2. On v1.10.0 the dashboard transport never passed
-a manifest's `invalidates` to the client, so no write refreshed any page. Vault
-declares its cache hints in `extension/contract/manifest.yaml` and returns none
-from its handlers, and that is the case v1.10.0 dropped. `go.mod` pins
-v1.11.2 already; if a workspace `replace` or another module holds forge back,
-lift it.
+Vault now needs forge v1.12.0 and grove v1.7.0. On forge v1.10.0 the dashboard
+transport never passed a manifest's `invalidates` to the client, so no write
+refreshed any page. Vault declares its cache hints in
+`extension/contract/manifest.yaml` and returns none from its handlers, and that
+is the case v1.10.0 dropped. v1.12.0 is also the first forge whose dashboard
+contract doesn't pull in templ, so with it vault builds without `a-h/templ` or
+`forgeui` at all. `go.mod` pins both versions already; if a workspace `replace`
+or another module holds them back, lift it.
 
 The extension now starts the rotation loop, on every replica. Each minute the
 loop looks for enabled policies whose rotation is due. Before it rotates one,
