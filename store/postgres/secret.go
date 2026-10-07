@@ -7,6 +7,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/xraph/grove/drivers/pgdriver"
+
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/id"
 	"github.com/xraph/vault/secret"
@@ -130,9 +132,12 @@ func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
 // ListSecrets returns secret metadata for an app.
 func (s *Store) ListSecrets(ctx context.Context, appID string, opts secret.ListOpts) ([]*secret.Meta, error) {
 	var models []SecretModel
-	q := s.pgdb().NewSelect(&models).
-		Where("app_id = ?", appID).
-		OrderExpr("key ASC")
+	q := whereSecrets(s.pgdb().NewSelect(&models).Where("app_id = ?", appID), opts)
+	if opts.HasExpiryBound() {
+		q = q.OrderExpr("expires_at ASC, key ASC")
+	} else {
+		q = q.OrderExpr("key ASC")
+	}
 
 	if opts.Limit > 0 {
 		q = q.Limit(opts.Limit)
@@ -205,6 +210,31 @@ func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 	return s.pgdb().NewSelect((*SecretModel)(nil)).
 		Where("app_id = ?", appID).
 		Count(ctx)
+}
+
+// CountSecretsMatching returns the number of secrets belonging to appID that
+// pass the expiry bounds in opts. Limit and Offset are ignored.
+func (s *Store) CountSecretsMatching(ctx context.Context, appID string, opts secret.ListOpts) (int64, error) {
+	q := s.pgdb().NewSelect((*SecretModel)(nil)).Where("app_id = ?", appID)
+	return whereSecrets(q, opts).Count(ctx)
+}
+
+// whereSecrets applies the expiry bounds in opts to a secrets query, so the
+// page and the count are built from the same conditions. A bound also requires
+// an expiry: a NULL expires_at fails every comparison in SQL, and the explicit
+// IS NOT NULL says so.
+func whereSecrets(q *pgdriver.SelectQuery, opts secret.ListOpts) *pgdriver.SelectQuery {
+	if !opts.HasExpiryBound() {
+		return q
+	}
+	q = q.Where("expires_at IS NOT NULL")
+	if opts.ExpiresAfter != nil {
+		q = q.Where("expires_at > ?", opts.ExpiresAfter.UTC())
+	}
+	if opts.ExpiresBefore != nil {
+		q = q.Where("expires_at <= ?", opts.ExpiresBefore.UTC())
+	}
+	return q
 }
 
 // CountSecretsUnencrypted returns the number of secrets belonging to appID

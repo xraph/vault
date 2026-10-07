@@ -68,10 +68,24 @@ type VersionEncryptionCounts struct {
 }
 
 // ListOpts configures list queries for secrets.
+//
+// The expiry bounds are half-open so the two views of "expired" and "expiring"
+// never overlap: ExpiresAfter is exclusive (expires_at > t) and ExpiresBefore
+// is inclusive (expires_at <= t). Expired secrets are ExpiresBefore = now. The
+// ones expiring within 30 days are ExpiresAfter = now, ExpiresBefore =
+// now+30d. Setting either bound also excludes secrets with no expiry, and
+// orders the result by expiry, then key.
 type ListOpts struct {
-	Limit  int
-	Offset int
-	AppID  string
+	Limit         int
+	Offset        int
+	AppID         string
+	ExpiresAfter  *time.Time
+	ExpiresBefore *time.Time
+}
+
+// HasExpiryBound reports whether either expiry bound is set.
+func (o ListOpts) HasExpiryBound() bool {
+	return o.ExpiresAfter != nil || o.ExpiresBefore != nil
 }
 
 // ToMeta creates a Meta from a Secret.

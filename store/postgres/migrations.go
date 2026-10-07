@@ -298,5 +298,28 @@ func init() {
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_secret_expiry_and_version_alg_indexes",
+			Version: "20240101120012",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				for _, ddl := range []string{createExpiryIndex, createVersionAlgIndex} {
+					if _, err := exec.Exec(ctx, ddl); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				for _, ddl := range []string{
+					`DROP INDEX IF EXISTS idx_secret_versions_app_alg`,
+					`DROP INDEX IF EXISTS idx_secrets_app_expires`,
+				} {
+					if _, err := exec.Exec(ctx, ddl); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		},
 	)
 }

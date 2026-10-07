@@ -319,5 +319,32 @@ func init() {
 				return mexec.DropCollection(ctx, (*AuditModel)(nil))
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_secret_expiry_and_version_alg_indexes",
+			Version: "20240101000012",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				if err := mexec.CreateIndexes(ctx, colSecrets, []mongo.IndexModel{secretsExpiryIndex}); err != nil {
+					return err
+				}
+				return mexec.CreateIndexes(ctx, colSecretVersions, []mongo.IndexModel{secretVersionsAlgIndex})
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+
+				db := mexec.DB().Database()
+				if err := db.Collection(colSecrets).Indexes().DropOne(ctx, "app_id_1_expires_at_1"); err != nil {
+					return err
+				}
+				return db.Collection(colSecretVersions).Indexes().DropOne(ctx, "app_id_1_encryption_alg_1")
+			},
+		},
 	)
 }

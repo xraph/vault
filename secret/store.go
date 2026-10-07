@@ -17,7 +17,10 @@ type Store interface {
 	// DeleteSecret removes a secret and all its versions.
 	DeleteSecret(ctx context.Context, key, appID string) error
 
-	// ListSecrets returns secret metadata (never values) for an app.
+	// ListSecrets returns secret metadata (never values) for an app. Without
+	// an expiry bound in opts the result is ordered by key. With one, only
+	// secrets that expire within the bounds are returned, ordered by expiry
+	// and then key.
 	ListSecrets(ctx context.Context, appID string, opts ListOpts) ([]*Meta, error)
 
 	// GetSecretVersion retrieves a specific version of a secret. The returned
@@ -32,6 +35,11 @@ type Store interface {
 	// CountSecrets returns the total number of secrets for an app,
 	// independent of any paging.
 	CountSecrets(ctx context.Context, appID string) (int64, error)
+
+	// CountSecretsMatching returns the number of secrets for an app that
+	// match opts, applying the same expiry bounds as ListSecrets. Limit and
+	// Offset are ignored.
+	CountSecretsMatching(ctx context.Context, appID string, opts ListOpts) (int64, error)
 
 	// CountSecretsUnencrypted returns the number of secrets for an app whose
 	// stored value carries no encryption algorithm, that is, rows written

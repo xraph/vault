@@ -88,6 +88,14 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 
+	// These indexes come after the ALTER because one of them covers the
+	// column it adds. They mirror "add_secret_expiry_and_version_alg_indexes".
+	for _, ddl := range []string{createExpiryIndex, createVersionAlgIndex} {
+		if _, err := pgdb.Exec(ctx, ddl); err != nil {
+			return err
+		}
+	}
+
 	s.logger.Info("postgres: migrations complete")
 	return nil
 }
@@ -105,6 +113,14 @@ func (s *Store) Close() error {
 // DDL statements for Migrate().
 const (
 	alterVersionsAddAlg = `ALTER TABLE vault_secret_versions ADD COLUMN IF NOT EXISTS encryption_alg TEXT`
+
+	// createExpiryIndex serves the expiry filter on ListSecrets and
+	// CountSecretsMatching.
+	createExpiryIndex = `CREATE INDEX IF NOT EXISTS idx_secrets_app_expires ON vault_secrets (app_id, expires_at)`
+
+	// createVersionAlgIndex serves CountVersionEncryption, which counts
+	// an app's version rows by recorded algorithm.
+	createVersionAlgIndex = `CREATE INDEX IF NOT EXISTS idx_secret_versions_app_alg ON vault_secret_versions (app_id, encryption_alg)`
 
 	createSecretsTable = `CREATE TABLE IF NOT EXISTS vault_secrets (
 		id              TEXT        PRIMARY KEY,

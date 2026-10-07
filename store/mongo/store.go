@@ -121,6 +121,18 @@ func isNoDocuments(err error) bool {
 	return errors.Is(err, mongo.ErrNoDocuments)
 }
 
+// secretsExpiryIndex serves the expiry filter on ListSecrets and
+// CountSecretsMatching.
+var secretsExpiryIndex = mongo.IndexModel{
+	Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "expires_at", Value: 1}},
+}
+
+// secretVersionsAlgIndex serves CountVersionEncryption, which counts an app's
+// version rows by recorded algorithm.
+var secretVersionsAlgIndex = mongo.IndexModel{
+	Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "encryption_alg", Value: 1}},
+}
+
 // migrationIndexes returns the index definitions for all vault collections.
 func migrationIndexes() map[string][]mongo.IndexModel {
 	return map[string][]mongo.IndexModel{
@@ -129,6 +141,7 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 				Keys:    bson.D{{Key: "key", Value: 1}, {Key: "app_id", Value: 1}},
 				Options: options.Index().SetUnique(true),
 			},
+			secretsExpiryIndex,
 		},
 		colSecretVersions: {
 			{
@@ -136,6 +149,7 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 				Options: options.Index().SetUnique(true),
 			},
 			{Keys: bson.D{{Key: "secret_key", Value: 1}, {Key: "app_id", Value: 1}}},
+			secretVersionsAlgIndex,
 		},
 		colFlags: {
 			{
@@ -267,9 +281,13 @@ func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
 // ListSecrets returns secret metadata for an app.
 func (s *Store) ListSecrets(ctx context.Context, appID string, opts secret.ListOpts) ([]*secret.Meta, error) {
 	var models []SecretModel
+	sortBy := bson.D{{Key: "key", Value: 1}}
+	if opts.HasExpiryBound() {
+		sortBy = bson.D{{Key: "expires_at", Value: 1}, {Key: "key", Value: 1}}
+	}
 	q := s.mdb.NewFind(&models).
-		Filter(bson.M{"app_id": appID}).
-		Sort(bson.D{{Key: "key", Value: 1}})
+		Filter(secretFilter(appID, opts)).
+		Sort(sortBy)
 
 	if opts.Limit > 0 {
 		q = q.Limit(int64(opts.Limit))
@@ -1027,6 +1045,33 @@ func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secre
 // CountSecrets returns the number of secrets belonging to appID.
 func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*SecretModel)(nil)).Filter(bson.M{"app_id": appID}).Count(ctx)
+}
+
+// CountSecretsMatching returns the number of secrets belonging to appID that
+// pass the expiry bounds in opts. Limit and Offset are ignored.
+func (s *Store) CountSecretsMatching(ctx context.Context, appID string, opts secret.ListOpts) (int64, error) {
+	return s.mdb.NewFind((*SecretModel)(nil)).Filter(secretFilter(appID, opts)).Count(ctx)
+}
+
+// secretFilter builds the filter ListSecrets and CountSecretsMatching share,
+// so the page and the count are built from the same conditions. A bound also
+// requires an expiry: $ne null excludes documents with the field null or
+// missing, and the range operators already do the same, so the explicit
+// condition just says so.
+func secretFilter(appID string, opts secret.ListOpts) bson.M {
+	f := bson.M{"app_id": appID}
+	if !opts.HasExpiryBound() {
+		return f
+	}
+	rng := bson.M{"$ne": nil}
+	if opts.ExpiresAfter != nil {
+		rng["$gt"] = opts.ExpiresAfter.UTC()
+	}
+	if opts.ExpiresBefore != nil {
+		rng["$lte"] = opts.ExpiresBefore.UTC()
+	}
+	f["expires_at"] = rng
+	return f
 }
 
 // CountSecretsUnencrypted returns the number of secrets belonging to appID

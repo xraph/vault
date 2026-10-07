@@ -298,5 +298,23 @@ CREATE INDEX IF NOT EXISTS idx_audit_key ON vault_audit (key, app_id, created_at
 				return err
 			},
 		},
+		&migrate.Migration{
+			Name:    "add_secret_expiry_and_version_alg_indexes",
+			Version: "20240101120012",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+CREATE INDEX IF NOT EXISTS idx_secrets_app_expires ON vault_secrets (app_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_secret_versions_app_alg ON vault_secret_versions (app_id, encryption_alg);
+`)
+				return err
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, `
+DROP INDEX IF EXISTS idx_secret_versions_app_alg;
+DROP INDEX IF EXISTS idx_secrets_app_expires;
+`)
+				return err
+			},
+		},
 	)
 }

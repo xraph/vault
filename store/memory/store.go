@@ -166,14 +166,39 @@ func (m *Store) ListSecrets(_ context.Context, appID string, opts secret.ListOpt
 
 	result := make([]*secret.Meta, 0, len(m.secrets))
 	for _, s := range m.secrets {
-		if s.AppID != appID {
+		if !matchesSecret(s, appID, opts) {
 			continue
 		}
 		result = append(result, s.ToMeta())
 	}
 
-	sort.Slice(result, func(i, j int) bool { return result[i].Key < result[j].Key })
+	byExpiry := opts.HasExpiryBound()
+	sort.Slice(result, func(i, j int) bool {
+		if byExpiry && !result[i].ExpiresAt.Equal(*result[j].ExpiresAt) {
+			return result[i].ExpiresAt.Before(*result[j].ExpiresAt)
+		}
+		return result[i].Key < result[j].Key
+	})
 	return applyPagination(result, opts.Offset, opts.Limit), nil
+}
+
+// matchesSecret reports whether s belongs to appID and passes the expiry
+// bounds in opts. A secret with no expiry fails any bound. ExpiresAfter is
+// exclusive and ExpiresBefore inclusive.
+func matchesSecret(s *secret.Secret, appID string, opts secret.ListOpts) bool {
+	if s.AppID != appID {
+		return false
+	}
+	if !opts.HasExpiryBound() {
+		return true
+	}
+	if s.ExpiresAt == nil {
+		return false
+	}
+	if opts.ExpiresAfter != nil && !s.ExpiresAt.After(*opts.ExpiresAfter) {
+		return false
+	}
+	return opts.ExpiresBefore == nil || !s.ExpiresAt.After(*opts.ExpiresBefore)
 }
 
 // GetSecretVersion retrieves a specific version of a secret.
@@ -1029,6 +1054,21 @@ func (m *Store) CountOverrides(_ context.Context, appID string) (int64, error) {
 	var n int64
 	for _, o := range m.overrides {
 		if o.AppID == appID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CountSecretsMatching returns the number of secrets belonging to appID that
+// pass the expiry bounds in opts. Limit and Offset are ignored.
+func (m *Store) CountSecretsMatching(_ context.Context, appID string, opts secret.ListOpts) (int64, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var n int64
+	for _, s := range m.secrets {
+		if matchesSecret(s, appID, opts) {
 			n++
 		}
 	}
