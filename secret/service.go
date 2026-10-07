@@ -268,7 +268,9 @@ const backfillPageSize = 500
 // or sealed with some other key, and the backfill cannot tell which, so it
 // leaves that row alone. With no key configured nothing can be proven, so it
 // reads nothing and marks nothing. It pages by version id, so rows it leaves
-// unrecorded are not fetched again, and a second run marks nothing new.
+// unrecorded are not fetched again, and a second run marks nothing new. If the
+// store returns a full page that does not move past the cursor, it returns an
+// error instead of asking again.
 func (s *Service) BackfillVersionEncryption(ctx context.Context) (marked int, err error) {
 	if s.encryptor == nil {
 		return 0, nil
@@ -293,6 +295,12 @@ func (s *Service) BackfillVersionEncryption(ctx context.Context) (marked int, er
 		if len(page) < backfillPageSize {
 			return marked, nil
 		}
-		cursor = page[len(page)-1].ID.String()
+		// A store that ignores the cursor would hand back the same page
+		// forever. Stop rather than spin.
+		last := page[len(page)-1].ID.String()
+		if last <= cursor {
+			return marked, fmt.Errorf("secret: list unrecorded versions: store returned ids not after the cursor %q", cursor)
+		}
+		cursor = last
 	}
 }

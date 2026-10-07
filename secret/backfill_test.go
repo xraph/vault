@@ -162,3 +162,32 @@ func TestBackfillMarksAcrossPages(t *testing.T) {
 		t.Errorf("marked = %d, want 550", marked)
 	}
 }
+
+// cursorlessStore is a legacyStore whose ListUnrecordedVersions ignores the
+// cursor, as a faulty custom store might.
+type cursorlessStore struct{ *legacyStore }
+
+func (c cursorlessStore) ListUnrecordedVersions(ctx context.Context, appID, _ string, limit int) ([]*secret.Version, error) {
+	return c.legacyStore.ListUnrecordedVersions(ctx, appID, "", limit)
+}
+
+// A store that ignores the cursor returns the same full page of rows the key
+// cannot decrypt on every call. The backfill must stop with an error, not loop.
+func TestBackfillStopsWhenTheStoreIgnoresTheCursor(t *testing.T) {
+	st := newLegacyStore()
+	for range 600 {
+		st.add("app1", []byte("not ciphertext"))
+	}
+
+	svc := secret.NewService(cursorlessStore{st}, encryptorWithKey(t, 1), secret.WithAppID("app1"))
+	marked, err := svc.BackfillVersionEncryption(t.Context())
+	if err == nil {
+		t.Fatal("backfill returned nil, want an error for a cursor that does not advance")
+	}
+	if marked != 0 {
+		t.Errorf("marked = %d, want 0", marked)
+	}
+	if st.listCalls != 2 {
+		t.Errorf("list calls = %d, want 2 (the first page, then the repeat that stops it)", st.listCalls)
+	}
+}
