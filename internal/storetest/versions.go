@@ -32,7 +32,7 @@ func put(t *testing.T, s secret.Store, app, key, alg string) {
 
 func versionsOf(t *testing.T, s secret.Store) []*secret.Version {
 	t.Helper()
-	vs, err := s.ListSecretVersions(t.Context(), "k", "app")
+	vs, err := s.ListSecretVersions(t.Context(), "k", "app", "")
 	if err != nil {
 		t.Fatalf("ListSecretVersions: %v", err)
 	}
@@ -78,14 +78,14 @@ func RunVersionEncryption(t *testing.T, newStore VersionEncryptionFactory) {
 		put(t, s, "app", "k", "")
 		put(t, s, "app", "k", Alg)
 
-		v1, err := s.GetSecretVersion(t.Context(), "k", "app", 1)
+		v1, err := s.GetSecretVersion(t.Context(), "k", "app", "", 1)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if v1.EncryptionAlg != "" {
 			t.Errorf("v1 alg = %q, want \"\" (the current row says %q)", v1.EncryptionAlg, Alg)
 		}
-		v2, err := s.GetSecretVersion(t.Context(), "k", "app", 2)
+		v2, err := s.GetSecretVersion(t.Context(), "k", "app", "", 2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func RunVersionEncryption(t *testing.T, newStore VersionEncryptionFactory) {
 		// was written with no key.
 		put(t, s, "app", "j", Alg)
 		put(t, s, "app", "j", "")
-		j1, err := s.GetSecretVersion(t.Context(), "j", "app", 1)
+		j1, err := s.GetSecretVersion(t.Context(), "j", "app", "", 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,7 +116,7 @@ func RunVersionEncryption(t *testing.T, newStore VersionEncryptionFactory) {
 		if vs[0].EncryptionAlg != nil {
 			t.Fatalf("legacy v1 records %s, want <nil>", algOf(vs[0]))
 		}
-		got, err := s.GetSecretVersion(t.Context(), "k", "app", 1)
+		got, err := s.GetSecretVersion(t.Context(), "k", "app", "", 1)
 		if err != nil {
 			t.Fatal(err)
 		}

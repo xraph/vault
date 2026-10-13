@@ -30,7 +30,9 @@ type overviewStatsRequest struct{}
 // is why UnencryptedSecrets rides along: a page must never call the vault
 // encrypted while it is above zero. ConfigOverrides counts config tenant
 // overrides only, not flag tenant overrides. RotationPolicies counts every
-// policy, disabled ones included.
+// policy, disabled ones included. Every secret figure is app-wide: it counts
+// the app-level secrets and every tenant's together, whatever tenant the
+// request carries.
 type overviewStatsResponse struct {
 	Secrets            int64 `json:"secrets"`
 	UnencryptedSecrets int64 `json:"unencryptedSecrets"`

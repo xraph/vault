@@ -11,16 +11,21 @@ import (
 // Secret represents a stored secret with its encrypted value.
 type Secret struct {
 	core.Entity
-	ID              id.ID             `json:"id"`
-	Key             string            `json:"key"`
-	Value           []byte            `json:"-"` // decrypted value — never serialized
-	EncryptedValue  []byte            `json:"-"` // encrypted at rest
-	Version         int64             `json:"version"`
-	EncryptionAlg   string            `json:"encryption_alg"`
-	EncryptionKeyID string            `json:"encryption_key_id"`
-	ExpiresAt       *time.Time        `json:"expires_at,omitempty"`
-	AppID           string            `json:"app_id"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	ID              id.ID      `json:"id"`
+	Key             string     `json:"key"`
+	Value           []byte     `json:"-"` // decrypted value — never serialized
+	EncryptedValue  []byte     `json:"-"` // encrypted at rest
+	Version         int64      `json:"version"`
+	EncryptionAlg   string     `json:"encryption_alg"`
+	EncryptionKeyID string     `json:"encryption_key_id"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	AppID           string     `json:"app_id"`
+	// TenantID is the tenant the secret belongs to. Empty means an app-level
+	// secret, which is every secret written without a tenant in scope. A key
+	// is unique per app and tenant, so two tenants and the app itself can
+	// each hold a secret under the same key without seeing one another's.
+	TenantID string            `json:"tenant_id,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // Meta is the public metadata for a secret (never includes the value).
@@ -33,19 +38,25 @@ type Meta struct {
 	// encryption key was configured and is stored as given. A caller that
 	// displays secrets must treat empty as "not encrypted" rather than as
 	// "unknown", because it is the state every unconfigured Vault produces.
-	EncryptionAlg string            `json:"encryption_alg,omitempty"`
-	ExpiresAt     *time.Time        `json:"expires_at,omitempty"`
-	AppID         string            `json:"app_id"`
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
-	UpdatedAt     time.Time         `json:"updated_at"`
+	EncryptionAlg string     `json:"encryption_alg,omitempty"`
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
+	AppID         string     `json:"app_id"`
+	// TenantID is the tenant the secret belongs to, empty for an app-level
+	// secret.
+	TenantID  string            `json:"tenant_id,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	UpdatedAt time.Time         `json:"updated_at"`
 }
 
 // Version represents a historical version of a secret.
 type Version struct {
-	ID             id.ID  `json:"id"`
-	SecretKey      string `json:"secret_key"`
-	AppID          string `json:"app_id"`
+	ID        id.ID  `json:"id"`
+	SecretKey string `json:"secret_key"`
+	AppID     string `json:"app_id"`
+	// TenantID is the tenant of the secret this version belongs to, empty
+	// for an app-level secret.
+	TenantID       string `json:"tenant_id,omitempty"`
 	Version        int64  `json:"version"`
 	EncryptedValue []byte `json:"-"`
 	// EncryptionAlg is the algorithm this version's bytes were written with.
@@ -59,7 +70,7 @@ type Version struct {
 
 // VersionEncryptionCounts tallies the earlier version rows of one app (every
 // version row except each secret's current one) by what is known about their
-// encryption.
+// encryption. The tally covers every tenant of the app.
 type VersionEncryptionCounts struct {
 	// Plaintext is the number of versions recorded as stored without
 	// encryption (algorithm recorded as empty).
@@ -82,6 +93,15 @@ type ListOpts struct {
 	AppID         string
 	ExpiresAfter  *time.Time
 	ExpiresBefore *time.Time
+	// TenantID selects whose secrets Store.ListSecrets returns, by exact
+	// match: "" lists the app-level secrets only, and any other value lists
+	// that tenant's secrets only. It never means "every tenant".
+	//
+	// Service.List sets it from the tenant in the context and ignores
+	// whatever the caller put here, so a caller cannot list another
+	// tenant's secrets by naming it. CountSecretsMatching is app-wide and
+	// ignores it.
+	TenantID string
 }
 
 // HasExpiryBound reports whether either expiry bound is set.
@@ -98,6 +118,7 @@ func (s *Secret) ToMeta() *Meta {
 		EncryptionAlg: s.EncryptionAlg,
 		ExpiresAt:     s.ExpiresAt,
 		AppID:         s.AppID,
+		TenantID:      s.TenantID,
 		Metadata:      s.Metadata,
 		CreatedAt:     s.CreatedAt,
 		UpdatedAt:     s.UpdatedAt,

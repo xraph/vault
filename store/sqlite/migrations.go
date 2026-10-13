@@ -316,5 +316,14 @@ DROP INDEX IF EXISTS idx_secrets_app_expires;
 				return err
 			},
 		},
+		&migrate.Migration{
+			// Rebuilds both secret tables with a tenant_id column, unique per
+			// key, app and tenant. See tenant_migration.go for why it is a
+			// rebuild and how a stopped run picks up again.
+			Name:    "scope_secrets_by_tenant",
+			Version: "20240101120013",
+			Up:      scopeSecretsByTenant,
+			Down:    unscopeSecretsByTenant,
+		},
 	)
 }

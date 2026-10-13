@@ -13,7 +13,7 @@ func TestVersionEncryption(t *testing.T) {
 		legacy := func(key, appID string, version int64) {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			for _, v := range s.secretVersions[sKey(key, appID)] {
+			for _, v := range s.secretVersions[sKey(key, appID, "")] {
 				if v.Version == version {
 					v.EncryptionAlg = nil
 				}

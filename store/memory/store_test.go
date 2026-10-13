@@ -63,7 +63,7 @@ func TestSecretCRUD(t *testing.T) {
 	}
 
 	// Get the secret.
-	got, err := s.GetSecret(bg(), "db-password", testApp)
+	got, err := s.GetSecret(bg(), "db-password", testApp, "")
 	if err != nil {
 		t.Fatalf("GetSecret: %v", err)
 	}
@@ -79,25 +79,25 @@ func TestSecretCRUD(t *testing.T) {
 
 	// Get returns copy (mutating doesn't affect store).
 	got.Key = "mutated"
-	got2, _ := s.GetSecret(bg(), "db-password", testApp)
+	got2, _ := s.GetSecret(bg(), "db-password", testApp, "")
 	if got2.Key != "db-password" {
 		t.Error("store returned reference instead of copy")
 	}
 
 	// Delete the secret.
-	delErr := s.DeleteSecret(bg(), "db-password", testApp)
+	delErr := s.DeleteSecret(bg(), "db-password", testApp, "")
 	if delErr != nil {
 		t.Fatalf("DeleteSecret: %v", delErr)
 	}
 
 	// Get after delete.
-	_, err = s.GetSecret(bg(), "db-password", testApp)
+	_, err = s.GetSecret(bg(), "db-password", testApp, "")
 	if !errors.Is(err, vault.ErrSecretNotFound) {
 		t.Errorf("GetSecret after delete: got %v, want ErrSecretNotFound", err)
 	}
 
 	// Delete non-existent.
-	delErr = s.DeleteSecret(bg(), "no-such-key", testApp)
+	delErr = s.DeleteSecret(bg(), "no-such-key", testApp, "")
 	if !errors.Is(delErr, vault.ErrSecretNotFound) {
 		t.Errorf("DeleteSecret non-existent: got %v, want ErrSecretNotFound", delErr)
 	}
@@ -122,7 +122,7 @@ func TestMemoryStoreDoesNotPersistValue(t *testing.T) {
 		t.Fatalf("SetSecret: %v", err)
 	}
 
-	got, err := s.GetSecret(bg(), "db-password", testApp)
+	got, err := s.GetSecret(bg(), "db-password", testApp, "")
 	if err != nil {
 		t.Fatalf("GetSecret: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestMemoryStoreDoesNotPersistValue(t *testing.T) {
 
 	// A version read goes through the same stored copy, so it must not carry
 	// a decrypted Value either.
-	v1, err := s.GetSecretVersion(bg(), "db-password", testApp, 1)
+	v1, err := s.GetSecretVersion(bg(), "db-password", testApp, "", 1)
 	if err != nil {
 		t.Fatalf("GetSecretVersion: %v", err)
 	}
@@ -170,13 +170,13 @@ func TestSecretAutoVersioning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := s.GetSecret(bg(), "api-key", testApp)
+	got, _ := s.GetSecret(bg(), "api-key", testApp, "")
 	if got.Version != 2 {
 		t.Errorf("Version = %d, want 2", got.Version)
 	}
 
 	// Get version 1.
-	v1, err := s.GetSecretVersion(bg(), "api-key", testApp, 1)
+	v1, err := s.GetSecretVersion(bg(), "api-key", testApp, "", 1)
 	if err != nil {
 		t.Fatalf("GetSecretVersion(1): %v", err)
 	}
@@ -188,7 +188,7 @@ func TestSecretAutoVersioning(t *testing.T) {
 	}
 
 	// List versions.
-	versions, err := s.ListSecretVersions(bg(), "api-key", testApp)
+	versions, err := s.ListSecretVersions(bg(), "api-key", testApp, "")
 	if err != nil {
 		t.Fatalf("ListSecretVersions: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestSecretAutoVersioning(t *testing.T) {
 	}
 
 	// Non-existent version.
-	_, err = s.GetSecretVersion(bg(), "api-key", testApp, 99)
+	_, err = s.GetSecretVersion(bg(), "api-key", testApp, "", 99)
 	if !errors.Is(err, vault.ErrSecretNotFound) {
 		t.Errorf("GetSecretVersion(99): got %v, want ErrSecretNotFound", err)
 	}
@@ -872,7 +872,7 @@ func TestGetNotFound(t *testing.T) {
 		fn   func() error
 		want error
 	}{
-		{"GetSecret", func() error { _, e := s.GetSecret(bg(), "x", testApp); return e }, vault.ErrSecretNotFound},
+		{"GetSecret", func() error { _, e := s.GetSecret(bg(), "x", testApp, ""); return e }, vault.ErrSecretNotFound},
 		{"GetFlagDefinition", func() error { _, e := s.GetFlagDefinition(bg(), "x", testApp); return e }, vault.ErrFlagNotFound},
 		{"GetConfig", func() error { _, e := s.GetConfig(bg(), "x", testApp); return e }, vault.ErrConfigNotFound},
 		{"GetOverride", func() error { _, e := s.GetOverride(bg(), "x", testApp, "t"); return e }, vault.ErrOverrideNotFound},

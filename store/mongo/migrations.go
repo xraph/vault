@@ -376,6 +376,27 @@ func init() {
 				return nil
 			},
 		},
+		&migrate.Migration{
+			// Backfills tenant_id and moves both secret collections' unique
+			// indexes from per key and app to per key, app and tenant. See
+			// scopeSecretsByTenant.
+			Name:    "scope_secrets_by_tenant",
+			Version: "20240101000014",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				return scopeSecretsByTenant(ctx, mexec.DB())
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				mexec, ok := exec.(*mongomigrate.Executor)
+				if !ok {
+					return fmt.Errorf("expected mongomigrate executor, got %T", exec)
+				}
+				return unscopeSecretsByTenant(ctx, mexec.DB())
+			},
+		},
 	)
 }
 

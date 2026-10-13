@@ -48,7 +48,14 @@ type secretsListResponse struct {
 }
 
 // secretsListHandler answers secrets.list for deps.Vault.AppID() alone; no
-// request field ever names a different app.
+// request field ever names a different app. It lists the request context's
+// tenant's secrets, or the app-level ones when the context has no tenant.
+//
+// The page and its total must describe the same set. The store's counts are
+// app-wide, across every tenant, so they cannot give this list's total once
+// tenants hold secrets of their own. The handler reads the whole filtered
+// list once instead (metadata only, never a value), takes the total as its
+// length and pages it here, as rotation.policies does.
 func secretsListHandler(deps Deps) func(ctx context.Context, in secretsListRequest, p contract.Principal) (secretsListResponse, error) {
 	return func(ctx context.Context, in secretsListRequest, _ contract.Principal) (secretsListResponse, error) {
 		appID := deps.Vault.AppID()
@@ -69,27 +76,20 @@ func secretsListHandler(deps Deps) func(ctx context.Context, in secretsListReque
 		if err != nil {
 			return secretsListResponse{}, err
 		}
-		opts := secret.ListOpts{Limit: limit, Offset: offset, ExpiresAfter: after, ExpiresBefore: before}
+		opts := secret.ListOpts{ExpiresAfter: after, ExpiresBefore: before}
 
-		metas, err := deps.Vault.Secrets().List(ctx, appID, opts)
+		all, err := deps.Vault.Secrets().List(ctx, appID, opts)
 		if err != nil {
 			return secretsListResponse{}, deps.mapError("secrets.list", err)
 		}
-		// The page and its total must describe the same set, so a filtered
-		// list counts with the same bounds; an unfiltered one counts as it
-		// always has.
-		var total int64
-		if opts.HasExpiryBound() {
-			total, err = deps.Vault.Store().CountSecretsMatching(ctx, appID, opts)
-		} else {
-			total, err = deps.Vault.Store().CountSecrets(ctx, appID)
-		}
-		if err != nil {
-			return secretsListResponse{}, deps.mapError("secrets.list", err)
-		}
+		total := int64(len(all))
 
-		summaries := make([]SecretSummary, 0, len(metas))
-		for _, m := range metas {
+		start := min(offset, len(all))
+		end := min(start+limit, len(all))
+		page := all[start:end]
+
+		summaries := make([]SecretSummary, 0, len(page))
+		for _, m := range page {
 			summaries = append(summaries, projectSecretSummary(m))
 		}
 		return secretsListResponse{Secrets: summaries, Total: total}, nil
@@ -111,7 +111,12 @@ type secretsDetailResponse struct {
 	RecentAudit []AuditSummary         `json:"recentAudit"`
 }
 
-// secretsDetailHandler answers secrets.detail for deps.Vault.AppID() alone.
+// secretsDetailHandler answers secrets.detail for deps.Vault.AppID() alone,
+// for the request context's tenant's secret. A rotation policy belongs to the
+// app-level secret under its key, so a tenant's secret answers with no
+// rotation. Recent audit rows are those of the key; for a tenant, only the
+// rows written under that tenant, so one tenant never sees another's
+// activity on a key they share.
 func secretsDetailHandler(deps Deps) func(ctx context.Context, in secretsDetailRequest, p contract.Principal) (secretsDetailResponse, error) {
 	return func(ctx context.Context, in secretsDetailRequest, _ contract.Principal) (secretsDetailResponse, error) {
 		appID := deps.Vault.AppID()
@@ -125,16 +130,20 @@ func secretsDetailHandler(deps Deps) func(ctx context.Context, in secretsDetailR
 			return secretsDetailResponse{}, deps.mapError("secrets.detail", err)
 		}
 
+		tenantID := tenantOf(ctx)
+
 		var rotationSummary *RotationPolicySummary
-		policy, err := deps.Vault.Store().GetRotationPolicy(ctx, key, appID)
-		switch {
-		case err == nil:
-			rs := projectRotationPolicy(policy, isRotatable(deps.Vault.Rotation().RotatorKeys(), key))
-			rotationSummary = &rs
-		case errors.Is(err, vault.ErrRotationNotFound):
-			// No policy for this secret: rotation stays nil, not an error.
-		default:
-			return secretsDetailResponse{}, deps.mapError("secrets.detail", err)
+		if tenantID == "" {
+			policy, policyErr := deps.Vault.Store().GetRotationPolicy(ctx, key, appID)
+			switch {
+			case policyErr == nil:
+				rs := projectRotationPolicy(policy, isRotatable(deps.Vault.Rotation().RotatorKeys(), key))
+				rotationSummary = &rs
+			case errors.Is(policyErr, vault.ErrRotationNotFound):
+				// No policy for this secret: rotation stays nil, not an error.
+			default:
+				return secretsDetailResponse{}, deps.mapError("secrets.detail", policyErr)
+			}
 		}
 
 		entries, err := deps.Vault.Store().ListAuditByKey(ctx, key, appID, audit.ListOpts{Limit: recentAuditLimit, Resource: audithook.ResourceSecret})
@@ -143,6 +152,14 @@ func secretsDetailHandler(deps Deps) func(ctx context.Context, in secretsDetailR
 		}
 		recentAudit := make([]AuditSummary, 0, len(entries))
 		for _, e := range entries {
+			// The audit store has no tenant filter. A tenant's page drops the
+			// rows of every other tenant here, so it can show fewer than
+			// recentAuditLimit. The app-level page keeps every row of the
+			// key, as it always has: the audit pages show the operator every
+			// tenant's rows anyway.
+			if tenantID != "" && e.TenantID != tenantID {
+				continue
+			}
 			recentAudit = append(recentAudit, projectAuditSummary(e))
 		}
 
@@ -365,10 +382,13 @@ type secretsDeleteResponse struct {
 	Key string `json:"key"`
 }
 
-// secretsDeleteHandler answers secrets.delete for deps.Vault.AppID() alone.
-// It also removes the secret's rotation policy, if any: an orphaned policy
-// left behind would make the rotation loop fail on a missing secret every
-// minute, forever.
+// secretsDeleteHandler answers secrets.delete for deps.Vault.AppID() alone,
+// for the request context's tenant's secret. Deleting an app-level secret
+// also removes its rotation policy, if any: an orphaned policy left behind
+// would make the rotation loop fail on a missing secret every minute,
+// forever. A tenant's secret has no policy of its own (policies belong to
+// the app-level secret under their key), so deleting one never touches a
+// policy.
 //
 // That cleanup runs even when the secret itself is already gone. A delete
 // whose policy cleanup failed previously leaves an orphaned policy that a
@@ -389,8 +409,10 @@ func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteR
 			return secretsDeleteResponse{}, err
 		}
 
+		appLevelSecret := tenantOf(ctx) == ""
+
 		if err := deps.Vault.Secrets().Delete(ctx, key, appID); err != nil {
-			if errors.Is(err, vault.ErrSecretNotFound) {
+			if appLevelSecret && errors.Is(err, vault.ErrSecretNotFound) {
 				// Best-effort: this is the retry path for a policy an
 				// earlier delete's own cleanup failed to remove. NOT_FOUND
 				// for the secret is still the answer below regardless of
@@ -402,6 +424,9 @@ func secretsDeleteHandler(deps Deps) func(ctx context.Context, in secretsDeleteR
 				}
 			}
 			return secretsDeleteResponse{}, deps.mapError("secrets.delete", err)
+		}
+		if !appLevelSecret {
+			return secretsDeleteResponse{OK: true, Key: key}, nil
 		}
 
 		switch err := deps.Vault.Store().DeleteRotationPolicy(ctx, key, appID); {

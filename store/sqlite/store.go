@@ -103,12 +103,13 @@ func now() time.Time {
 
 // ==================== Secret Store ====================
 
-// GetSecret retrieves the latest version of a secret.
-func (s *Store) GetSecret(ctx context.Context, key, appID string) (*secret.Secret, error) {
+// GetSecret retrieves the latest version of a secret in one app and tenant.
+func (s *Store) GetSecret(ctx context.Context, key, appID, tenantID string) (*secret.Secret, error) {
 	m := new(SecretModel)
 	err := s.sdb.NewSelect(m).
 		Where("key = ?", key).
 		Where("app_id = ?", appID).
+		Where("tenant_id = ?", tenantID).
 		Scan(ctx)
 	if err != nil {
 		if isNoRows(err) {
@@ -134,6 +135,7 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	err = tx.NewSelect(&existing).
 		Where("key = ?", sec.Key).
 		Where("app_id = ?", sec.AppID).
+		Where("tenant_id = ?", sec.TenantID).
 		Scan(ctx)
 	if err != nil && !isNoRows(err) {
 		return err
@@ -151,7 +153,7 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	m.UpdatedAt = t
 
 	_, err = tx.NewInsert(m).
-		OnConflict("(key, app_id) DO UPDATE").
+		OnConflict("(key, app_id, tenant_id) DO UPDATE").
 		Set("encrypted_value = EXCLUDED.encrypted_value").
 		Set("encryption_alg = EXCLUDED.encryption_alg").
 		Set("encryption_key_id = EXCLUDED.encryption_key_id").
@@ -168,7 +170,7 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	versionAlg := sec.EncryptionAlg
 	vm := &SecretVersionModel{
 		ID: id.NewVersionID().String(), SecretKey: sec.Key, AppID: sec.AppID,
-		Version: sec.Version, EncryptedValue: sec.EncryptedValue,
+		TenantID: sec.TenantID, Version: sec.Version, EncryptedValue: sec.EncryptedValue,
 		EncryptionAlg: &versionAlg, CreatedAt: t,
 	}
 	if _, err := tx.NewInsert(vm).Exec(ctx); err != nil {
@@ -178,8 +180,8 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	return tx.Commit()
 }
 
-// DeleteSecret removes a secret and all its versions.
-func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
+// DeleteSecret removes a secret and all its versions, in one app and tenant.
+func (s *Store) DeleteSecret(ctx context.Context, key, appID, tenantID string) error {
 	tx, err := s.sdb.BeginTxQuery(ctx, nil)
 	if err != nil {
 		return err
@@ -189,6 +191,7 @@ func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
 	res, err := tx.NewDelete((*SecretModel)(nil)).
 		Where("key = ?", key).
 		Where("app_id = ?", appID).
+		Where("tenant_id = ?", tenantID).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -204,6 +207,7 @@ func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
 	if _, err := tx.NewDelete((*SecretVersionModel)(nil)).
 		Where("secret_key = ?", key).
 		Where("app_id = ?", appID).
+		Where("tenant_id = ?", tenantID).
 		Exec(ctx); err != nil {
 		return err
 	}
@@ -211,10 +215,14 @@ func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
 	return tx.Commit()
 }
 
-// ListSecrets returns secret metadata for an app.
+// ListSecrets returns secret metadata for an app and the tenant in
+// opts.TenantID, matched exactly.
 func (s *Store) ListSecrets(ctx context.Context, appID string, opts secret.ListOpts) ([]*secret.Meta, error) {
 	var models []SecretModel
-	q := whereSecrets(s.sdb.NewSelect(&models).Where("app_id = ?", appID), opts)
+	q := s.sdb.NewSelect(&models).
+		Where("app_id = ?", appID).
+		Where("tenant_id = ?", opts.TenantID)
+	q = whereSecrets(q, opts)
 	if opts.HasExpiryBound() {
 		q = q.OrderExpr("expires_at ASC, key ASC")
 	} else {
@@ -239,9 +247,10 @@ func (s *Store) ListSecrets(ctx context.Context, appID string, opts secret.ListO
 	return result, nil
 }
 
-// GetSecretVersion retrieves a specific version of a secret.
-func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version int64) (*secret.Secret, error) {
-	sec, err := s.GetSecret(ctx, key, appID)
+// GetSecretVersion retrieves a specific version of a secret in one app and
+// tenant. The secret and the version row are both looked up by the tenant.
+func (s *Store) GetSecretVersion(ctx context.Context, key, appID, tenantID string, version int64) (*secret.Secret, error) {
+	sec, err := s.GetSecret(ctx, key, appID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -250,6 +259,7 @@ func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version
 	err = s.sdb.NewSelect(vm).
 		Where("secret_key = ?", key).
 		Where("app_id = ?", appID).
+		Where("tenant_id = ?", tenantID).
 		Where("version = ?", version).
 		Scan(ctx)
 	if err != nil {
@@ -268,12 +278,13 @@ func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version
 	return sec, nil
 }
 
-// ListSecretVersions returns all versions of a secret.
-func (s *Store) ListSecretVersions(ctx context.Context, key, appID string) ([]*secret.Version, error) {
+// ListSecretVersions returns all versions of a secret in one app and tenant.
+func (s *Store) ListSecretVersions(ctx context.Context, key, appID, tenantID string) ([]*secret.Version, error) {
 	var models []SecretVersionModel
 	err := s.sdb.NewSelect(&models).
 		Where("secret_key = ?", key).
 		Where("app_id = ?", appID).
+		Where("tenant_id = ?", tenantID).
 		OrderExpr("version ASC").
 		Scan(ctx)
 	if err != nil {
@@ -1011,13 +1022,15 @@ func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audi
 // Counts
 // ──────────────────────────────────────────────────
 
-// CountSecrets returns the number of secrets belonging to appID.
+// CountSecrets returns the number of secrets belonging to appID, across every
+// tenant.
 func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 	return s.sdb.NewSelect((*SecretModel)(nil)).Where("app_id = ?", appID).Count(ctx)
 }
 
-// CountSecretsMatching returns the number of secrets belonging to appID that
-// pass the expiry bounds in opts. Limit and Offset are ignored.
+// CountSecretsMatching returns the number of secrets belonging to appID,
+// across every tenant, that pass the expiry bounds in opts. TenantID, Limit
+// and Offset are ignored.
 func (s *Store) CountSecretsMatching(ctx context.Context, appID string, opts secret.ListOpts) (int64, error) {
 	q := s.sdb.NewSelect((*SecretModel)(nil)).Where("app_id = ?", appID)
 	return whereSecrets(q, opts).Count(ctx)
@@ -1027,7 +1040,9 @@ func (s *Store) CountSecretsMatching(ctx context.Context, appID string, opts sec
 // page and the count are built from the same conditions. A bound also requires
 // an expiry: a NULL expires_at fails every comparison in SQL, and the explicit
 // IS NOT NULL says so. Bounds bind through dbTime, which writes the same UTC
-// text SetSecret stores, so the comparison is by instant.
+// text SetSecret stores, so the comparison is by instant. It leaves the
+// tenant alone: ListSecrets filters on it and CountSecretsMatching is
+// app-wide.
 func whereSecrets(q *sqlitedriver.SelectQuery, opts secret.ListOpts) *sqlitedriver.SelectQuery {
 	if !opts.HasExpiryBound() {
 		return q
@@ -1086,9 +1101,9 @@ func (s *Store) CountOverrides(ctx context.Context, appID string) (int64, error)
 	return s.sdb.NewSelect((*OverrideModel)(nil)).Where("app_id = ?", appID).Count(ctx)
 }
 
-// ListUnrecordedVersions returns up to limit version rows of appID whose
-// encryption algorithm was never recorded, in ascending id order, after the
-// id after.
+// ListUnrecordedVersions returns up to limit version rows of appID, across
+// every tenant, whose encryption algorithm was never recorded, in ascending
+// id order, after the id after.
 func (s *Store) ListUnrecordedVersions(ctx context.Context, appID, after string, limit int) ([]*secret.Version, error) {
 	models := make([]SecretVersionModel, 0)
 	q := s.sdb.NewSelect(&models).
@@ -1120,8 +1135,11 @@ func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg s
 	return err
 }
 
-// CountVersionEncryption tallies appID's version rows by recorded algorithm
-// in one pass, leaving out each secret's current version.
+// CountVersionEncryption tallies appID's version rows, across every tenant, by
+// recorded algorithm in one pass, leaving out each secret's current version.
+// A version row is matched to its secret by key, app and tenant: matching on
+// key and app alone would let one tenant's current version hide another
+// tenant's earlier row with the same number.
 func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
 	var c secret.VersionEncryptionCounts
 	err := s.sdb.QueryRow(ctx,
@@ -1131,13 +1149,14 @@ func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secre
 		  WHERE v.app_id = ?
 		    AND NOT EXISTS (SELECT 1 FROM vault_secrets s
 		                     WHERE s.key = v.secret_key AND s.app_id = v.app_id
+		                       AND s.tenant_id = v.tenant_id
 		                       AND s.version = v.version)`, appID).
 		Scan(&c.Plaintext, &c.Unrecorded)
 	return c, err
 }
 
-// CountSecretsUnencrypted returns the number of secrets belonging to appID
-// that were stored without an encryption algorithm.
+// CountSecretsUnencrypted returns the number of secrets belonging to appID,
+// across every tenant, that were stored without an encryption algorithm.
 func (s *Store) CountSecretsUnencrypted(ctx context.Context, appID string) (int64, error) {
 	return s.sdb.NewSelect((*SecretModel)(nil)).
 		Where("app_id = ?", appID).

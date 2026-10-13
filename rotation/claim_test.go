@@ -111,7 +111,7 @@ func TestScheduledRotationRunsOnceAcrossReplicas(t *testing.T) {
 			if got := calls.Load(); got != 1 {
 				t.Errorf("rotator called %d times across two replicas, want 1", got)
 			}
-			versions, err := st.ListSecretVersions(bg(), "db-password", testApp)
+			versions, err := st.ListSecretVersions(bg(), "db-password", testApp, "")
 			if err != nil {
 				t.Fatalf("ListSecretVersions: %v", err)
 			}

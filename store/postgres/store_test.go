@@ -97,7 +97,7 @@ func TestSecretCRUD(t *testing.T) {
 	}
 
 	// Get.
-	got, err := s.GetSecret(ctx, "db-password", "app1")
+	got, err := s.GetSecret(ctx, "db-password", "app1", "")
 	if err != nil {
 		t.Fatalf("GetSecret: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestSecretCRUD(t *testing.T) {
 	}
 
 	// Versions.
-	versions, err := s.ListSecretVersions(ctx, "db-password", "app1")
+	versions, err := s.ListSecretVersions(ctx, "db-password", "app1", "")
 	if err != nil {
 		t.Fatalf("ListSecretVersions: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestSecretCRUD(t *testing.T) {
 	}
 
 	// Get specific version.
-	v1, err := s.GetSecretVersion(ctx, "db-password", "app1", 1)
+	v1, err := s.GetSecretVersion(ctx, "db-password", "app1", "", 1)
 	if err != nil {
 		t.Fatalf("GetSecretVersion: %v", err)
 	}
@@ -142,12 +142,12 @@ func TestSecretCRUD(t *testing.T) {
 	}
 
 	// Delete.
-	if err := s.DeleteSecret(ctx, "db-password", "app1"); err != nil {
+	if err := s.DeleteSecret(ctx, "db-password", "app1", ""); err != nil {
 		t.Fatalf("DeleteSecret: %v", err)
 	}
 
 	// Not found.
-	_, err = s.GetSecret(ctx, "db-password", "app1")
+	_, err = s.GetSecret(ctx, "db-password", "app1", "")
 	if err != vault.ErrSecretNotFound {
 		t.Errorf("err: got %v, want ErrSecretNotFound", err)
 	}

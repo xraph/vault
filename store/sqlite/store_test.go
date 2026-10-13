@@ -70,7 +70,7 @@ func TestSetSecretFreshKey(t *testing.T) {
 		t.Errorf("version: got %d, want 1", sec.Version)
 	}
 
-	got, err := s.GetSecret(ctx, "slack-bot-token", "app1")
+	got, err := s.GetSecret(ctx, "slack-bot-token", "app1", "")
 	if err != nil {
 		t.Fatalf("GetSecret: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestSetSecretIncrementsVersion(t *testing.T) {
 		t.Errorf("version: got %d, want 2", sec.Version)
 	}
 
-	versions, err := s.ListSecretVersions(ctx, "db-password", "app1")
+	versions, err := s.ListSecretVersions(ctx, "db-password", "app1", "")
 	if err != nil {
 		t.Fatalf("ListSecretVersions: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestSetSecretIncrementsVersion(t *testing.T) {
 		t.Fatalf("versions: got %d, want 2", len(versions))
 	}
 
-	v1, err := s.GetSecretVersion(ctx, "db-password", "app1", 1)
+	v1, err := s.GetSecretVersion(ctx, "db-password", "app1", "", 1)
 	if err != nil {
 		t.Fatalf("GetSecretVersion: %v", err)
 	}

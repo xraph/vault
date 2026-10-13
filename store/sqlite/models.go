@@ -53,6 +53,7 @@ type SecretModel struct {
 	ID              string     `grove:"id,pk"`
 	Key             string     `grove:"key,notnull"`
 	AppID           string     `grove:"app_id,notnull"`
+	TenantID        string     `grove:"tenant_id,notnull"`
 	EncryptedValue  []byte     `grove:"encrypted_value"`
 	EncryptionAlg   string     `grove:"encryption_alg"`
 	EncryptionKeyID string     `grove:"encryption_key_id"`
@@ -66,7 +67,7 @@ type SecretModel struct {
 func secretModelFromEntity(s *secret.Secret) *SecretModel {
 	meta, _ := json.Marshal(s.Metadata) //nolint:errcheck // best-effort encode
 	return &SecretModel{
-		ID: s.ID.String(), Key: s.Key, AppID: s.AppID,
+		ID: s.ID.String(), Key: s.Key, AppID: s.AppID, TenantID: s.TenantID,
 		EncryptedValue: s.EncryptedValue, EncryptionAlg: s.EncryptionAlg,
 		EncryptionKeyID: s.EncryptionKeyID, Version: s.Version,
 		Metadata: string(meta), ExpiresAt: dbTimePtr(s.ExpiresAt),
@@ -76,7 +77,7 @@ func secretModelFromEntity(s *secret.Secret) *SecretModel {
 
 func (m *SecretModel) toEntity() *secret.Secret {
 	s := &secret.Secret{
-		ID: mustParseID(m.ID), Key: m.Key, AppID: m.AppID,
+		ID: mustParseID(m.ID), Key: m.Key, AppID: m.AppID, TenantID: m.TenantID,
 		EncryptedValue: m.EncryptedValue, EncryptionAlg: m.EncryptionAlg,
 		EncryptionKeyID: m.EncryptionKeyID, Version: m.Version,
 		ExpiresAt: m.ExpiresAt,
@@ -93,7 +94,7 @@ func (m *SecretModel) toMeta() *secret.Meta {
 	meta := &secret.Meta{
 		ID: mustParseID(m.ID), Key: m.Key, Version: m.Version,
 		EncryptionAlg: m.EncryptionAlg,
-		ExpiresAt:     m.ExpiresAt, AppID: m.AppID,
+		ExpiresAt:     m.ExpiresAt, AppID: m.AppID, TenantID: m.TenantID,
 	}
 	meta.CreatedAt = m.CreatedAt
 	meta.UpdatedAt = m.UpdatedAt
@@ -109,6 +110,7 @@ type SecretVersionModel struct {
 	ID              string    `grove:"id,pk"`
 	SecretKey       string    `grove:"secret_key,notnull"`
 	AppID           string    `grove:"app_id,notnull"`
+	TenantID        string    `grove:"tenant_id,notnull"`
 	Version         int64     `grove:"version,notnull"`
 	EncryptedValue  []byte    `grove:"encrypted_value"`
 	EncryptionAlg   *string   `grove:"encryption_alg"`
@@ -119,7 +121,7 @@ type SecretVersionModel struct {
 func (m *SecretVersionModel) toEntity() *secret.Version {
 	return &secret.Version{
 		ID: mustParseID(m.ID), SecretKey: m.SecretKey, AppID: m.AppID,
-		Version: m.Version, EncryptedValue: m.EncryptedValue,
+		TenantID: m.TenantID, Version: m.Version, EncryptedValue: m.EncryptedValue,
 		EncryptionAlg: m.EncryptionAlg,
 		CreatedBy:     m.CreatedBy, CreatedAt: m.CreatedAt,
 	}

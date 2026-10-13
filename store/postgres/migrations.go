@@ -321,5 +321,24 @@ func init() {
 				return nil
 			},
 		},
+		&migrate.Migration{
+			Name:    "scope_secrets_by_tenant",
+			Version: "20240101120013",
+			Up: func(ctx context.Context, exec migrate.Executor) error {
+				// Adds tenant_id to both secret tables and makes a key unique
+				// per app and tenant. See addSecretsTenant for how the old
+				// constraint is found and why running this twice is safe.
+				for _, ddl := range secretTenantDDL {
+					if _, err := exec.Exec(ctx, ddl); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+			Down: func(ctx context.Context, exec migrate.Executor) error {
+				_, err := exec.Exec(ctx, dropSecretsTenant)
+				return err
+			},
+		},
 	)
 }

@@ -52,11 +52,18 @@ func mustParseID(s string) id.ID {
 // ──────────────────────────────────────────────────
 
 // SecretModel is the Grove model for vault_secrets (MongoDB).
+//
+// TenantID is not notnull on purpose. A validator generated from this model
+// would then require the field, and a replica of a release from before
+// tenants, which never writes it, would have its inserts refused while a
+// rollout is under way. Reads treat a missing tenant_id as "" (see
+// tenantMatch), and the migration writes "" into every old document.
 type SecretModel struct {
 	grove.BaseModel `grove:"table:vault_secrets"`
 	ID              string            `grove:"id,pk"              bson:"_id"`
 	Key             string            `grove:"key,notnull"        bson:"key"`
 	AppID           string            `grove:"app_id,notnull"     bson:"app_id"`
+	TenantID        string            `grove:"tenant_id"          bson:"tenant_id"`
 	EncryptedValue  []byte            `grove:"encrypted_value"    bson:"encrypted_value"`
 	EncryptionAlg   string            `grove:"encryption_alg"     bson:"encryption_alg"`
 	EncryptionKeyID string            `grove:"encryption_key_id"  bson:"encryption_key_id"`
@@ -69,7 +76,7 @@ type SecretModel struct {
 
 func secretModelFromEntity(s *secret.Secret) *SecretModel {
 	return &SecretModel{
-		ID: s.ID.String(), Key: s.Key, AppID: s.AppID,
+		ID: s.ID.String(), Key: s.Key, AppID: s.AppID, TenantID: s.TenantID,
 		EncryptedValue: s.EncryptedValue, EncryptionAlg: s.EncryptionAlg,
 		EncryptionKeyID: s.EncryptionKeyID, Version: s.Version,
 		Metadata: emptyIfNil(s.Metadata), ExpiresAt: s.ExpiresAt,
@@ -79,7 +86,7 @@ func secretModelFromEntity(s *secret.Secret) *SecretModel {
 
 func (m *SecretModel) toEntity() *secret.Secret {
 	s := &secret.Secret{
-		ID: mustParseID(m.ID), Key: m.Key, AppID: m.AppID,
+		ID: mustParseID(m.ID), Key: m.Key, AppID: m.AppID, TenantID: m.TenantID,
 		EncryptedValue: m.EncryptedValue, EncryptionAlg: m.EncryptionAlg,
 		EncryptionKeyID: m.EncryptionKeyID, Version: m.Version,
 		Metadata: m.Metadata, ExpiresAt: m.ExpiresAt,
@@ -93,7 +100,7 @@ func (m *SecretModel) toMeta() *secret.Meta {
 	meta := &secret.Meta{
 		ID: mustParseID(m.ID), Key: m.Key, Version: m.Version,
 		EncryptionAlg: m.EncryptionAlg,
-		ExpiresAt:     m.ExpiresAt, AppID: m.AppID,
+		ExpiresAt:     m.ExpiresAt, AppID: m.AppID, TenantID: m.TenantID,
 		Metadata: m.Metadata,
 	}
 	meta.CreatedAt = m.CreatedAt
@@ -112,6 +119,7 @@ type SecretVersionModel struct {
 	ID              string    `grove:"id,pk"              bson:"_id"`
 	SecretKey       string    `grove:"secret_key,notnull" bson:"secret_key"`
 	AppID           string    `grove:"app_id,notnull"     bson:"app_id"`
+	TenantID        string    `grove:"tenant_id"          bson:"tenant_id"`
 	Version         int64     `grove:"version,notnull"    bson:"version"`
 	EncryptedValue  []byte    `grove:"encrypted_value"    bson:"encrypted_value"`
 	EncryptionAlg   *string   `grove:"encryption_alg"     bson:"encryption_alg,omitempty"`
@@ -122,7 +130,7 @@ type SecretVersionModel struct {
 func (m *SecretVersionModel) toEntity() *secret.Version {
 	return &secret.Version{
 		ID: mustParseID(m.ID), SecretKey: m.SecretKey, AppID: m.AppID,
-		Version: m.Version, EncryptedValue: m.EncryptedValue,
+		TenantID: m.TenantID, Version: m.Version, EncryptedValue: m.EncryptedValue,
 		EncryptionAlg: m.EncryptionAlg,
 		CreatedBy:     m.CreatedBy, CreatedAt: m.CreatedAt,
 	}

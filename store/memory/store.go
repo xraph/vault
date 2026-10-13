@@ -35,9 +35,9 @@ var (
 type Store struct {
 	mu sync.RWMutex
 
-	// Secrets: keyed by "key:appID"
-	secrets        map[string]*secret.Secret
-	secretVersions map[string][]*secret.Version // key: "key:appID"
+	// Secrets and their versions, keyed by key, app and tenant.
+	secrets        map[secretRef]*secret.Secret
+	secretVersions map[secretRef][]*secret.Version
 
 	// Flags: keyed by "key:appID"
 	flags         map[string]*flag.Definition
@@ -62,8 +62,8 @@ type Store struct {
 // New returns a new empty Store.
 func New() *Store {
 	return &Store{
-		secrets:          make(map[string]*secret.Secret),
-		secretVersions:   make(map[string][]*secret.Version),
+		secrets:          make(map[secretRef]*secret.Secret),
+		secretVersions:   make(map[secretRef][]*secret.Version),
 		flags:            make(map[string]*flag.Definition),
 		flagRules:        make(map[string][]*flag.Rule),
 		flagOverrides:    make(map[string]*flag.TenantOverride),
@@ -92,14 +92,24 @@ func (m *Store) Close() error { return nil }
 // Secret Store
 // ──────────────────────────────────────────────────
 
-func sKey(key, appID string) string { return key + ":" + appID }
+// secretRef identifies one secret by key, app and tenant. It is a struct
+// rather than the fields joined into a string, so no choice of key or tenant
+// can spell another tenant's entry.
+type secretRef struct {
+	key, appID, tenantID string
+}
 
-// GetSecret retrieves the latest version of a secret by key and app ID.
-func (m *Store) GetSecret(_ context.Context, key, appID string) (*secret.Secret, error) {
+func sKey(key, appID, tenantID string) secretRef {
+	return secretRef{key: key, appID: appID, tenantID: tenantID}
+}
+
+// GetSecret retrieves the latest version of a secret by key, app ID and
+// tenant ID.
+func (m *Store) GetSecret(_ context.Context, key, appID, tenantID string) (*secret.Secret, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	s, ok := m.secrets[sKey(key, appID)]
+	s, ok := m.secrets[sKey(key, appID, tenantID)]
 	if !ok {
 		return nil, vault.ErrSecretNotFound
 	}
@@ -112,7 +122,7 @@ func (m *Store) SetSecret(_ context.Context, s *secret.Secret) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	k := sKey(s.Key, s.AppID)
+	k := sKey(s.Key, s.AppID, s.TenantID)
 
 	// Auto-version: if secret exists, increment version.
 	if existing, ok := m.secrets[k]; ok {
@@ -128,6 +138,7 @@ func (m *Store) SetSecret(_ context.Context, s *secret.Secret) error {
 		ID:             id.NewVersionID(),
 		SecretKey:      s.Key,
 		AppID:          s.AppID,
+		TenantID:       s.TenantID,
 		Version:        s.Version,
 		EncryptedValue: copyBytes(s.EncryptedValue),
 		EncryptionAlg:  &versionAlg,
@@ -146,11 +157,11 @@ func (m *Store) SetSecret(_ context.Context, s *secret.Secret) error {
 }
 
 // DeleteSecret removes a secret and all its versions.
-func (m *Store) DeleteSecret(_ context.Context, key, appID string) error {
+func (m *Store) DeleteSecret(_ context.Context, key, appID, tenantID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	k := sKey(key, appID)
+	k := sKey(key, appID, tenantID)
 	if _, ok := m.secrets[k]; !ok {
 		return vault.ErrSecretNotFound
 	}
@@ -159,14 +170,15 @@ func (m *Store) DeleteSecret(_ context.Context, key, appID string) error {
 	return nil
 }
 
-// ListSecrets returns secret metadata for an app.
+// ListSecrets returns secret metadata for an app and the tenant in
+// opts.TenantID, matched exactly.
 func (m *Store) ListSecrets(_ context.Context, appID string, opts secret.ListOpts) ([]*secret.Meta, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	result := make([]*secret.Meta, 0, len(m.secrets))
 	for _, s := range m.secrets {
-		if !matchesSecret(s, appID, opts) {
+		if s.TenantID != opts.TenantID || !matchesSecret(s, appID, opts) {
 			continue
 		}
 		result = append(result, s.ToMeta())
@@ -184,7 +196,8 @@ func (m *Store) ListSecrets(_ context.Context, appID string, opts secret.ListOpt
 
 // matchesSecret reports whether s belongs to appID and passes the expiry
 // bounds in opts. A secret with no expiry fails any bound. ExpiresAfter is
-// exclusive and ExpiresBefore inclusive.
+// exclusive and ExpiresBefore inclusive. It does not look at the tenant:
+// ListSecrets checks that itself, and CountSecretsMatching is app-wide.
 func matchesSecret(s *secret.Secret, appID string, opts secret.ListOpts) bool {
 	if s.AppID != appID {
 		return false
@@ -202,11 +215,11 @@ func matchesSecret(s *secret.Secret, appID string, opts secret.ListOpts) bool {
 }
 
 // GetSecretVersion retrieves a specific version of a secret.
-func (m *Store) GetSecretVersion(_ context.Context, key, appID string, version int64) (*secret.Secret, error) {
+func (m *Store) GetSecretVersion(_ context.Context, key, appID, tenantID string, version int64) (*secret.Secret, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	k := sKey(key, appID)
+	k := sKey(key, appID, tenantID)
 	versions, ok := m.secretVersions[k]
 	if !ok {
 		return nil, vault.ErrSecretNotFound
@@ -232,11 +245,11 @@ func (m *Store) GetSecretVersion(_ context.Context, key, appID string, version i
 }
 
 // ListSecretVersions returns all versions of a secret.
-func (m *Store) ListSecretVersions(_ context.Context, key, appID string) ([]*secret.Version, error) {
+func (m *Store) ListSecretVersions(_ context.Context, key, appID, tenantID string) ([]*secret.Version, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	k := sKey(key, appID)
+	k := sKey(key, appID, tenantID)
 	versions := m.secretVersions[k]
 	if len(versions) == 0 {
 		return nil, nil
@@ -260,9 +273,9 @@ func copyVersion(v *secret.Version) *secret.Version {
 	return &cp
 }
 
-// ListUnrecordedVersions returns up to limit version rows of appID whose
-// encryption algorithm was never recorded, in ascending id order, after the
-// id after.
+// ListUnrecordedVersions returns up to limit version rows of appID, across
+// every tenant, whose encryption algorithm was never recorded, in ascending
+// id order, after the id after.
 func (m *Store) ListUnrecordedVersions(_ context.Context, appID, after string, limit int) ([]*secret.Version, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -303,8 +316,8 @@ func (m *Store) SetVersionEncryption(_ context.Context, versionID id.ID, alg str
 	return nil
 }
 
-// CountVersionEncryption tallies appID's version rows by recorded algorithm,
-// leaving out each secret's current version.
+// CountVersionEncryption tallies appID's version rows, across every tenant,
+// by recorded algorithm, leaving out each secret's current version.
 func (m *Store) CountVersionEncryption(_ context.Context, appID string) (secret.VersionEncryptionCounts, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -315,7 +328,7 @@ func (m *Store) CountVersionEncryption(_ context.Context, appID string) (secret.
 			if v.AppID != appID {
 				continue
 			}
-			if cur, ok := m.secrets[sKey(v.SecretKey, v.AppID)]; ok && cur.Version == v.Version {
+			if cur, ok := m.secrets[sKey(v.SecretKey, v.AppID, v.TenantID)]; ok && cur.Version == v.Version {
 				continue
 			}
 			switch {
@@ -971,7 +984,8 @@ func applyPaginationCfg(result []*config.Entry, offset, limit int) []*config.Ent
 // Counts
 // ──────────────────────────────────────────────────
 
-// CountSecrets returns the number of secrets belonging to appID.
+// CountSecrets returns the number of secrets belonging to appID, across every
+// tenant.
 func (m *Store) CountSecrets(_ context.Context, appID string) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1064,8 +1078,9 @@ func (m *Store) CountOverrides(_ context.Context, appID string) (int64, error) {
 	return n, nil
 }
 
-// CountSecretsMatching returns the number of secrets belonging to appID that
-// pass the expiry bounds in opts. Limit and Offset are ignored.
+// CountSecretsMatching returns the number of secrets belonging to appID,
+// across every tenant, that pass the expiry bounds in opts. TenantID, Limit
+// and Offset are ignored.
 func (m *Store) CountSecretsMatching(_ context.Context, appID string, opts secret.ListOpts) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1079,8 +1094,8 @@ func (m *Store) CountSecretsMatching(_ context.Context, appID string, opts secre
 	return n, nil
 }
 
-// CountSecretsUnencrypted returns the number of secrets belonging to appID
-// that were stored without an encryption algorithm.
+// CountSecretsUnencrypted returns the number of secrets belonging to appID,
+// across every tenant, that were stored without an encryption algorithm.
 func (m *Store) CountSecretsUnencrypted(_ context.Context, appID string) (int64, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

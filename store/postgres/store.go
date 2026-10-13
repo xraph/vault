@@ -96,6 +96,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 
+	// The tables above still carry the shape they first shipped with, unique
+	// per key and app. This scopes them by tenant, mirroring
+	// "scope_secrets_by_tenant"; on a table already scoped it changes nothing.
+	for _, ddl := range secretTenantDDL {
+		if _, err := pgdb.Exec(ctx, ddl); err != nil {
+			return err
+		}
+	}
+
 	s.logger.Info("postgres: migrations complete")
 	return nil
 }
@@ -121,6 +130,98 @@ const (
 	// createVersionAlgIndex serves CountVersionEncryption, which counts
 	// an app's version rows by recorded algorithm.
 	createVersionAlgIndex = `CREATE INDEX IF NOT EXISTS idx_secret_versions_app_alg ON vault_secret_versions (app_id, encryption_alg)`
+
+	// addSecretsTenant adds tenant_id to vault_secrets and moves the table's
+	// uniqueness from (key, app_id) to (key, app_id, tenant_id), so each
+	// tenant and the app itself can hold their own secret under one key.
+	// Existing rows get '', which is what an app-level secret is.
+	//
+	// The old constraint was declared inline and never named, so it is found
+	// by its columns rather than by the name Postgres generated for it. The
+	// new one is named, the same name Postgres would give it, and only added
+	// when missing. A DO block runs as one transaction, so the table never
+	// sits without a unique constraint, and running it again changes
+	// nothing.
+	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	addSecretsTenant = `DO $$
+DECLARE
+	c record;
+BEGIN
+	ALTER TABLE vault_secrets ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+	FOR c IN
+		SELECT con.conname
+		  FROM pg_constraint con
+		 WHERE con.conrelid = 'vault_secrets'::regclass
+		   AND con.contype = 'u'
+		   AND ARRAY(SELECT a.attname::text
+		               FROM pg_attribute a
+		              WHERE a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+		              ORDER BY a.attname) = ARRAY['app_id', 'key']
+	LOOP
+		EXECUTE format('ALTER TABLE vault_secrets DROP CONSTRAINT %I', c.conname);
+	END LOOP;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint
+	                WHERE conrelid = 'vault_secrets'::regclass
+	                  AND conname = 'vault_secrets_key_app_id_tenant_id_key') THEN
+		ALTER TABLE vault_secrets
+			ADD CONSTRAINT vault_secrets_key_app_id_tenant_id_key UNIQUE (key, app_id, tenant_id);
+	END IF;
+END
+$$`
+
+	// addSecretVersionsTenant does for vault_secret_versions what
+	// addSecretsTenant does for vault_secrets: a version number is unique per
+	// key, app and tenant, not per key and app.
+	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	addSecretVersionsTenant = `DO $$
+DECLARE
+	c record;
+BEGIN
+	ALTER TABLE vault_secret_versions ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '';
+	FOR c IN
+		SELECT con.conname
+		  FROM pg_constraint con
+		 WHERE con.conrelid = 'vault_secret_versions'::regclass
+		   AND con.contype = 'u'
+		   AND ARRAY(SELECT a.attname::text
+		               FROM pg_attribute a
+		              WHERE a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+		              ORDER BY a.attname) = ARRAY['app_id', 'secret_key', 'version']
+	LOOP
+		EXECUTE format('ALTER TABLE vault_secret_versions DROP CONSTRAINT %I', c.conname);
+	END LOOP;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint
+	                WHERE conrelid = 'vault_secret_versions'::regclass
+	                  AND conname = 'vault_secret_versions_secret_key_app_id_tenant_id_version_key') THEN
+		ALTER TABLE vault_secret_versions
+			ADD CONSTRAINT vault_secret_versions_secret_key_app_id_tenant_id_version_key
+			UNIQUE (secret_key, app_id, tenant_id, version);
+	END IF;
+END
+$$`
+
+	// createSecretsTenantIndex serves ListSecrets, which reads one app and
+	// tenant in key order. The unique constraints above serve the lookups by
+	// key, and the version reads, which lead with the key.
+	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	createSecretsTenantIndex = `CREATE INDEX IF NOT EXISTS idx_secrets_app_tenant ON vault_secrets (app_id, tenant_id, key)`
+
+	// dropSecretsTenant is the way back from the three statements above. It
+	// puts the old constraints back before it drops anything, so a database
+	// where two tenants (or a tenant and the app) share a key refuses to roll
+	// back, rather than losing which secret was whose. Delete the tenant
+	// rows first if rolling back is really what you want.
+	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	dropSecretsTenant = `DO $$
+BEGIN
+	ALTER TABLE vault_secrets ADD CONSTRAINT vault_secrets_key_app_id_key UNIQUE (key, app_id);
+	ALTER TABLE vault_secret_versions
+		ADD CONSTRAINT vault_secret_versions_secret_key_app_id_version_key UNIQUE (secret_key, app_id, version);
+	DROP INDEX IF EXISTS idx_secrets_app_tenant;
+	ALTER TABLE vault_secret_versions DROP COLUMN IF EXISTS tenant_id;
+	ALTER TABLE vault_secrets DROP COLUMN IF EXISTS tenant_id;
+END
+$$`
 
 	createSecretsTable = `CREATE TABLE IF NOT EXISTS vault_secrets (
 		id              TEXT        PRIMARY KEY,
@@ -270,3 +371,8 @@ const (
 		CREATE INDEX IF NOT EXISTS idx_audit_key ON vault_audit (key, app_id, created_at DESC)
 	`
 )
+
+// secretTenantDDL scopes the secret tables by tenant, in order. Migrate and
+// the "scope_secrets_by_tenant" migration both run it, and each statement is
+// safe to run again on a table it has already changed.
+var secretTenantDDL = []string{addSecretsTenant, addSecretVersionsTenant, createSecretsTenantIndex}

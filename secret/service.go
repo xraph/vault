@@ -9,6 +9,7 @@ import (
 	"github.com/xraph/vault/core"
 	"github.com/xraph/vault/crypto"
 	"github.com/xraph/vault/id"
+	"github.com/xraph/vault/scope"
 )
 
 // EncryptionAlgorithm is the value recorded in Meta.EncryptionAlg for a
@@ -40,6 +41,14 @@ func WithOnMutate(fn OnMutateFunc) ServiceOption {
 }
 
 // Service provides secret CRUD with encryption, auto-versioning, and audit callbacks.
+//
+// Every method that reads or writes one tenant's secrets takes the tenant
+// from the context (scope.WithTenantID), never from an argument. A context
+// with no tenant works on the app-level secrets, exactly as it did before
+// secrets were scoped by tenant; a context with a tenant sees that tenant's
+// secrets and nothing else, not even an app-level secret under the same key.
+// The OnAccess and OnMutate callbacks get the same context, so the audit rows
+// they write carry the tenant.
 type Service struct {
 	store     Store
 	encryptor *crypto.Encryptor
@@ -68,11 +77,17 @@ func (s *Service) resolveAppID(appID string) string {
 	return s.appID
 }
 
-// Get retrieves and decrypts a secret by key.
+// tenantFrom returns the tenant in ctx, or "" for the app-level secrets.
+func tenantFrom(ctx context.Context) string {
+	_, tenantID, _, _ := scope.FromContext(ctx)
+	return tenantID
+}
+
+// Get retrieves and decrypts a secret by key, for the tenant in ctx.
 func (s *Service) Get(ctx context.Context, key, appID string) (*Secret, error) {
 	appID = s.resolveAppID(appID)
 
-	sec, err := s.store.GetSecret(ctx, key, appID)
+	sec, err := s.store.GetSecret(ctx, key, appID, tenantFrom(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -118,11 +133,11 @@ func (s *Service) reveal(sec *Secret, key string, version int64) error {
 	return nil
 }
 
-// GetMeta retrieves secret metadata without the value.
+// GetMeta retrieves secret metadata without the value, for the tenant in ctx.
 func (s *Service) GetMeta(ctx context.Context, key, appID string) (*Meta, error) {
 	appID = s.resolveAppID(appID)
 
-	sec, err := s.store.GetSecret(ctx, key, appID)
+	sec, err := s.store.GetSecret(ctx, key, appID, tenantFrom(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +164,7 @@ func WithExpiresAt(t time.Time) SetOption {
 }
 
 // Set creates or updates a secret, encrypting the value and auto-versioning.
+// The secret belongs to the tenant in ctx, or to the app when ctx has none.
 func (s *Service) Set(ctx context.Context, key string, value []byte, appID string, opts ...SetOption) (*Meta, error) {
 	appID = s.resolveAppID(appID)
 
@@ -158,11 +174,12 @@ func (s *Service) Set(ctx context.Context, key string, value []byte, appID strin
 	}
 
 	sec := &Secret{
-		Entity: core.NewEntity(),
-		ID:     id.NewSecretID(),
-		Key:    key,
-		Value:  value,
-		AppID:  appID,
+		Entity:   core.NewEntity(),
+		ID:       id.NewSecretID(),
+		Key:      key,
+		Value:    value,
+		AppID:    appID,
+		TenantID: tenantFrom(ctx),
 	}
 
 	if cfg.metadata != nil {
@@ -196,11 +213,12 @@ func (s *Service) Set(ctx context.Context, key string, value []byte, appID strin
 	return sec.ToMeta(), nil
 }
 
-// Delete removes a secret and all its versions.
+// Delete removes a secret and all its versions, for the tenant in ctx. The
+// same key under another tenant, or at app level, is left alone.
 func (s *Service) Delete(ctx context.Context, key, appID string) error {
 	appID = s.resolveAppID(appID)
 
-	if err := s.store.DeleteSecret(ctx, key, appID); err != nil {
+	if err := s.store.DeleteSecret(ctx, key, appID, tenantFrom(ctx)); err != nil {
 		return err
 	}
 
@@ -211,13 +229,17 @@ func (s *Service) Delete(ctx context.Context, key, appID string) error {
 	return nil
 }
 
-// List returns secret metadata for an app.
+// List returns secret metadata for an app, for the tenant in ctx only. It
+// overwrites opts.TenantID with that tenant, so the caller's value has no
+// effect.
 func (s *Service) List(ctx context.Context, appID string, opts ListOpts) ([]*Meta, error) {
 	appID = s.resolveAppID(appID)
+	opts.TenantID = tenantFrom(ctx)
 	return s.store.ListSecrets(ctx, appID, opts)
 }
 
-// GetVersion retrieves a specific version of a secret and decrypts it.
+// GetVersion retrieves a specific version of a secret and decrypts it, for
+// the tenant in ctx.
 //
 // Each version row records the algorithm its own bytes were written with, and
 // the store hands that back, so a version is read the way it was written
@@ -234,7 +256,7 @@ func (s *Service) List(ctx context.Context, appID string, opts ListOpts) ([]*Met
 func (s *Service) GetVersion(ctx context.Context, key, appID string, version int64) (*Secret, error) {
 	appID = s.resolveAppID(appID)
 
-	sec, err := s.store.GetSecretVersion(ctx, key, appID, version)
+	sec, err := s.store.GetSecretVersion(ctx, key, appID, tenantFrom(ctx), version)
 	if err != nil {
 		return nil, err
 	}
@@ -250,10 +272,10 @@ func (s *Service) GetVersion(ctx context.Context, key, appID string, version int
 	return sec, nil
 }
 
-// ListVersions returns all versions of a secret.
+// ListVersions returns all versions of a secret, for the tenant in ctx.
 func (s *Service) ListVersions(ctx context.Context, key, appID string) ([]*Version, error) {
 	appID = s.resolveAppID(appID)
-	return s.store.ListSecretVersions(ctx, key, appID)
+	return s.store.ListSecretVersions(ctx, key, appID, tenantFrom(ctx))
 }
 
 // backfillPageSize is how many unrecorded version rows the backfill reads at
@@ -262,7 +284,9 @@ const backfillPageSize = 500
 
 // BackfillVersionEncryption records EncryptionAlgorithm on every version row
 // of the service's default app whose algorithm was never recorded and that the
-// configured key decrypts, and returns how many it marked.
+// configured key decrypts, and returns how many it marked. It is maintenance,
+// not a read: it covers every tenant of the app whatever the tenant in ctx,
+// and it never returns a value.
 //
 // It classifies by trying the key: a row the key cannot decrypt is plaintext,
 // or sealed with some other key, and the backfill cannot tell which, so it

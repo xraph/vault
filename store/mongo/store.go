@@ -82,7 +82,8 @@ func New(db *grove.DB, opts ...StoreOption) *Store {
 // DB returns the underlying grove database for direct access.
 func (s *Store) DB() *grove.DB { return s.db }
 
-// Migrate creates indexes for all vault collections.
+// Migrate creates indexes for all vault collections, and scopes the secret
+// collections by tenant the way "scope_secrets_by_tenant" does.
 func (s *Store) Migrate(ctx context.Context) error {
 	indexes := migrationIndexes()
 
@@ -95,6 +96,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("vault/mongo: migrate %s indexes: %w", col, err)
 		}
+	}
+
+	// The indexes above include the tenant-scoped unique ones. A database
+	// from before them still has the per-app unique indexes, which would
+	// refuse a second tenant's secret under the same key.
+	if err := scopeSecretsByTenant(ctx, s.mdb); err != nil {
+		return err
 	}
 
 	s.logger.Info("mongo: migrations complete")
@@ -133,21 +141,52 @@ var secretVersionsAlgIndex = mongo.IndexModel{
 	Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "encryption_alg", Value: 1}},
 }
 
+// secretsTenantUniqueIndex makes a secret key unique per app and tenant.
+var secretsTenantUniqueIndex = mongo.IndexModel{
+	Keys:    bson.D{{Key: "key", Value: 1}, {Key: "app_id", Value: 1}, {Key: "tenant_id", Value: 1}},
+	Options: options.Index().SetUnique(true),
+}
+
+// secretsTenantListIndex serves ListSecrets, which reads one app and tenant
+// in key order.
+var secretsTenantListIndex = mongo.IndexModel{
+	Keys: bson.D{{Key: "app_id", Value: 1}, {Key: "tenant_id", Value: 1}, {Key: "key", Value: 1}},
+}
+
+// secretVersionsTenantUniqueIndex makes a version number unique per key, app
+// and tenant. It also serves the version reads, which lead with the key.
+var secretVersionsTenantUniqueIndex = mongo.IndexModel{
+	Keys: bson.D{
+		{Key: "secret_key", Value: 1}, {Key: "app_id", Value: 1},
+		{Key: "tenant_id", Value: 1}, {Key: "version", Value: 1},
+	},
+	Options: options.Index().SetUnique(true),
+}
+
+// tenantMatch is the filter value that selects tenantID's documents. An
+// app-level secret is stored with tenant_id "", but a document written by a
+// release from before secrets had tenants has no tenant_id at all, and that
+// document is app-level too. {$in: ["", null]} matches both, where a plain ""
+// would leave the old document unreadable until the migration's backfill
+// reached it, and a replica of the old release could still write more while
+// a rollout is under way.
+func tenantMatch(tenantID string) any {
+	if tenantID != "" {
+		return tenantID
+	}
+	return bson.M{"$in": bson.A{"", nil}}
+}
+
 // migrationIndexes returns the index definitions for all vault collections.
 func migrationIndexes() map[string][]mongo.IndexModel {
 	return map[string][]mongo.IndexModel{
 		colSecrets: {
-			{
-				Keys:    bson.D{{Key: "key", Value: 1}, {Key: "app_id", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
+			secretsTenantUniqueIndex,
+			secretsTenantListIndex,
 			secretsExpiryIndex,
 		},
 		colSecretVersions: {
-			{
-				Keys:    bson.D{{Key: "secret_key", Value: 1}, {Key: "app_id", Value: 1}, {Key: "version", Value: 1}},
-				Options: options.Index().SetUnique(true),
-			},
+			secretVersionsTenantUniqueIndex,
 			{Keys: bson.D{{Key: "secret_key", Value: 1}, {Key: "app_id", Value: 1}}},
 			secretVersionsAlgIndex,
 		},
@@ -203,11 +242,11 @@ func migrationIndexes() map[string][]mongo.IndexModel {
 
 // ==================== Secret Store ====================
 
-// GetSecret retrieves the latest version of a secret.
-func (s *Store) GetSecret(ctx context.Context, key, appID string) (*secret.Secret, error) {
+// GetSecret retrieves the latest version of a secret in one app and tenant.
+func (s *Store) GetSecret(ctx context.Context, key, appID, tenantID string) (*secret.Secret, error) {
 	var m SecretModel
 	err := s.mdb.NewFind(&m).
-		Filter(bson.M{"key": key, "app_id": appID}).
+		Filter(bson.M{"key": key, "app_id": appID, "tenant_id": tenantMatch(tenantID)}).
 		Scan(ctx)
 	if err != nil {
 		if isNoDocuments(err) {
@@ -221,9 +260,10 @@ func (s *Store) GetSecret(ctx context.Context, key, appID string) (*secret.Secre
 // SetSecret creates or updates a secret with auto-versioning.
 func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	// Get current version.
+	filter := bson.M{"key": sec.Key, "app_id": sec.AppID, "tenant_id": tenantMatch(sec.TenantID)}
 	var existing SecretModel
 	err := s.mdb.NewFind(&existing).
-		Filter(bson.M{"key": sec.Key, "app_id": sec.AppID}).
+		Filter(filter).
 		Scan(ctx)
 	if err != nil && !isNoDocuments(err) {
 		return err
@@ -240,8 +280,11 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	m.CreatedAt = t
 	m.UpdatedAt = t
 
+	// The update sets every field, tenant_id included, so an app-level
+	// document from before tenants that the filter matched gets its
+	// tenant_id written here.
 	_, err = s.mdb.NewUpdate(m).
-		Filter(bson.M{"key": sec.Key, "app_id": sec.AppID}).
+		Filter(filter).
 		Upsert().
 		Exec(ctx)
 	if err != nil {
@@ -252,17 +295,17 @@ func (s *Store) SetSecret(ctx context.Context, sec *secret.Secret) error {
 	versionAlg := sec.EncryptionAlg
 	vm := &SecretVersionModel{
 		ID: id.NewVersionID().String(), SecretKey: sec.Key, AppID: sec.AppID,
-		Version: sec.Version, EncryptedValue: sec.EncryptedValue,
+		TenantID: sec.TenantID, Version: sec.Version, EncryptedValue: sec.EncryptedValue,
 		EncryptionAlg: &versionAlg, CreatedAt: t,
 	}
 	_, err = s.mdb.NewInsert(vm).Exec(ctx)
 	return err
 }
 
-// DeleteSecret removes a secret and all its versions.
-func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
+// DeleteSecret removes a secret and all its versions, in one app and tenant.
+func (s *Store) DeleteSecret(ctx context.Context, key, appID, tenantID string) error {
 	res, err := s.mdb.NewDelete((*SecretModel)(nil)).
-		Filter(bson.M{"key": key, "app_id": appID}).
+		Filter(bson.M{"key": key, "app_id": appID, "tenant_id": tenantMatch(tenantID)}).
 		Exec(ctx)
 	if err != nil {
 		return err
@@ -273,20 +316,23 @@ func (s *Store) DeleteSecret(ctx context.Context, key, appID string) error {
 
 	_, err = s.mdb.NewDelete((*SecretVersionModel)(nil)).
 		Many().
-		Filter(bson.M{"secret_key": key, "app_id": appID}).
+		Filter(bson.M{"secret_key": key, "app_id": appID, "tenant_id": tenantMatch(tenantID)}).
 		Exec(ctx)
 	return err
 }
 
-// ListSecrets returns secret metadata for an app.
+// ListSecrets returns secret metadata for an app and the tenant in
+// opts.TenantID, matched exactly.
 func (s *Store) ListSecrets(ctx context.Context, appID string, opts secret.ListOpts) ([]*secret.Meta, error) {
 	var models []SecretModel
 	sortBy := bson.D{{Key: "key", Value: 1}}
 	if opts.HasExpiryBound() {
 		sortBy = bson.D{{Key: "expires_at", Value: 1}, {Key: "key", Value: 1}}
 	}
+	filter := secretFilter(appID, opts)
+	filter["tenant_id"] = tenantMatch(opts.TenantID)
 	q := s.mdb.NewFind(&models).
-		Filter(secretFilter(appID, opts)).
+		Filter(filter).
 		Sort(sortBy)
 
 	if opts.Limit > 0 {
@@ -307,16 +353,17 @@ func (s *Store) ListSecrets(ctx context.Context, appID string, opts secret.ListO
 	return result, nil
 }
 
-// GetSecretVersion retrieves a specific version of a secret.
-func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version int64) (*secret.Secret, error) {
-	sec, err := s.GetSecret(ctx, key, appID)
+// GetSecretVersion retrieves a specific version of a secret in one app and
+// tenant. The secret and the version row are both looked up by the tenant.
+func (s *Store) GetSecretVersion(ctx context.Context, key, appID, tenantID string, version int64) (*secret.Secret, error) {
+	sec, err := s.GetSecret(ctx, key, appID, tenantID)
 	if err != nil {
 		return nil, err
 	}
 
 	var vm SecretVersionModel
 	err = s.mdb.NewFind(&vm).
-		Filter(bson.M{"secret_key": key, "app_id": appID, "version": version}).
+		Filter(bson.M{"secret_key": key, "app_id": appID, "tenant_id": tenantMatch(tenantID), "version": version}).
 		Scan(ctx)
 	if err != nil {
 		if isNoDocuments(err) {
@@ -334,11 +381,11 @@ func (s *Store) GetSecretVersion(ctx context.Context, key, appID string, version
 	return sec, nil
 }
 
-// ListSecretVersions returns all versions of a secret.
-func (s *Store) ListSecretVersions(ctx context.Context, key, appID string) ([]*secret.Version, error) {
+// ListSecretVersions returns all versions of a secret in one app and tenant.
+func (s *Store) ListSecretVersions(ctx context.Context, key, appID, tenantID string) ([]*secret.Version, error) {
 	var models []SecretVersionModel
 	err := s.mdb.NewFind(&models).
-		Filter(bson.M{"secret_key": key, "app_id": appID}).
+		Filter(bson.M{"secret_key": key, "app_id": appID, "tenant_id": tenantMatch(tenantID)}).
 		Sort(bson.D{{Key: "version", Value: 1}}).
 		Scan(ctx)
 	if err != nil {
@@ -984,9 +1031,9 @@ func (s *Store) ListAuditByKey(ctx context.Context, key, appID string, opts audi
 	return result, nil
 }
 
-// ListUnrecordedVersions returns up to limit version rows of appID whose
-// encryption algorithm was never recorded, in ascending id order, after the
-// id after. A missing field and a null both count as never recorded: the
+// ListUnrecordedVersions returns up to limit version rows of appID, across
+// every tenant, whose encryption algorithm was never recorded, in ascending
+// id order, after the id after. A missing field and a null both count as never recorded: the
 // filter {encryption_alg: null} matches both.
 func (s *Store) ListUnrecordedVersions(ctx context.Context, appID, after string, limit int) ([]*secret.Version, error) {
 	filter := bson.M{"app_id": appID, "encryption_alg": nil}
@@ -1021,11 +1068,16 @@ func (s *Store) SetVersionEncryption(ctx context.Context, versionID id.ID, alg s
 	return err
 }
 
-// CountVersionEncryption tallies appID's version rows by recorded algorithm,
-// leaving out each secret's current version. Only plaintext and unrecorded
-// rows reach the $lookup; it drops a row whose secret's current version is
-// that row's version. {encryption_alg: null} inside $in also matches a row
-// with no field at all.
+// CountVersionEncryption tallies appID's version rows, across every tenant, by
+// recorded algorithm, leaving out each secret's current version. Only
+// plaintext and unrecorded rows reach the $lookup; it drops a row whose
+// secret's current version is that row's version. {encryption_alg: null}
+// inside $in also matches a row with no field at all.
+//
+// The $lookup matches a row to its secret by key, app and tenant: matching on
+// key and app alone would let one tenant's current version hide another
+// tenant's earlier row with the same number. Both sides read a missing
+// tenant_id as "", the app-level tenant, as tenantMatch does.
 func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secret.VersionEncryptionCounts, error) {
 	var rows []struct {
 		Plaintext bool  `bson:"_id"`
@@ -1035,11 +1087,15 @@ func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secre
 		Match(bson.M{"app_id": appID, "encryption_alg": bson.M{"$in": bson.A{"", nil}}}).
 		Lookup(bson.M{
 			"from": colSecrets,
-			"let":  bson.M{"key": "$secret_key", "app": "$app_id", "version": "$version"},
+			"let": bson.M{
+				"key": "$secret_key", "app": "$app_id", "version": "$version",
+				"tenant": bson.M{"$ifNull": bson.A{"$tenant_id", ""}},
+			},
 			"pipeline": bson.A{
 				bson.M{"$match": bson.M{"$expr": bson.M{"$and": bson.A{
 					bson.M{"$eq": bson.A{"$key", "$$key"}},
 					bson.M{"$eq": bson.A{"$app_id", "$$app"}},
+					bson.M{"$eq": bson.A{bson.M{"$ifNull": bson.A{"$tenant_id", ""}}, "$$tenant"}},
 					bson.M{"$eq": bson.A{"$version", "$$version"}},
 				}}}},
 				bson.M{"$limit": 1},
@@ -1071,13 +1127,15 @@ func (s *Store) CountVersionEncryption(ctx context.Context, appID string) (secre
 // Counts
 // ──────────────────────────────────────────────────
 
-// CountSecrets returns the number of secrets belonging to appID.
+// CountSecrets returns the number of secrets belonging to appID, across every
+// tenant.
 func (s *Store) CountSecrets(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*SecretModel)(nil)).Filter(bson.M{"app_id": appID}).Count(ctx)
 }
 
-// CountSecretsMatching returns the number of secrets belonging to appID that
-// pass the expiry bounds in opts. Limit and Offset are ignored.
+// CountSecretsMatching returns the number of secrets belonging to appID,
+// across every tenant, that pass the expiry bounds in opts. TenantID, Limit
+// and Offset are ignored.
 func (s *Store) CountSecretsMatching(ctx context.Context, appID string, opts secret.ListOpts) (int64, error) {
 	return s.mdb.NewFind((*SecretModel)(nil)).Filter(secretFilter(appID, opts)).Count(ctx)
 }
@@ -1086,7 +1144,8 @@ func (s *Store) CountSecretsMatching(ctx context.Context, appID string, opts sec
 // so the page and the count are built from the same conditions. A bound also
 // requires an expiry: $ne null excludes documents with the field null or
 // missing, and the range operators already do the same, so the explicit
-// condition just says so.
+// condition just says so. It leaves the tenant out: ListSecrets adds it, and
+// CountSecretsMatching is app-wide.
 func secretFilter(appID string, opts secret.ListOpts) bson.M {
 	f := bson.M{"app_id": appID}
 	if !opts.HasExpiryBound() {
@@ -1103,10 +1162,10 @@ func secretFilter(appID string, opts secret.ListOpts) bson.M {
 	return f
 }
 
-// CountSecretsUnencrypted returns the number of secrets belonging to appID
-// that were stored without an encryption algorithm. A document with no
-// encryption_alg field at all is unencrypted too, so the filter matches both
-// an empty string and a missing field.
+// CountSecretsUnencrypted returns the number of secrets belonging to appID,
+// across every tenant, that were stored without an encryption algorithm. A
+// document with no encryption_alg field at all is unencrypted too, so the
+// filter matches both an empty string and a missing field.
 func (s *Store) CountSecretsUnencrypted(ctx context.Context, appID string) (int64, error) {
 	return s.mdb.NewFind((*SecretModel)(nil)).
 		Filter(bson.M{"app_id": appID, "encryption_alg": bson.M{"$in": bson.A{"", nil}}}).

@@ -25,6 +25,10 @@ const minRotationIntervalSeconds = 60
 // returns alongside a policy.
 const recentRotationRecordLimit = 50
 
+// Every rotation intent that reads a secret reads the app-level one, through
+// appLevel, whatever tenant the request carries: a policy belongs to the
+// app-level secret under its key, and that is the secret RotateNow rotates.
+
 // rotationPoliciesRequest is the wire request for rotation.policies.
 type rotationPoliciesRequest struct {
 	Limit  int `json:"limit"`
@@ -106,6 +110,7 @@ type rotationDetailResponse struct {
 // capped at recentRotationRecordLimit.
 func rotationDetailHandler(deps Deps) func(ctx context.Context, in rotationDetailRequest, p contract.Principal) (rotationDetailResponse, error) {
 	return func(ctx context.Context, in rotationDetailRequest, _ contract.Principal) (rotationDetailResponse, error) {
+		ctx = appLevel(ctx)
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
@@ -164,7 +169,7 @@ type rotationSavePolicyResponse struct {
 // rotation.policy_saved audit row naming the operator.
 func rotationSavePolicyHandler(deps Deps) func(ctx context.Context, in rotationSavePolicyRequest, p contract.Principal) (rotationSavePolicyResponse, error) {
 	return func(ctx context.Context, in rotationSavePolicyRequest, p contract.Principal) (rotationSavePolicyResponse, error) {
-		ctx = withOperator(ctx, p)
+		ctx = appLevel(withOperator(ctx, p))
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
@@ -248,7 +253,7 @@ type rotationDeletePolicyResponse struct {
 // policy writes a rotation.policy_deleted audit row naming the operator.
 func rotationDeletePolicyHandler(deps Deps) func(ctx context.Context, in rotationDeletePolicyRequest, p contract.Principal) (rotationDeletePolicyResponse, error) {
 	return func(ctx context.Context, in rotationDeletePolicyRequest, p contract.Principal) (rotationDeletePolicyResponse, error) {
-		ctx = withOperator(ctx, p)
+		ctx = appLevel(withOperator(ctx, p))
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {
@@ -284,7 +289,7 @@ type rotationRotateNowResponse struct {
 // and this handler must refuse before ever calling it.
 func rotationRotateNowHandler(deps Deps) func(ctx context.Context, in rotationRotateNowRequest, p contract.Principal) (rotationRotateNowResponse, error) {
 	return func(ctx context.Context, in rotationRotateNowRequest, p contract.Principal) (rotationRotateNowResponse, error) {
-		ctx = withOperator(ctx, p)
+		ctx = appLevel(withOperator(ctx, p))
 		appID := deps.Vault.AppID()
 		key, err := requireKey(in.Key)
 		if err != nil {

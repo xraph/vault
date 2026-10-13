@@ -877,7 +877,8 @@ func walkWireType(t *testing.T, typ reflect.Type, visited map[reflect.Type]bool)
 // --- secrets.list expiry filter ---
 
 // recordingStore records the options secrets.list reaches the store with,
-// and which of the two count methods it used for the total.
+// and any call it makes to the two count methods. It must make none: they
+// count across every tenant, and the list is one tenant's.
 type recordingStore struct {
 	store.Store
 	listOpts     []secret.ListOpts
@@ -985,12 +986,14 @@ func TestSecretsList_ExpiryFilterPassesBoundsAndCountsTheSameSet(t *testing.T) {
 		if out.Total != int64(len(c.want)) {
 			t.Errorf("%s: total %d, want %d", c.expiry, out.Total, len(c.want))
 		}
-		if rs.totalCalls != 0 || len(rs.matchingOpts) != 1 || len(rs.listOpts) != 1 {
-			t.Fatalf("%s: calls total=%d matching=%d list=%d, want 0 1 1", c.expiry, rs.totalCalls, len(rs.matchingOpts), len(rs.listOpts))
+		// One read gives both the page and its total, so the two cannot
+		// describe different sets.
+		if rs.totalCalls != 0 || len(rs.matchingOpts) != 0 || len(rs.listOpts) != 1 {
+			t.Fatalf("%s: calls total=%d matching=%d list=%d, want 0 0 1", c.expiry, rs.totalCalls, len(rs.matchingOpts), len(rs.listOpts))
 		}
-		l, m := rs.listOpts[0], rs.matchingOpts[0]
-		if !sameTime(l.ExpiresAfter, m.ExpiresAfter) || !sameTime(l.ExpiresBefore, m.ExpiresBefore) {
-			t.Errorf("%s: page bounds %v/%v differ from count bounds %v/%v", c.expiry, l.ExpiresAfter, l.ExpiresBefore, m.ExpiresAfter, m.ExpiresBefore)
+		l := rs.listOpts[0]
+		if l.Limit != 0 || l.Offset != 0 {
+			t.Errorf("%s: list read limit %d offset %d, want the whole filtered list", c.expiry, l.Limit, l.Offset)
 		}
 		if c.expiry == "expired" && (l.ExpiresAfter != nil || l.ExpiresBefore == nil) {
 			t.Errorf("expired bounds = %v/%v, want before only", l.ExpiresAfter, l.ExpiresBefore)
@@ -1038,19 +1041,12 @@ func TestSecretsList_OmittedExpiryBehavesAsBefore(t *testing.T) {
 	if len(out.Secrets) != 2 || out.Total != 2 {
 		t.Errorf("got %d secrets total %d, want 2 2", len(out.Secrets), out.Total)
 	}
-	if rs.totalCalls != 1 || len(rs.matchingOpts) != 0 {
-		t.Errorf("total calls %d matching calls %d, want 1 0", rs.totalCalls, len(rs.matchingOpts))
+	if rs.totalCalls != 0 || len(rs.matchingOpts) != 0 {
+		t.Errorf("total calls %d matching calls %d, want 0 0", rs.totalCalls, len(rs.matchingOpts))
 	}
-	if len(rs.listOpts) != 1 || rs.listOpts[0].HasExpiryBound() || rs.listOpts[0].Limit != 10 {
-		t.Errorf("list opts = %+v, want limit 10 and no bounds", rs.listOpts)
+	if len(rs.listOpts) != 1 || rs.listOpts[0].HasExpiryBound() || rs.listOpts[0].Limit != 0 {
+		t.Errorf("list opts = %+v, want one unpaged read and no bounds", rs.listOpts)
 	}
-}
-
-func sameTime(a, b *time.Time) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.Equal(*b)
 }
 
 // --- secrets.versions encryption ---
@@ -1059,8 +1055,8 @@ func sameTime(a, b *time.Time) bool {
 // as a row from before versions recorded one would.
 type unrecordedVersions struct{ store.Store }
 
-func (u unrecordedVersions) ListSecretVersions(ctx context.Context, key, appID string) ([]*secret.Version, error) {
-	vs, err := u.Store.ListSecretVersions(ctx, key, appID)
+func (u unrecordedVersions) ListSecretVersions(ctx context.Context, key, appID, tenantID string) ([]*secret.Version, error) {
+	vs, err := u.Store.ListSecretVersions(ctx, key, appID, tenantID)
 	for _, v := range vs {
 		v.EncryptionAlg = nil
 	}

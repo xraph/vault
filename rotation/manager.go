@@ -10,6 +10,7 @@ import (
 	log "github.com/xraph/go-utils/log"
 
 	"github.com/xraph/vault/id"
+	"github.com/xraph/vault/scope"
 	"github.com/xraph/vault/secret"
 )
 
@@ -195,10 +196,18 @@ func (m *Manager) Stop(_ context.Context) error {
 
 // RotateNow performs an immediate rotation for the given secret key. When a
 // WithOnRotate callback is set it hears the outcome, success or failure.
+//
+// Rotation works on app-level secrets. A policy and a rotation record carry
+// no tenant, so RotateNow reads and writes the app-level secret under
+// secretKey whatever tenant ctx carries, and hands the callback a context
+// scoped the same way. Rotating one tenant's secret here would move the
+// app-level policy's schedule for a secret it never touched. The other scope
+// values in ctx (app, user, IP) are kept.
 func (m *Manager) RotateNow(ctx context.Context, secretKey, appID string) error {
 	if appID == "" {
 		appID = m.appID
 	}
+	ctx = scope.WithTenantID(ctx, "")
 	err := m.rotate(ctx, secretKey, appID)
 	if m.onRotate != nil {
 		m.onRotate(ctx, secretKey, appID, err)

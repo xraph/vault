@@ -45,7 +45,7 @@ func TestMigrationsGroupAcceptsEveryRow(t *testing.T) {
 		if err := s.SetSecret(ctx, sec); err != nil {
 			t.Fatalf("SetSecret: %v", err)
 		}
-		got, err := s.GetSecret(ctx, "plain", app)
+		got, err := s.GetSecret(ctx, "plain", app, "")
 		if err != nil {
 			t.Fatalf("GetSecret: %v", err)
 		}
@@ -67,7 +67,7 @@ func TestMigrationsGroupAcceptsEveryRow(t *testing.T) {
 				t.Fatalf("SetSecret: %v", err)
 			}
 		}
-		versions, err := s.ListSecretVersions(ctx, "rich", app)
+		versions, err := s.ListSecretVersions(ctx, "rich", app, "")
 		if err != nil {
 			t.Fatalf("ListSecretVersions: %v", err)
 		}

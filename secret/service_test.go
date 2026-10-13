@@ -53,7 +53,7 @@ func TestSetGetRoundTrip(t *testing.T) {
 	}
 
 	// EncryptedValue should NOT be plaintext.
-	raw, _ := store.GetSecret(bg(), "db-password", "app1")
+	raw, _ := store.GetSecret(bg(), "db-password", "app1", "")
 	if bytes.Equal(raw.EncryptedValue, []byte("s3cret")) {
 		t.Error("EncryptedValue should not be plaintext")
 	}

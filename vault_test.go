@@ -414,7 +414,7 @@ func TestSecretsAreCiphertextAtRest(t *testing.T) {
 		t.Fatal(setErr)
 	}
 
-	raw, err := s.GetSecret(ctx, "k", "app1")
+	raw, err := s.GetSecret(ctx, "k", "app1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
