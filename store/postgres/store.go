@@ -142,7 +142,7 @@ const (
 	// when missing. A DO block runs as one transaction, so the table never
 	// sits without a unique constraint, and running it again changes
 	// nothing.
-	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	// #nosec G101 -- SQL DDL; "secret" in the name is the table, not a credential.
 	addSecretsTenant = `DO $$
 DECLARE
 	c record;
@@ -172,7 +172,7 @@ $$`
 	// addSecretVersionsTenant does for vault_secret_versions what
 	// addSecretsTenant does for vault_secrets: a version number is unique per
 	// key, app and tenant, not per key and app.
-	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	// #nosec G101 -- SQL DDL; "secret" in the name is the table, not a credential.
 	addSecretVersionsTenant = `DO $$
 DECLARE
 	c record;
@@ -203,7 +203,7 @@ $$`
 	// createSecretsTenantIndex serves ListSecrets, which reads one app and
 	// tenant in key order. The unique constraints above serve the lookups by
 	// key, and the version reads, which lead with the key.
-	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	// #nosec G101 -- SQL DDL; "secret" in the name is the table, not a credential.
 	createSecretsTenantIndex = `CREATE INDEX IF NOT EXISTS idx_secrets_app_tenant ON vault_secrets (app_id, tenant_id, key)`
 
 	// dropSecretsTenant is the way back from the three statements above. It
@@ -211,7 +211,7 @@ $$`
 	// where two tenants (or a tenant and the app) share a key refuses to roll
 	// back, rather than losing which secret was whose. Delete the tenant
 	// rows first if rolling back is really what you want.
-	//nolint:gosec // G101: SQL DDL; "secret" in the name is the table, not a credential.
+	// #nosec G101 -- SQL DDL; "secret" in the name is the table, not a credential.
 	dropSecretsTenant = `DO $$
 BEGIN
 	ALTER TABLE vault_secrets ADD CONSTRAINT vault_secrets_key_app_id_key UNIQUE (key, app_id);
