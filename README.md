@@ -1,170 +1,289 @@
-# Vault
+<p align="center">
+  <img src="assets/readme-banner.svg" alt="Vault, a Go library for encrypted secrets, feature flags and runtime configuration with tenant overrides" width="100%">
+</p>
 
-Composable secrets, feature flags, and runtime config for Go.
+# Vault: secrets management, feature flags and runtime config for Go
 
-Vault is a Go library that unifies three capabilities behind a single API surface: **encrypted secrets**, **rule-based feature flags**, and **hot-reloadable runtime configuration**. It is a library, not a service: you import it, bring your own database and encryption key, and control the process lifecycle. Vault provides the plumbing: encryption, versioning, tenant-scoped evaluation, rotation, audit, and a plugin system for extending every subsystem.
+Vault is a Go library for encrypted secrets management, feature flags and hot-reloadable runtime configuration, with per-tenant overrides, secret rotation and an audit log on top. You import it, bring your own database and an AES-256 key, and keep control of your process. It's meant for multi-tenant backends that want all three behind one API, and it plugs into [Forge](https://github.com/xraph/forge) as an extension, or into [Confy](https://github.com/xraph/confy) as a config source.
 
-Vault is part of the Forge ecosystem and integrates cleanly with [Forge](https://github.com/xraph/forge) extensions, [Grove](https://github.com/xraph/grove) ORM stores, and [Confy](https://github.com/xraph/confy) config sources, but none of them are required to use it standalone.
+[![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/) [![CI](https://github.com/xraph/vault/actions/workflows/ci.yml/badge.svg)](https://github.com/xraph/vault/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/xraph/vault.svg)](https://pkg.go.dev/github.com/xraph/vault) [![GitHub Stars](https://img.shields.io/github/stars/xraph/vault?style=flat)](https://github.com/xraph/vault/stargazers)
 
-## Features
-
-**Secrets**
-- AES-256-GCM encryption at rest, transparent decryption on read
-- Auto-versioning: every `Set` archives the previous value; fetch any historical version by number
-- Environment-variable key provider with hex/base64 auto-detection
-- Optional metadata (expiration, custom fields)
-
-**Feature flags**
-- Five value types: `bool`, `string`, `int`, `float`, `json`
-- Six targeting rule types: `WhenTenant`, `WhenTenantTag`, `WhenUser`, `Rollout` (deterministic %), `Schedule` (time window), `Custom` (plugin-evaluated)
-- Priority-ordered evaluation with per-tenant overrides
-- Type-safe accessors (`Bool`, `String`, `Int`, `Float`, `JSON`) that return a default on error
-- LRU evaluation cache with configurable TTL (default 30s)
-
-**Runtime configuration**
-- Typed entries (`string`, `bool`, `int`, `float`, `json`) with `Duration` parsing
-- Per-tenant overrides resolved ahead of the app-level value
-- Version tracking and `Watch` callbacks fired on mutation
-- Composable sources: memory, env, database, priority chain
-
-**Cross-cutting**
-- **Tenant isolation by design**: `scope.WithTenantID(ctx, ...)` propagates to every service via `context.Context`; cross-tenant reads are structurally impossible
-- **Secret rotation**: background manager with per-key `Rotator` callbacks, automatic versioning, and record-keeping
-- **Audit logging**: append-only trail of action/resource/outcome with full scope context; optional hook for forwarding to external systems
-- **Plugin system**: register plugins that implement any subset of eight capability interfaces (`OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, `RotationStrategy`)
-- **TypeID identifiers**: every entity uses type-prefixed, K-sortable UUIDv7 IDs (`sec_`, `flag_`, `cfg_`, …); passing the wrong prefix fails at parse time
-
-## Install
-
-```bash
-go get github.com/xraph/vault
-```
+[Documentation](https://www.xraph.com/docs/vault) · [Quick start](#quick-start) · [Features](#why-vault) · [Secrets](#secrets) · [Feature flags](#feature-flags) · [Runtime config](#runtime-config) · [Forge](#use-it-with-forge) · [FAQ](#faq)
 
 ## Quick start
+
+You need [Go 1.26 or later](https://go.dev/dl/).
+
+```bash
+go get github.com/xraph/vault@latest
+```
+
+Save this as `main.go`. It stores a secret, turns a flag on for one tenant and reads a config value, all against an in-memory store:
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
-    "log"
+	"context"
+	"fmt"
+	"log"
 
-    "github.com/xraph/vault/config"
-    "github.com/xraph/vault/crypto"
-    "github.com/xraph/vault/flag"
-    "github.com/xraph/vault/scope"
-    "github.com/xraph/vault/secret"
-    "github.com/xraph/vault/store/memory"
+	"github.com/xraph/vault"
+	"github.com/xraph/vault/flag"
+	"github.com/xraph/vault/scope"
+	"github.com/xraph/vault/store/memory"
 )
 
 func main() {
-    ctx := scope.WithScope(context.Background(), "myapp", "tenant-1", "user-42", "10.0.0.1")
+	// 32 bytes for AES-256-GCM. Load it from a secret manager in production.
+	key := []byte("0123456789abcdef0123456789abcdef")
 
-    store := memory.New()
+	v, err := vault.New(
+		vault.WithStore(memory.New()),
+		vault.WithAppID("billing"),
+		vault.WithEncryptionKey(key),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    enc, err := crypto.NewEncryptor([]byte("my-32-byte-secret-key-for-vault!"))
-    if err != nil {
-        log.Fatal(err)
-    }
+	ctx := scope.WithScope(context.Background(), "billing", "acme", "user-42", "10.0.0.1")
 
-    // Secrets: encrypted, auto-versioned
-    secrets := secret.NewService(store, enc, secret.WithAppID("myapp"))
-    meta, _ := secrets.Set(ctx, "openai-api-key", []byte("sk-abc123"), "myapp")
-    sec, _ := secrets.Get(ctx, "openai-api-key", "myapp")
-    fmt.Printf("secret v%d = %s\n", meta.Version, sec.Value)
+	// Secrets: encrypted at rest, versioned on every Set.
+	meta, err := v.Secrets().Set(ctx, "stripe-api-key", []byte("sk_test_123"), "")
+	if err != nil {
+		log.Fatal(err)
+	}
+	sec, err := v.Secrets().Get(ctx, "stripe-api-key", "")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("secret v%d = %s\n", meta.Version, sec.Value)
 
-    // Feature flags: evaluated against context scope
-    flags := flag.NewService(flag.NewEngine(store), flag.WithAppID("myapp"))
-    if flags.Bool(ctx, "new-dashboard", false) {
-        fmt.Println("new dashboard enabled")
-    }
+	// Feature flags: define once, then target a tenant.
+	_, err = v.FlagManager().Create(ctx, flag.CreateInput{
+		Key:          "new-checkout",
+		Type:         flag.TypeBool,
+		DefaultValue: false,
+		Enabled:      true,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	_, err = v.FlagManager().SetRules(ctx, "new-checkout", []flag.RuleInput{{
+		Type:        flag.RuleWhenTenant,
+		Config:      flag.RuleConfig{TenantIDs: []string{"acme"}},
+		ReturnValue: true,
+	}})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("new-checkout for acme:", v.Flags().Bool(ctx, "new-checkout", false))
 
-    // Runtime config: typed accessors with defaults
-    cfg := config.NewService(store, config.WithAppID("myapp"))
-    _ = cfg.Set(ctx, "rate-limit", 100, "myapp")
-    fmt.Printf("rate limit = %d\n", cfg.Int(ctx, "rate-limit", 50))
+	// Runtime config: typed reads with a default.
+	if err := v.Config().Set(ctx, "rate-limit", 100, ""); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("rate-limit:", v.Config().Int(ctx, "rate-limit", 50))
 }
 ```
 
-See [docs/content/docs/getting-started.mdx](docs/content/docs/getting-started.mdx) for a step-by-step walkthrough covering rule-based flags, tenant overrides, rotation, and swapping in a production store.
+Run it:
+
+```bash
+go mod tidy
+go run .
+# secret v1 = sk_test_123
+# new-checkout for acme: true
+# rate-limit: 100
+```
+
+The empty string you pass as the app ID means "use the one Vault was built with". The tenant and user come from the context you built with `scope.WithScope`, so you set them once per request (usually in middleware) and every read picks them up.
+
+Leave the key out and `vault.New` still works, but it stores secrets as given and only says so as a warning on the logger you pass with `WithLogger`. Name a key with `WithEncryptionKeyEnv` and the variable is missing or won't decode, and `New` fails instead. That's deliberate. Naming a key is a statement that you expect encryption, so Vault won't quietly fall back to plaintext.
+
+## Why Vault?
+
+Most services end up with three systems for what is really one question: what value should this request see? A secrets store, a feature flag service and a config file each get their own tenant model, their own audit story and their own client. Vault puts them behind one store and one context-based scope. You learn one API.
+
+| You need | Vault gives you |
+| --- | --- |
+| Secrets encrypted at rest | AES-256-GCM encryption, transparent decryption on read, and a new version on every `Set` |
+| Rotation without a cron job | A rotation manager that calls your `Rotator` per secret key on a schedule, or on demand with `RotateNow` |
+| Feature flags per tenant | `bool`, `string`, `int`, `float` and `json` flags with tenant, user, percentage rollout and schedule rules, plus per-tenant overrides |
+| Runtime config | Typed config entries with `Duration` parsing, version history, rollback and `Watch` callbacks |
+| Tenant isolation | App, tenant and user taken from `context.Context` through the `scope` package, never passed as arguments |
+| An audit trail | Every secret, flag and config write logged with its scope, and secret reads too |
+| Your database | PostgreSQL, SQLite and MongoDB through [Grove](https://github.com/xraph/grove), and an in-memory store |
+| Typed IDs | K-sortable UUIDv7 TypeIDs such as `sec_...` and `flag_...` that reject the wrong prefix |
+
+## Secrets
+
+`v.Secrets()` returns the secret service. `Set` encrypts the value and archives the previous version; `Get` decrypts the current one. You can fetch an older version with `GetVersion(ctx, key, appID, n)`, list them with `ListVersions`, and attach `secret.WithMetadata` or `secret.WithExpiresAt` when you set a value.
+
+Rotation lives on `v.Rotation()`. Register a function that takes the current value and returns the next one:
+
+```go
+v.Rotation().RegisterRotator("stripe-api-key", func(ctx context.Context, current []byte) ([]byte, error) {
+	return issueNewStripeKey(ctx, current)
+})
+```
+
+The manager checks for due rotation policies in a background loop once you call `Start` (the Forge extension does that for you), and every attempt, failed or not, leaves an audit row. `RotateNow(ctx, key, appID)` runs one straight away.
+
+## Feature flags
+
+You define flags through `v.FlagManager()` and read them through `v.Flags()`. Reads never return an error: `Bool`, `String`, `Int`, `Float` and `JSON` give you the default you passed when the flag is missing, disabled or the wrong type.
+
+When a flag is evaluated, a per-tenant override wins, then the first matching rule in priority order, then the flag's default value. Rules come from `SetRules`, in the order you list them:
+
+| Rule type | Matches | Status |
+| --- | --- | --- |
+| `flag.RuleWhenTenant` | Listed tenant IDs | Works |
+| `flag.RuleWhenUser` | Listed user IDs | Works |
+| `flag.RuleRollout` | A percentage of tenants, bucketed by a stable hash of tenant and flag key | Works |
+| `flag.RuleSchedule` | A time window, with a start, an end or both | Works |
+| `flag.RuleWhenTenantTag` | Tenants carrying a tag | Accepted, but never matches yet |
+| `flag.RuleCustom` | A plugin-evaluated rule | Accepted, but never matches yet |
+
+Two of those rule types aren't finished, so don't build a launch on them yet. Set a per-tenant value with `FlagManager().SetTenantOverride(ctx, key, tenantID, value)`. The flag engine caches evaluations for 30 seconds by default, and the manager drops the cache entry whenever you change a flag.
+
+## Runtime config
+
+`v.Config()` reads and writes config entries. The typed readers (`String`, `Bool`, `Int`, `Float`, `Duration`, `JSON`) resolve a tenant override first and fall back to the app-level value, then to your default. `Watch(key, callback)` runs your callback when a value changes through the service.
+
+For the full write path, use `v.ConfigManager()`. It creates and updates entries with type checks, rolls an entry back to an earlier version with `Rollback`, and sets per-tenant values with `SetOverride(ctx, key, tenantID, value)`.
+
+The `source` package gives you config sources for other readers: `source.NewMemory()`, `source.NewEnv(prefix)`, `source.NewDatabase(store, appID)`, and `source.NewChain(...)` to try them in priority order.
 
 ## Storage backends
 
-Every backend satisfies the same composite [`store.Store`](store/store.go) interface (secrets, flags, config, overrides, rotation and audit), so switching stores is a single type change. All expose `Migrate`, `Ping`, and `Close`.
+Every backend implements `store.Store`, which covers secrets, flags, config, overrides, rotation and audit, plus `Migrate`, `Ping` and `Close`.
 
-| Backend | Import | Use case |
+| Backend | Package | Constructor |
 | --- | --- | --- |
-| Memory | `github.com/xraph/vault/store/memory` | Tests, development, single-process demos |
-| PostgreSQL | `github.com/xraph/vault/store/postgres` | Production, direct `pgx` connection pool |
-| SQLite | `github.com/xraph/vault/store/sqlite` | Embedded deployments, local-first apps (via Grove) |
-| MongoDB | `github.com/xraph/vault/store/mongo` | Document-oriented workloads (`mongo-driver/v2`) |
-| Grove | `github.com/xraph/vault/store/grovestore` | Apps already using the Grove ORM |
+| In-memory | `store/memory` | `memory.New()` |
+| PostgreSQL | `store/postgres` | `postgres.New(db *grove.DB, opts...)` |
+| SQLite | `store/sqlite` | `sqlite.New(db *grove.DB, opts...)` |
+| MongoDB | `store/mongo` | `mongo.New(db *grove.DB, opts...)` |
 
-## Architecture at a glance
+Call `Migrate(ctx)` on a database store before you first use it. The SQLite store leaves its migration executor to you, so import `github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate` for its side effect. The [stores docs](https://www.xraph.com/docs/vault/stores/postgres) have the details for each backend.
 
-Vault is organised as a root package with shared types, six service packages implementing domain logic, supporting packages for encryption/scoping/sources, and a set of store backends implementing one composite interface.
+## Use it with Forge
 
-- Services: [secret/](secret/), [flag/](flag/), [config/](config/), [override/](override/), [rotation/](rotation/), [audit/](audit/)
-- Supporting: [crypto/](crypto/) (AES-256-GCM), [id/](id/) (TypeID), [scope/](scope/) (context keys), [source/](source/) (memory/env/database/chain), [plugin/](plugin/), [audit_hook/](audit_hook/), [metrics/](metrics/)
-- Stores: [store/memory/](store/memory/), [store/postgres/](store/postgres/), [store/sqlite/](store/sqlite/), [store/mongo/](store/mongo/), [store/grovestore/](store/grovestore/)
-- Integrations: [extension/](extension/) (Forge), [confy/](confy/) (Confy), [extension/contract/](extension/contract/) (dashboard contract)
+The `extension` package registers Vault as a [Forge extension](https://github.com/xraph/forge#extensions). It reads `extensions.vault` (or a top-level `vault` key), finds a store, builds the `*vault.Vault`, and provides both `*vault.Vault` and `store.Store` in the container, so your services resolve them with `vessel.Inject[*vault.Vault]`. `Start` launches the rotation loop and a background backfill of version encryption, and `Stop` cancels both before closing the store.
 
-Every operation follows the same three-phase flow: **scope** the context → **resolve** the value (tenant override → rule match → default) → **respond** with a coerced type or the caller's default on error. See [docs/content/docs/architecture.mdx](docs/content/docs/architecture.mdx) for the full package diagram and request-flow breakdown.
+```bash
+go get github.com/xraph/vault@latest github.com/xraph/grove/extension@latest
+```
 
-## Ecosystem integration
+```go
+import (
+	grove "github.com/xraph/grove/extension"
+	vault "github.com/xraph/vault/extension"
+)
 
-**Forge extension.** Mount Vault as a Forge extension to auto-wire the store, encryption and the dashboard contract into your Forge app (audit is always on). The React dashboard plugin, `@forge-go/dashboard-plugin-vault`, reads that contract (see [MIGRATION.md](MIGRATION.md) for what moved from the old templ pages). See [extension/](extension/) and [docs/content/docs/guides/forge-extension.mdx](docs/content/docs/guides/forge-extension.mdx).
+app := forge.NewApp(forge.AppConfig{
+	Name: "billing-api",
+	Extensions: []forge.Extension{
+		grove.New(), // extensions.grove: driver and dsn
+		vault.New(
+			vault.WithAppID("billing"),
+			vault.WithEncryptionKeyEnv("VAULT_ENCRYPTION_KEY"),
+		),
+	},
+})
+```
 
-**Confy source.** Adapt Vault as a Confy `ConfigSource` and `SecretProvider` so a single `confy.Load` call pulls typed config and encrypted secrets through Vault alongside your other sources. See [confy/](confy/) and [docs/content/docs/guides/confy-integration.mdx](docs/content/docs/guides/confy-integration.mdx).
+The extension looks for a store in this order: `WithStore`, then the database named by `WithGroveDatabase` or `grove_database`, then any `*grove.DB` already in the container. It picks the PostgreSQL, SQLite or MongoDB store from the Grove driver. With none of those it refuses to start.
+
+One thing to know before you deploy. The extension doesn't run migrations, so `disable_migrate` currently has no effect, and on a fresh PostgreSQL or SQLite database the tables Vault reads and writes don't exist until something calls `Migrate`. Create the tables yourself first: build the store, call `Migrate(ctx)`, and pass it in with `WithStore`. It also mounts no HTTP routes, which makes `base_path` and `disable_routes` no-ops too. The Forge dashboard reads Vault through a contract contributor instead; [MIGRATION.md](MIGRATION.md) describes the React plugin and what moved from the old templ pages.
 
 ## Configuration
 
-The root [`Config`](config.go) struct controls instance-wide behaviour. All fields have sensible defaults via `DefaultConfig()`.
-
-| Field | Purpose | Default |
-| --- | --- | --- |
-| `AppID` | Application identifier used to scope secrets, flags, and config | none |
-| `EncryptionKey` | 32-byte AES-256-GCM master key | none |
-| `EncryptionKeyEnv` | Fallback environment variable holding the key (hex or base64) | none |
-| `FlagCacheTTL` | TTL for the flag evaluation cache | `30s` |
-| `SourcePollInterval` | Interval for polling database-backed config sources | `30s` |
-
-Matching functional options live in [options.go](options.go): `WithAppID`, `WithEncryptionKey`, `WithEncryptionKeyEnv`, `WithLogger`, `WithConfig`.
-
-## Development
-
-The [Makefile](Makefile) exposes short aliases for the common workflows:
-
-```sh
-make test         # go test ./...
-make test-race    # go test -race ./...
-make coverage     # coverage.out + function-level summary
-make coverage-html
-make lint         # golangci-lint run ./...
-make fmt          # gofmt + goimports
-make check        # fmt + vet + lint
-make docs         # serve the Next.js docs site at http://localhost:3000
-make deps         # install goimports, air, golangci-lint
+```yaml
+extensions:
+  vault:
+    app_id: billing
+    encryption_key_env: VAULT_ENCRYPTION_KEY   # hex or base64, 32 bytes once decoded
+    flag_cache_ttl: 30s
+    source_poll_interval: 30s
+    grove_database: primary                    # optional; default *grove.DB otherwise
+    mount_to_confy: true                       # expose vault keys through Forge's config manager
+    confy_key_prefix: "vault."
+    confy_mount_patterns: ["db.*", "auth.*"]
 ```
 
-Requires Go 1.25+. See [go.mod](go.mod) for the full dependency set.
+| Key | Option | Default |
+| --- | --- | --- |
+| `app_id` | `WithAppID(id)` | empty |
+| `encryption_key_env` | `WithEncryptionKeyEnv(name)` | empty, so secrets are stored unencrypted |
+| `flag_cache_ttl` | `WithVaultOption(vault.WithConfig(...))` | `30s` |
+| `source_poll_interval` | `WithVaultOption(vault.WithConfig(...))` | `30s` |
+| `grove_database` | `WithGroveDatabase(name)` | default `*grove.DB` |
+| `mount_to_confy` | `WithMountToConfy()` | `false` |
+| `confy_key_prefix` | `WithConfyKeyPrefix(prefix)` | empty |
+| `confy_mount_keys` | `WithConfyMountKeys(keys...)` | all keys |
+| `confy_mount_patterns` | `WithConfyMountPatterns(globs...)` | all keys |
+
+`WithStore`, `WithConfig` and `WithRequireConfig` round it out, and `WithVaultOption` passes any root `vault.Option` straight through. `enable_audit` still loads but does nothing, because audit logging is always on.
+
+Outside Forge, the same settings are `vault.WithAppID`, `vault.WithEncryptionKey`, `vault.WithEncryptionKeyEnv`, `vault.WithLogger` and `vault.WithConfig` on `vault.New`.
+
+## Confy integration
+
+If you load config with Confy, the `confy` package adapts Vault into a `ConfigSource` (`NewVaultConfigSource`) and a `SecretProvider` (`NewVaultSecretProvider`), so a single Confy load returns your Vault-managed config and secrets next to your files and environment. Under Forge, `mount_to_confy: true` does that wiring for you. See the [Confy integration guide](https://www.xraph.com/docs/vault/guides/confy-integration).
 
 ## Documentation
 
-A full documentation site lives under [docs/](docs/) and can be served locally with `make docs`. Key pages:
+| Topic | Where |
+| --- | --- |
+| Getting started | [Getting started](https://www.xraph.com/docs/vault/getting-started), [architecture](https://www.xraph.com/docs/vault/architecture), [full example](https://www.xraph.com/docs/vault/guides/full-example) |
+| Subsystems | [Secrets](https://www.xraph.com/docs/vault/subsystems/secrets), [feature flags](https://www.xraph.com/docs/vault/subsystems/feature-flags), [runtime config](https://www.xraph.com/docs/vault/subsystems/runtime-config), [overrides](https://www.xraph.com/docs/vault/subsystems/overrides), [rotation](https://www.xraph.com/docs/vault/subsystems/rotation), [encryption](https://www.xraph.com/docs/vault/subsystems/encryption), [audit](https://www.xraph.com/docs/vault/subsystems/audit) |
+| Tenancy | [Multi-tenancy](https://www.xraph.com/docs/vault/concepts/multi-tenancy), [multi-tenant patterns](https://www.xraph.com/docs/vault/guides/multi-tenant-patterns) |
+| Storage | [PostgreSQL](https://www.xraph.com/docs/vault/stores/postgres), [SQLite](https://www.xraph.com/docs/vault/stores/sqlite), [MongoDB](https://www.xraph.com/docs/vault/stores/mongo), [memory](https://www.xraph.com/docs/vault/stores/memory), [custom store](https://www.xraph.com/docs/vault/guides/custom-store) |
+| Integrations | [Forge extension](https://www.xraph.com/docs/vault/guides/forge-extension), [Confy](https://www.xraph.com/docs/vault/guides/confy-integration) |
 
-- [Getting started](docs/content/docs/getting-started.mdx): eight-step walkthrough from install to Postgres
-- [Architecture](docs/content/docs/architecture.mdx): package diagram, request flow, plugin system, package index
-- Concepts: [entities](docs/content/docs/concepts/entities.mdx), [multi-tenancy](docs/content/docs/concepts/multi-tenancy.mdx), [identity](docs/content/docs/concepts/identity.mdx), [errors](docs/content/docs/concepts/errors.mdx)
-- Subsystems: [secrets](docs/content/docs/subsystems/secrets.mdx), [feature flags](docs/content/docs/subsystems/feature-flags.mdx), [runtime config](docs/content/docs/subsystems/runtime-config.mdx), [overrides](docs/content/docs/subsystems/overrides.mdx), [rotation](docs/content/docs/subsystems/rotation.mdx), [audit](docs/content/docs/subsystems/audit.mdx), [encryption](docs/content/docs/subsystems/encryption.mdx), [sources](docs/content/docs/subsystems/sources.mdx), [plugins](docs/content/docs/subsystems/plugins.mdx), [observability](docs/content/docs/subsystems/observability.mdx)
-- Stores: [memory](docs/content/docs/stores/memory.mdx), [postgres](docs/content/docs/stores/postgres.mdx), [sqlite](docs/content/docs/stores/sqlite.mdx), [mongo](docs/content/docs/stores/mongo.mdx), [grove](docs/content/docs/stores/grove.mdx)
-- Guides: [full example](docs/content/docs/guides/full-example.mdx), [custom store](docs/content/docs/guides/custom-store.mdx), [Forge extension](docs/content/docs/guides/forge-extension.mdx), [Confy integration](docs/content/docs/guides/confy-integration.mdx), [multi-tenant patterns](docs/content/docs/guides/multi-tenant-patterns.mdx)
+The Go API is on [pkg.go.dev](https://pkg.go.dev/github.com/xraph/vault).
 
-## Status
+## FAQ
 
-Actively developed. Core service APIs (secret, flag, config) are stable; storage backends and the Forge/Confy integrations continue to evolve. See recent commits on `main`.
+### How do I store encrypted secrets in a Go application?
+
+Create a Vault with a store and a 32-byte key (`WithEncryptionKey`, or `WithEncryptionKeyEnv` to read it from the environment), then call `v.Secrets().Set`. Values are encrypted with AES-256-GCM before they reach the database and decrypted when you `Get` them.
+
+### Can Vault roll out a feature flag to a percentage of tenants?
+
+Yes. A `flag.RuleRollout` rule with a percentage matches a stable slice of tenants, hashed on tenant ID and flag key, so a tenant stays in or out of the rollout across requests and restarts.
+
+### How do I rotate secrets automatically in Go?
+
+Register a `Rotator` for the secret key on `v.Rotation()` and start the rotation manager. Each rotation writes a new version of the secret and an audit row.
+
+### Can I use Vault without Forge?
+
+Yes. `vault.New` and the stores are plain Go. The `extension` package is only there for Forge apps.
+
+### Is Vault related to HashiCorp Vault?
+
+No. This Vault is a Go library that runs inside your service against your own database. There's no server to deploy.
+
+## Contributing
+
+Issues and focused pull requests are welcome on [GitHub](https://github.com/xraph/vault/issues).
+
+```bash
+git clone https://github.com/xraph/vault.git
+cd vault
+GOWORK=off go build ./...
+make test
+make check   # fmt, vet and lint
+```
+
+A plain test run covers the memory and SQLite stores. The PostgreSQL tests need `-tags integration` and `VAULT_TEST_PG_URL`, and the MongoDB tests need `VAULT_TEST_MONGO_URL`; without them they skip, and CI sets neither. Point them at throwaway databases, because the Postgres suite deletes from every `vault_*` table. [AGENTS.md](AGENTS.md) has the full commands, the lint rules that bite and the release steps. Commits follow [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## License
 
-See the repository root for licensing.
+See the [Vault repository](https://github.com/xraph/vault) for license terms.
+
+Vault is part of the [Forge](https://github.com/xraph/forge) forgery stack, built by [Rex Raphael](https://github.com/juicycleff) and [contributors](https://github.com/xraph/vault/graphs/contributors).
