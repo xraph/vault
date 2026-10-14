@@ -3,34 +3,34 @@ title: Introduction
 description: Composable secrets management, feature flags, and runtime configuration for Go.
 ---
 
-Vault is a Go library that unifies **secrets management**, **feature flags**, and **runtime configuration** behind a single API surface. It encrypts secrets with AES-256-GCM, evaluates feature flags with rule-based targeting, and serves hot-reloadable config with per-tenant overrides.
+Vault is a Go library that unifies secrets management, feature flags, and runtime configuration behind a single API surface. It encrypts secrets with AES-256-GCM, evaluates feature flags with rule-based targeting, and serves hot-reloadable config with per-tenant overrides.
 
-Vault is a **library** -- not a service. You bring your own database, encryption key, and process lifecycle. Vault provides the plumbing.
+Vault is a library, not a service. You bring your own database, encryption key, and process lifecycle. Vault provides the plumbing.
 
 ## What it does
 
-- **Encrypted secrets** -- Store secrets encrypted with AES-256-GCM. Each value is encrypted at rest with a nonce-prefixed ciphertext and decrypted transparently on read.
-- **Auto-versioned secrets** -- Every `Set` call auto-increments the version number and archives the previous value. Retrieve any historical version by number.
-- **Feature flags** -- Define boolean, string, int, float, and JSON flags with typed default values. The `flag.Service` provides type-safe accessors (`Bool`, `String`, `Int`, `Float`, `JSON`) that return the default on error.
-- **Rule-based flag evaluation** -- Target flags with `WhenTenant`, `WhenUser`, `Rollout` (deterministic percentage), `Schedule` (time window), `WhenTenantTag`, and `Custom` (plugin-evaluated) rules. Rules are evaluated in priority order.
-- **Runtime configuration** -- Store typed config entries (`string`, `bool`, `int`, `float`, `json`) with type-safe accessors and `Duration` parsing. Register `Watch` callbacks that fire when a key is updated.
-- **Per-tenant overrides** -- The `override.Resolver` checks for a tenant-specific override before falling back to the app-level config value. Results are cached with a configurable TTL.
-- **Secret rotation** -- The `rotation.Manager` runs a background loop checking policies for due rotations. Register a `Rotator` function per secret key and Vault handles scheduling, versioning, and record-keeping.
-- **Audit logging** -- The `audit.Logger` persists append-only log entries with action, resource, outcome, and full scope context (app, tenant, user, IP). An optional `audit_hook.Extension` forwards events to external systems.
-- **Plugin system** -- Register plugins that implement any combination of 8 capability interfaces: `OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, and `RotationStrategy`. The `plugin.Registry` discovers capabilities via type assertion at registration time.
-- **Composable store backends** -- Three backends implement the same composite `store.Store` interface: `memory` (testing), `postgres` (pgx connection pool), and `grovestore` (Grove ORM). All support Migrate, Ping, and Close lifecycle methods.
+- Encrypted secrets: store secrets encrypted with AES-256-GCM. Each value is encrypted at rest with a nonce-prefixed ciphertext and decrypted transparently on read.
+- Auto-versioned secrets: every `Set` call auto-increments the version number and archives the previous value. Retrieve any historical version by number.
+- Feature flags: define boolean, string, int, float, and JSON flags with typed default values. The `flag.Service` provides type-safe accessors (`Bool`, `String`, `Int`, `Float`, `JSON`) that return the default on error.
+- Rule-based flag evaluation: target flags with `WhenTenant`, `WhenUser`, `Rollout` (deterministic percentage) and `Schedule` (time window) rules, evaluated in priority order. `WhenTenantTag` and `Custom` rules are accepted but never match yet.
+- Runtime configuration: store typed config entries (`string`, `bool`, `int`, `float`, `json`) with type-safe accessors and `Duration` parsing. Register `Watch` callbacks that fire when a key is updated.
+- Per-tenant overrides: the `override.Resolver` checks for a tenant-specific override before falling back to the app-level config value. Results are cached with a configurable TTL.
+- Secret rotation: the `rotation.Manager` runs a background loop checking policies for due rotations. Register a `Rotator` function per secret key and Vault handles scheduling, versioning, and record-keeping.
+- Audit logging: the `audit.Logger` persists append-only log entries with action, resource, outcome, and full scope context (app, tenant, user, IP). An optional `audit_hook.Extension` forwards events to external systems.
+- Plugin interfaces: the `plugin` package defines 8 capability interfaces (`OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, `RotationStrategy`) and a registry, but nothing in Vault calls it yet. See [Plugins](/docs/subsystems/plugins).
+- Composable store backends: four backends implement the same composite `store.Store` interface: `memory` (testing), and `postgres`, `sqlite` and `mongo` on a Grove `*grove.DB`. All support Migrate, Ping, and Close lifecycle methods.
 
 ## Design philosophy
 
-**Library, not service.** Vault is a set of Go packages you import. You control `main`, the database connection, the encryption key, and the process lifecycle.
+Vault is a set of Go packages you import. You control `main`, the database connection, the encryption key, and the process lifecycle.
 
-**Interfaces over implementations.** Every subsystem defines a Go interface (`secret.Store`, `flag.Store`, `config.Store`, `override.Store`, `rotation.Store`, `audit.Store`). Swap any storage backend with a single type change.
+Every subsystem defines a Go interface (`secret.Store`, `flag.Store`, `config.Store`, `override.Store`, `rotation.Store`, `audit.Store`). Swap any storage backend with a single type change.
 
-**Composable stores.** The `store.Store` interface composes all six subsystem store interfaces. Pass a single backend value wherever a store is needed, or use different backends for different subsystems.
+The `store.Store` interface composes all six subsystem store interfaces. Pass a single backend value wherever a store is needed, or use different backends for different subsystems.
 
-**Tenant-scoped by design.** The `scope` package injects app ID, tenant ID, user ID, and IP into `context.Context`. Every service, engine, and resolver reads scope from context -- cross-tenant data access is structurally impossible.
+The `scope` package puts the app ID, tenant ID, user ID and IP on `context.Context`, and every service, engine and resolver reads them from there, so you set the tenant once per request instead of passing it to every call.
 
-**TypeID everywhere.** All entities use type-prefixed, K-sortable, UUIDv7-based identifiers via `id.ID`. Passing a `sec_` ID where a `flag_` ID is expected fails at parse time.
+All entities use type-prefixed, K-sortable, UUIDv7-based identifiers via `id.ID`. Passing a `sec_` ID where a `flag_` ID is expected fails at parse time.
 
 ## Quick look
 
@@ -96,5 +96,5 @@ func main() {
   <Card title="Getting started" href="/docs/getting-started" description="Install Vault and manage your first secret in under five minutes." />
   <Card title="Architecture" href="/docs/architecture" description="Understand how the packages fit together." />
   <Card title="Core concepts" href="/docs/concepts/entities" description="Learn about Secrets, Flags, Config entries, and Overrides." />
-  <Card title="Stores" href="/docs/stores/memory" description="Configure memory, PostgreSQL, or Grove store backends." />
+  <Card title="Stores" href="/docs/stores/memory" description="Configure memory, PostgreSQL, SQLite or MongoDB store backends." />
 </Cards>

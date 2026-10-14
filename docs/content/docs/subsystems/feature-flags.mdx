@@ -3,7 +3,7 @@ title: Feature Flags
 description: Rule-based evaluation with tenant overrides and type-safe access.
 ---
 
-The `flag` package provides a complete feature flag system with three layers: **Definition** (what the flag is), **Engine** (how it evaluates), and **Service** (type-safe access for application code). It supports boolean, string, integer, float, and JSON flag types, with targeting rules, per-tenant overrides, and an in-memory evaluation cache.
+The `flag` package provides a complete feature flag system with three layers: Definition (what the flag is), Engine (how it evaluates), and Service (type-safe access for application code). It supports boolean, string, integer, float, and JSON flag types, with targeting rules, per-tenant overrides, and an in-memory evaluation cache.
 
 ## Architecture
 
@@ -16,9 +16,9 @@ flag.Service  (type-safe accessors: Bool, String, Int, Float, JSON)
 
 The three layers separate concerns:
 
-1. **Definition** -- The data model for flags, rules, variants, and overrides.
-2. **Engine** -- The evaluation engine that resolves a flag key to a concrete value.
-3. **Service** -- A thin wrapper providing type-safe accessors with built-in fallback defaults.
+1. Definition: The data model for flags, rules, variants, and overrides.
+2. Engine: The evaluation engine that resolves a flag key to a concrete value.
+3. Service: A thin wrapper providing type-safe accessors with built-in fallback defaults.
 
 ## Installation
 
@@ -76,18 +76,20 @@ type Variant struct {
 
 ## Targeting rules
 
-Rules are evaluated in **priority order** (lower number = higher priority). The first matching rule determines the return value. If no rule matches, the `DefaultValue` is used.
+Rules are evaluated in priority order (lower number = higher priority). The first matching rule determines the return value. If no rule matches, the `DefaultValue` is used.
 
 ### Rule types
 
 | RuleType | Constant | Description |
 |----------|----------|-------------|
 | `when_tenant` | `RuleWhenTenant` | Matches specific tenant IDs |
-| `when_tenant_tag` | `RuleWhenTenantTag` | Matches tenants with a specific tag key/value |
+| `when_tenant_tag` | `RuleWhenTenantTag` | Meant to match tenants with a tag key/value. Not implemented: accepted, but never matches |
 | `when_user` | `RuleWhenUser` | Matches specific user IDs |
-| `rollout` | `RuleRollout` | Percentage-based rollout (0--100) |
+| `rollout` | `RuleRollout` | Percentage-based rollout (0 to 100) |
 | `schedule` | `RuleSchedule` | Time-window activation |
-| `custom` | `RuleCustom` | Delegates to a named plugin evaluator |
+| `custom` | `RuleCustom` | Meant to delegate to a named plugin evaluator. Not implemented: accepted, but never matches |
+
+`RuleWhenTenantTag` and `RuleCustom` aren't finished. Vault stores them and returns them, but the engine never matches them, so a flag that relies on one falls through to the next rule or the default. Don't build a launch on them yet.
 
 ### Rule struct
 
@@ -130,7 +132,7 @@ The package provides convenience constructors for each rule type. Chain `.Return
 // Match specific tenants.
 rule := flag.WhenTenant("tenant-a", "tenant-b").Return(true)
 
-// Match tenants with a specific tag.
+// Match tenants with a specific tag. Not implemented yet: never matches.
 rule := flag.WhenTenantTag("plan", "enterprise").Return("advanced")
 
 // Match specific users.
@@ -190,10 +192,10 @@ func (e *Engine) Evaluate(ctx context.Context, key, appID string) (any, error)
 
 The engine follows a strict evaluation order:
 
-1. **Disabled check** -- If `Definition.Enabled` is `false`, return `DefaultValue` immediately.
-2. **Tenant override** -- If a tenant ID is in the context and a `TenantOverride` exists for that tenant, return the override value.
-3. **Rules** -- Evaluate targeting rules in priority order (ascending). Return the `ReturnValue` of the first matching rule.
-4. **Default** -- If no rule matches, return `Definition.DefaultValue`.
+1. Disabled check: If `Definition.Enabled` is `false`, return `DefaultValue` immediately.
+2. Tenant override: If a tenant ID is in the context and a `TenantOverride` exists for that tenant, return the override value.
+3. Rules: Evaluate targeting rules in priority order (ascending). Return the `ReturnValue` of the first matching rule.
+4. Default: If no rule matches, return `Definition.DefaultValue`.
 
 ### Context keys
 

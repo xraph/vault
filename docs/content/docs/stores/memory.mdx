@@ -152,12 +152,15 @@ func main() {
 
 ## Swapping to PostgreSQL
 
-The memory store implements the same `store.Store` interface as the PostgreSQL and Grove stores. Switching to a production backend is a single-line change:
+The memory store implements the same `store.Store` interface as the PostgreSQL, SQLite and MongoDB stores. Switching to a production backend changes only how you build the store:
 
 ```go
 // Development
 store := memory.New()
 
-// Production
-store, err := postgres.New(ctx, connString)
+// Production: a *grove.DB opened with Grove's pgdriver
+store := postgres.New(db)
+if err := store.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
 ```

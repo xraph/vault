@@ -61,7 +61,7 @@ mgr := rotation.NewManager(rotationStore, secretService,
 | Option | Signature | Default | Description |
 |--------|-----------|---------|-------------|
 | `WithCheckInterval` | `WithCheckInterval(d time.Duration) ManagerOption` | `1 * time.Minute` | How often the manager checks for due rotations |
-| `WithLogger` | `WithLogger(l *slog.Logger) ManagerOption` | `slog.Default()` | Logger for rotation events and errors |
+| `WithLogger` | `WithLogger(l log.Logger) ManagerOption` | no-op logger | A `github.com/xraph/go-utils/log` logger for rotation events and errors |
 | `WithAppID` | `WithAppID(appID string) ManagerOption` | `""` | Default app ID for policy lookups |
 
 ### RegisterRotator
@@ -233,14 +233,14 @@ import (
     "encoding/hex"
     "fmt"
     "log"
-    "log/slog"
     "os"
     "os/signal"
     "time"
 
+    glog "github.com/xraph/go-utils/log"
+    "github.com/xraph/vault/crypto"
     "github.com/xraph/vault/rotation"
     "github.com/xraph/vault/secret"
-    "github.com/xraph/vault/crypto"
 )
 
 func main() {
@@ -257,7 +257,7 @@ func main() {
     mgr := rotation.NewManager(rotationStore, secretSvc,
         rotation.WithAppID("myapp"),
         rotation.WithCheckInterval(1*time.Minute),
-        rotation.WithLogger(slog.Default()),
+        rotation.WithLogger(glog.NewProductionLogger()),
     )
 
     // Register a rotator for API keys.

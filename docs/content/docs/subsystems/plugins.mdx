@@ -1,9 +1,11 @@
 ---
 title: Plugin System
-description: Extensible plugin architecture with 8 capability interfaces.
+description: The plugin package's 8 capability interfaces and registry. Not wired into Vault yet.
 ---
 
-The `plugin` package provides an extensible architecture for adding custom behavior to Vault. Plugins implement a base interface and optionally implement additional capability interfaces. The `Registry` discovers capabilities via type assertion at registration time and categorizes plugins into the appropriate internal collections.
+The `plugin` package defines a base `Plugin` interface, 8 optional capability interfaces, and a `Registry` that sorts registered plugins by the capabilities they implement.
+
+Nothing in Vault uses it yet. `vault.New` takes no plugins, no service calls a registry, and the Forge extension doesn't build one, so a plugin you register is never called by Vault itself. A `FlagEvaluator` doesn't make `RuleCustom` rules match, an `EncryptionProvider` doesn't change how secrets are encrypted, and `OnInit` and `OnShutdown` don't run on their own. What you get today is the registry: register plugins and drive them from your own code, as in [Lifecycle integration](#lifecycle-integration). The "called when" lines below describe what each hook is for, not something Vault does yet.
 
 ## Architecture
 
@@ -46,7 +48,7 @@ Plugins optionally implement any combination of these 8 capability interfaces.
 
 ### OnInit
 
-Called during Vault startup. Use for establishing connections, loading configuration, or other one-time setup.
+Meant to run at startup. Use for establishing connections, loading configuration, or other one-time setup.
 
 ```go
 type OnInit interface {
@@ -56,7 +58,7 @@ type OnInit interface {
 
 ### OnShutdown
 
-Called during Vault shutdown. Use for closing connections, flushing buffers, or other cleanup.
+Meant to run at shutdown. Use for closing connections, flushing buffers, or other cleanup.
 
 ```go
 type OnShutdown interface {
@@ -118,7 +120,7 @@ func (p *MyPlugin) Evaluate(ctx context.Context, rule *flag.Rule, tenantID, user
 
 ### OnSecretAccess
 
-Called when a secret is accessed. Use for custom audit logging, metrics, or access control.
+Meant to run when a secret is accessed. Use for custom audit logging, metrics, or access control.
 
 ```go
 type OnSecretAccess interface {
@@ -128,7 +130,7 @@ type OnSecretAccess interface {
 
 ### OnConfigChange
 
-Called when a config entry changes. Use for cache invalidation, notification, or syncing.
+Meant to run when a config entry changes. Use for cache invalidation, notification, or syncing.
 
 ```go
 type OnConfigChange interface {
@@ -178,7 +180,7 @@ registry := plugin.NewRegistry(
 
 | Option | Signature | Description |
 |--------|-----------|-------------|
-| `WithLogger` | `WithLogger(l *slog.Logger) RegistryOption` | Sets the logger for registration events |
+| `WithLogger` | `WithLogger(l log.Logger) RegistryOption` | Sets the logger for registration events |
 
 ### Register
 
@@ -340,7 +342,7 @@ registry.Register(&myplugin.InfraPlugin{
 
 ## Lifecycle integration
 
-Use the registry to drive plugin lifecycle during application startup and shutdown:
+Since Vault doesn't call plugins itself, you drive them from your own startup and shutdown code:
 
 ```go
 // Startup: initialize all plugins.
@@ -350,10 +352,13 @@ for _, hook := range registry.InitHooks() {
     }
 }
 
-// Runtime: use capabilities.
+// Runtime: use capabilities. source.Chain has no AddSource, so collect
+// the sources first and build the chain from them.
+var sources []source.Source
 for _, sp := range registry.SourceProviders() {
-    chain.AddSource(sp.Source(), sp.Priority())
+    sources = append(sources, sp.Source())
 }
+chain := source.NewChain(sources...)
 
 // Shutdown: clean up all plugins (reverse order).
 hooks := registry.ShutdownHooks()

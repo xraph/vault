@@ -15,10 +15,14 @@ import (
 )
 
 // Open a MongoDB connection via Grove's mongodriver.
-db := grove.Open(mongodriver.New(
-    mongodriver.WithURI("mongodb://localhost:27017"),
-    mongodriver.WithDatabase("vault"),
-))
+drv := mongodriver.New()
+if err := drv.Open(ctx, "mongodb://localhost:27017", mongodriver.WithDatabase("vault")); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
+if err != nil {
+    log.Fatal(err)
+}
 
 s := mongo.New(db)
 if err := s.Migrate(ctx); err != nil {
@@ -30,10 +34,10 @@ if err := s.Migrate(ctx); err != nil {
 
 | Option | Signature | Description |
 |--------|-----------|-------------|
-| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger. Defaults to `slog.Default()`. |
+| `WithLogger` | `WithLogger(l log.Logger) StoreOption` | A `github.com/xraph/go-utils/log` logger. Defaults to a no-op logger. |
 
 ```go
-s := mongo.New(db, mongo.WithLogger(slog.Default()))
+s := mongo.New(db, mongo.WithLogger(glog.NewProductionLogger())) // glog = github.com/xraph/go-utils/log
 ```
 
 ## Internals

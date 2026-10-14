@@ -178,11 +178,11 @@ type Rule struct {
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `RuleWhenTenant` | `"when_tenant"` | Match specific tenant IDs |
-| `RuleWhenTenantTag` | `"when_tenant_tag"` | Match tenants with a specific tag key/value |
+| `RuleWhenTenantTag` | `"when_tenant_tag"` | Match tenants with a tag key/value. Not implemented: never matches |
 | `RuleWhenUser` | `"when_user"` | Match specific user IDs |
 | `RuleRollout` | `"rollout"` | Deterministic percentage-based rollout (0-100) |
 | `RuleSchedule` | `"schedule"` | Active only within a time window |
-| `RuleCustom` | `"custom"` | Plugin-evaluated via a named evaluator |
+| `RuleCustom` | `"custom"` | Plugin-evaluated via a named evaluator. Not implemented: never matches |
 
 ### RuleConfig
 
@@ -208,7 +208,7 @@ The `flag` package provides convenience constructors for common rule types:
 // Match specific tenants.
 rule := flag.WhenTenant("tenant-1", "tenant-2").Return(true)
 
-// Match tenants with a tag.
+// Match tenants with a tag. Not implemented yet: never matches.
 rule := flag.WhenTenantTag("plan", "enterprise").Return(true)
 
 // Match specific users.

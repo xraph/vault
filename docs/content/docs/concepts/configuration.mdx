@@ -50,7 +50,7 @@ type Config struct {
 | `EncryptionKey` | `[]byte` | `nil` | 32-byte AES-256-GCM master key. Wins over `EncryptionKeyEnv`. Excluded from JSON/YAML serialization. |
 | `EncryptionKeyEnv` | `string` | `""` | Environment variable that holds the key, read when `EncryptionKey` is empty. `New` fails if you name it and it's unset, empty or undecodable. |
 | `FlagCacheTTL` | `time.Duration` | `30s` | TTL for the flag evaluation cache. |
-| `SourcePollInterval` | `time.Duration` | `30s` | Interval for polling database configuration sources. |
+| `SourcePollInterval` | `time.Duration` | `30s` | Stored, but `vault.New` doesn't read it. The Forge extension passes its own `source_poll_interval` to the confy source as its watch poll interval when `mount_to_confy` is on. |
 
 ### DefaultConfig
 
@@ -219,7 +219,7 @@ import "github.com/xraph/vault/override"
 
 resolver := override.NewResolver(configStore, overrideStore,
     override.WithCacheTTL(30 * time.Second),
-    override.WithLogger(slog.Default()),
+    override.WithLogger(logger), // a github.com/xraph/go-utils/log Logger
 )
 ```
 
@@ -231,7 +231,7 @@ import "github.com/xraph/vault/rotation"
 mgr := rotation.NewManager(store, secretSvc,
     rotation.WithAppID("myapp"),
     rotation.WithCheckInterval(1 * time.Minute),
-    rotation.WithLogger(slog.Default()),
+    rotation.WithLogger(logger),
 )
 ```
 
@@ -240,8 +240,8 @@ mgr := rotation.NewManager(store, secretSvc,
 ```go
 import "github.com/xraph/vault/audit"
 
-logger := audit.NewLogger(store,
+auditLog := audit.NewLogger(store,
     audit.WithHook(auditHookExtension),
-    audit.WithLogger(slog.Default()),
+    audit.WithLogger(logger),
 )
 ```

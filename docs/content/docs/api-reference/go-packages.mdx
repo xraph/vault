@@ -25,8 +25,9 @@ All Vault packages are importable from the module `github.com/xraph/vault`. This
 | `metrics` | `github.com/xraph/vault/metrics` | `Collector`, `Counter`, `Histogram`, `MetricFactory`, `NoopFactory` | `NewCollector()`, `NewNoopCollector()` | Operational metrics interfaces and collector |
 | `store` | `github.com/xraph/vault/store` | `Store` | (interface package) | Composite store interface definition |
 | `store/memory` | `github.com/xraph/vault/store/memory` | `Store` | `New()` | In-memory store for development and testing |
-| `store/postgres` | `github.com/xraph/vault/store/postgres` | `Store`, `StoreOption` | `New()`, `NewFromPool()`, `WithLogger()` | Production PostgreSQL backend using pgx/v5 |
-| `store/grovestore` | `github.com/xraph/vault/store/grovestore` | `Store`, `StoreOption` | `New()`, `WithLogger()` | PostgreSQL backend using Grove ORM |
+| `store/postgres` | `github.com/xraph/vault/store/postgres` | `Store`, `StoreOption` | `New()`, `WithLogger()` | PostgreSQL backend on a `*grove.DB` |
+| `store/sqlite` | `github.com/xraph/vault/store/sqlite` | `Store`, `StoreOption` | `New()`, `WithLogger()` | SQLite backend on a `*grove.DB` |
+| `store/mongo` | `github.com/xraph/vault/store/mongo` | `Store`, `StoreOption` | `New()`, `WithLogger()` | MongoDB backend on a `*grove.DB` |
 
 ## Root package: `github.com/xraph/vault`
 
@@ -309,7 +310,7 @@ type Override struct {
 
 ```go
 func NewResolver(configStore config.Store, overrideStore Store, opts ...ResolverOption) *Resolver
-func WithLogger(l *slog.Logger) ResolverOption
+func WithLogger(l log.Logger) ResolverOption
 func WithCacheTTL(ttl time.Duration) ResolverOption
 
 func (r *Resolver) Resolve(ctx, key, appID string) (any, error)
@@ -354,7 +355,7 @@ type ListOpts struct { Limit, Offset int }
 ```go
 func NewManager(store Store, secretSvc *secret.Service, opts ...ManagerOption) *Manager
 func WithCheckInterval(d time.Duration) ManagerOption   // default: 1 minute
-func WithLogger(l *slog.Logger) ManagerOption
+func WithLogger(l log.Logger) ManagerOption
 func WithAppID(appID string) ManagerOption
 
 func (m *Manager) RegisterRotator(secretKey string, r Rotator)
@@ -390,7 +391,7 @@ type ListOpts struct { Limit, Offset int }
 ```go
 func NewLogger(store Store, opts ...LoggerOption) *Logger
 func WithHook(h *audithook.Extension) LoggerOption
-func WithLogger(sl *slog.Logger) LoggerOption
+func WithLogger(sl log.Logger) LoggerOption
 
 func (l *Logger) LogAccess(ctx, key, action, resource string)
 func (l *Logger) LogFailure(ctx, key, action, resource string, err error)
@@ -427,7 +428,7 @@ const (OutcomeSuccess, OutcomeFailure string)
 ```go
 func New(recorder Recorder, opts ...Option) *Extension
 func WithActions(actions ...string) Option
-func WithLogger(l *slog.Logger) Option
+func WithLogger(l log.Logger) Option
 
 func (e *Extension) Name() string
 func (e *Extension) Record(ctx, action, severity, outcome, resource, resourceID, category, key string, err error, kvPairs ...any)
@@ -582,7 +583,7 @@ type RotationStrategy interface {
 }
 
 func NewRegistry(opts ...RegistryOption) *Registry
-func WithLogger(l *slog.Logger) RegistryOption
+func WithLogger(l log.Logger) RegistryOption
 func (r *Registry) Register(p Plugin)
 func (r *Registry) Plugins() []Plugin
 func (r *Registry) InitHooks() []OnInit
@@ -663,21 +664,12 @@ func New() *Store
 
 In-memory, concurrent-safe (`sync.RWMutex`). All lifecycle methods are no-ops. See [Memory Store](/docs/stores/memory).
 
-### store/postgres
-
-```go
-func New(ctx context.Context, connString string, opts ...StoreOption) (*Store, error)
-func NewFromPool(pool *pgxpool.Pool, opts ...StoreOption) *Store
-func WithLogger(l *slog.Logger) StoreOption
-```
-
-PostgreSQL via `pgxpool`. Embeds 5 SQL migration files. See [PostgreSQL Store](/docs/stores/postgres).
-
-### store/grovestore
+### store/postgres, store/sqlite, store/mongo
 
 ```go
 func New(db *grove.DB, opts ...StoreOption) *Store
-func WithLogger(l *slog.Logger) StoreOption
+func WithLogger(l log.Logger) StoreOption
+var Migrations // a Grove migration group named "vault"
 ```
 
-PostgreSQL via Grove ORM. Uses 11 model structs and `CreateTable` migrations. See [Grove ORM Store](/docs/stores/grove).
+Each takes a `*grove.DB` opened with the matching Grove driver. There is no `store/grovestore` package. See [PostgreSQL Store](/docs/stores/postgres), [SQLite Store](/docs/stores/sqlite), [MongoDB Store](/docs/stores/mongo) and [Grove Integration](/docs/stores/grove).

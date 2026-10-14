@@ -97,7 +97,7 @@ resolver := override.NewResolver(configStore, overrideStore,
 
 | Option | Signature | Description |
 |--------|-----------|-------------|
-| `WithLogger` | `WithLogger(l *slog.Logger) ResolverOption` | Sets the logger for the resolver |
+| `WithLogger` | `WithLogger(l log.Logger) ResolverOption` | Sets the logger for the resolver |
 | `WithCacheTTL` | `WithCacheTTL(ttl time.Duration) ResolverOption` | Enables result caching with the given TTL |
 
 ### Resolution order

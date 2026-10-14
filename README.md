@@ -218,15 +218,34 @@ extensions:
 | --- | --- | --- |
 | `app_id` | `WithAppID(id)` | empty |
 | `encryption_key_env` | `WithEncryptionKeyEnv(name)` | empty, so secrets are stored unencrypted |
-| `flag_cache_ttl` | `WithVaultOption(vault.WithConfig(...))` | `30s` |
-| `source_poll_interval` | `WithVaultOption(vault.WithConfig(...))` | `30s` |
+| `flag_cache_ttl` | `WithConfig(cfg)` with `cfg.FlagCacheTTL` | `30s` |
+| `source_poll_interval` | `WithConfig(cfg)` with `cfg.SourcePollInterval`; only used by the confy source when `mount_to_confy` is on | `30s` |
 | `grove_database` | `WithGroveDatabase(name)` | default `*grove.DB` |
 | `mount_to_confy` | `WithMountToConfy()` | `false` |
 | `confy_key_prefix` | `WithConfyKeyPrefix(prefix)` | empty |
 | `confy_mount_keys` | `WithConfyMountKeys(keys...)` | all keys |
 | `confy_mount_patterns` | `WithConfyMountPatterns(globs...)` | all keys |
 
-`WithStore`, `WithConfig` and `WithRequireConfig` round it out, and `WithVaultOption` passes any root `vault.Option` straight through. `enable_audit` still loads but does nothing, because audit logging is always on.
+`WithStore`, `WithConfig` and `WithRequireConfig` round it out. Neither TTL has an option of its own, so set them in the config file or start from `DefaultConfig()` in code:
+
+```go
+import (
+	"time"
+
+	vaultext "github.com/xraph/vault/extension"
+	"github.com/xraph/vault/store/memory"
+)
+
+cfg := vaultext.DefaultConfig()
+cfg.FlagCacheTTL = 5 * time.Minute
+
+vaultext.New(
+	vaultext.WithConfig(cfg),
+	vaultext.WithStore(memory.New()),
+)
+```
+
+`WithConfig` replaces the whole extension config, so put it before `WithAppID` and the other options that write into it. `WithVaultOption` passes a root `vault.Option` straight through, such as `vault.WithLogger`. Don't use it for `vault.WithConfig`, though: the extension appends its own `vault.WithConfig`, built from the table above, after your options, so `WithVaultOption(vault.WithConfig(vault.Config{FlagCacheTTL: 5 * time.Minute}))` still leaves you with `30s`. `enable_audit` still loads but does nothing, because audit logging is always on.
 
 Outside Forge, the same settings are `vault.WithAppID`, `vault.WithEncryptionKey`, `vault.WithEncryptionKeyEnv`, `vault.WithLogger` and `vault.WithConfig` on `vault.New`.
 

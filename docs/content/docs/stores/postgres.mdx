@@ -1,190 +1,81 @@
 ---
 title: PostgreSQL Store
-description: Production PostgreSQL backend using pgx/v5.
+description: PostgreSQL backend on Grove with pgdriver.
 ---
 
-The PostgreSQL store is the recommended backend for production deployments. It uses `pgxpool` from the [pgx/v5](https://github.com/jackc/pgx) driver for high-performance, pooled connections and ships with embedded SQL migrations that create all required tables automatically.
-
-## Installation
-
-```bash
-go get github.com/xraph/vault
-go get github.com/jackc/pgx/v5
-```
+The PostgreSQL store (`store/postgres`) is the recommended backend for production. It runs on a [Grove](https://github.com/xraph/grove) `*grove.DB` opened with Grove's `pgdriver`, and `Migrate` creates its tables with plain DDL statements compiled into the package.
 
 ## Creating a store
 
-### From a connection string
-
-```go
-import "github.com/xraph/vault/store/postgres"
-
-store, err := postgres.New(ctx, "postgres://user:pass@localhost:5432/vault?sslmode=disable")
-if err != nil {
-    log.Fatal(err)
-}
-defer store.Close()
-```
-
-`postgres.New` creates a `*pgxpool.Pool` internally, connects to the database, and returns a ready-to-use store.
-
-### From an existing pool
-
-If you already have a `*pgxpool.Pool` (for example, shared with other parts of your application), use `NewFromPool`:
-
 ```go
 import (
-    "github.com/jackc/pgx/v5/pgxpool"
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
     "github.com/xraph/vault/store/postgres"
 )
 
-pool, err := pgxpool.New(ctx, connString)
+drv := pgdriver.New()
+if err := drv.Open(ctx, "postgres://user:pass@localhost:5432/vault?sslmode=disable"); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
 if err != nil {
     log.Fatal(err)
 }
 
-store := postgres.NewFromPool(pool)
+s := postgres.New(db)
+defer s.Close()
+
+if err := s.Migrate(ctx); err != nil {
+    log.Fatal(err)
+}
 ```
 
-`NewFromPool` does not take ownership of the pool -- it does not close the pool when `store.Close()` is called. You are responsible for closing the pool separately if you created it yourself.
+Under Forge, you don't build it yourself: the extension builds it from the `*grove.DB` the Grove extension registered. But the extension never calls `Migrate`, so run it once yourself before the first start (see [Forge extension](/docs/guides/forge-extension#migrations)).
 
 ## Options
 
 | Option | Signature | Description |
 |--------|-----------|-------------|
-| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger for migration progress and internal errors. Defaults to `slog.Default()`. |
-
-```go
-store, err := postgres.New(ctx, connString,
-    postgres.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))),
-)
-```
+| `WithLogger` | `WithLogger(l log.Logger) StoreOption` | A `github.com/xraph/go-utils/log` logger for migration progress. Defaults to a no-op logger. |
 
 ## Migrations
 
-The store ships with five embedded SQL migration files (`//go:embed migrations/*.sql`) that are applied in order by `Migrate`:
+`Migrate` executes `CREATE TABLE IF NOT EXISTS` statements for every table, then the column additions and indexes that came later (`ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`), then the statements that scope secrets by tenant. Every statement is idempotent, so it's safe to call on every startup. There's no migration tracking table.
 
-| File | Tables created |
-|------|----------------|
-| `001_secrets.sql` | `vault_secrets`, `vault_secret_versions` |
-| `002_flags.sql` | `vault_flags`, `vault_flag_rules`, `vault_flag_overrides` |
-| `003_config.sql` | `vault_config`, `vault_config_versions`, `vault_overrides` |
-| `004_rotation.sql` | `vault_rotation_policies`, `vault_rotation_records` |
-| `005_audit.sql` | `vault_audit` |
+The same steps are also registered as a Grove migration group, `postgres.Migrations`, if you'd rather run them through Grove's migrator.
 
-**Total: 11 tables** created across the five migration files.
+## Tables
 
-Call `Migrate` once at application startup:
+The store creates 11 tables across secrets, flags, config, overrides, rotation, and audit:
 
-```go
-if err := store.Migrate(ctx); err != nil {
-    log.Fatal("migration failed:", err)
-}
-```
-
-### Migration tracking
-
-Migrations are tracked in a `vault_migrations` table that is created automatically. Each migration file name is recorded with an `applied_at` timestamp. On subsequent calls to `Migrate`, already-applied migrations are skipped. Applied migrations are logged at the `Info` level through the configured logger.
-
-## Table schemas
-
-### vault_secrets
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `TEXT PRIMARY KEY` | TypeID (e.g. `sec_01h...`) |
-| `key` | `TEXT NOT NULL` | Secret key name |
-| `app_id` | `TEXT NOT NULL` | Application scope |
-| `encrypted_value` | `BYTEA NOT NULL` | AES-256-GCM ciphertext |
-| `encryption_alg` | `TEXT` | Algorithm identifier (e.g. `AES-256-GCM`) |
-| `encryption_key_id` | `TEXT` | Key identifier for rotation tracking |
-| `version` | `BIGINT NOT NULL` | Auto-incremented version number |
-| `metadata` | `JSONB` | User-defined key-value metadata |
-| `expires_at` | `TIMESTAMPTZ` | Optional expiration timestamp |
-| `created_at` | `TIMESTAMPTZ NOT NULL` | Creation timestamp |
-| `updated_at` | `TIMESTAMPTZ NOT NULL` | Last update timestamp |
-
-**Unique constraint:** `(key, app_id)`
-
-### vault_secret_versions
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `TEXT PRIMARY KEY` | TypeID (e.g. `ver_01h...`) |
-| `secret_key` | `TEXT NOT NULL` | References the secret key |
-| `app_id` | `TEXT NOT NULL` | Application scope |
-| `version` | `BIGINT NOT NULL` | Version number |
-| `encrypted_value` | `BYTEA NOT NULL` | Ciphertext at this version |
-| `created_by` | `TEXT` | Who created this version |
-| `created_at` | `TIMESTAMPTZ NOT NULL` | Version creation timestamp |
-
-**Unique constraint:** `(secret_key, app_id, version)`. Indexed on `(secret_key, app_id)`.
-
-### vault_flags
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `TEXT PRIMARY KEY` | TypeID (e.g. `flag_01h...`) |
-| `key` | `TEXT NOT NULL` | Flag key |
-| `type` | `TEXT NOT NULL` | Value type: `bool`, `string`, `int`, `float`, `json` |
-| `default_value` | `JSONB NOT NULL` | Default when no rule matches |
-| `description` | `TEXT` | Human-readable description |
-| `tags` | `JSONB` | Tag array for categorization |
-| `variants` | `JSONB` | Named variant definitions |
-| `enabled` | `BOOLEAN NOT NULL` | Kill switch (disabled = always return default) |
-| `app_id` | `TEXT NOT NULL` | Application scope |
-| `metadata` | `JSONB` | User-defined metadata |
-| `created_at` | `TIMESTAMPTZ NOT NULL` | Creation timestamp |
-| `updated_at` | `TIMESTAMPTZ NOT NULL` | Last update timestamp |
-
-**Unique constraint:** `(key, app_id)`
-
-### vault_flag_rules
-
-Stores targeting rules ordered by priority. Indexed on `(flag_key, app_id, priority)`. Each rule has a `type` (e.g. `when_tenant`, `rollout`, `schedule`), a `config` JSONB column with rule parameters, and a `return_value` JSONB column.
-
-### vault_flag_overrides
-
-Per-tenant flag value overrides. **Unique constraint:** `(flag_key, app_id, tenant_id)`.
-
-### vault_config and vault_config_versions
-
-Mirror the secrets pattern with versioned config entries. `vault_config` has a **unique constraint** on `(key, app_id)`. `vault_config_versions` has a **unique constraint** on `(config_key, app_id, version)` and an index on `(config_key, app_id)`.
-
-### vault_overrides
-
-Per-tenant config overrides. **Unique constraint:** `(key, app_id, tenant_id)`.
-
-### vault_rotation_policies
-
-Rotation schedules with `interval_ns` (stored as `BIGINT` nanoseconds), `enabled` flag, and `last_rotated_at` / `next_rotation_at` timestamps. **Unique constraint:** `(secret_key, app_id)`.
-
-### vault_rotation_records
-
-Append-only rotation history. Indexed on `(secret_key, app_id, rotated_at DESC)`.
-
-### vault_audit
-
-Append-only audit log. Indexed on `(app_id, created_at DESC)` and `(key, app_id, created_at DESC)` for efficient time-range queries.
+| Table | Entity |
+|-------|--------|
+| `vault_secrets` | `secret.Secret` |
+| `vault_secret_versions` | `secret.Version` |
+| `vault_flags` | `flag.Definition` |
+| `vault_flag_rules` | `flag.Rule` |
+| `vault_flag_overrides` | `flag.TenantOverride` |
+| `vault_config` | `config.Entry` |
+| `vault_config_versions` | `config.EntryVersion` |
+| `vault_overrides` | `override.Override` |
+| `vault_rotation_policies` | `rotation.Policy` |
+| `vault_rotation_records` | `rotation.Record` |
+| `vault_audit` | `audit.Entry` |
 
 ## Lifecycle methods
 
 | Method | Behaviour |
 |--------|-----------|
-| `Migrate(ctx)` | Runs all pending embedded SQL migrations in lexicographic order |
-| `Ping(ctx)` | Calls `pool.Ping(ctx)` to verify database connectivity |
-| `Close()` | Calls `pool.Close()` to release all pooled connections |
-
-## UPSERT patterns
-
-The PostgreSQL store uses `INSERT ... ON CONFLICT DO UPDATE` (UPSERT) patterns for write operations. This ensures idempotent writes -- calling `SetSecret` or `SetConfig` with the same key either creates or updates the entry atomically.
+| `Migrate(ctx)` | Creates all tables and indexes, idempotently |
+| `Ping(ctx)` | Verifies connectivity through the Grove DB |
+| `Close()` | Closes the Grove DB |
 
 ## When to use
 
-- **Production deployments** -- Durable, ACID-compliant storage with connection pooling.
-- **Staging environments** -- Mirror production behaviour exactly.
-- **Multi-instance deployments** -- All application instances share the same database.
-- **Compliance requirements** -- Audit trail persisted in PostgreSQL with indexed queries.
+- Production deployments that need durable storage.
+- Several application instances sharing one database.
+- Teams already running PostgreSQL.
 
 ## Complete example
 
@@ -195,77 +86,60 @@ import (
     "context"
     "fmt"
     "log"
-    "log/slog"
     "os"
 
-    "github.com/xraph/vault/config"
-    "github.com/xraph/vault/crypto"
-    "github.com/xraph/vault/flag"
-    "github.com/xraph/vault/secret"
+    "github.com/xraph/grove"
+    "github.com/xraph/grove/drivers/pgdriver"
+    "github.com/xraph/vault"
+    "github.com/xraph/vault/scope"
     "github.com/xraph/vault/store/postgres"
 )
 
 func main() {
     ctx := context.Background()
 
-    connString := os.Getenv("DATABASE_URL")
-    if connString == "" {
-        connString = "postgres://localhost:5432/vault?sslmode=disable"
+    dsn := os.Getenv("DATABASE_URL")
+    if dsn == "" {
+        dsn = "postgres://localhost:5432/vault?sslmode=disable"
     }
 
-    // Create the PostgreSQL store with a logger.
-    store, err := postgres.New(ctx, connString,
-        postgres.WithLogger(slog.Default()),
-    )
-    if err != nil {
-        log.Fatal("connect:", err)
+    drv := pgdriver.New()
+    if err := drv.Open(ctx, dsn); err != nil {
+        log.Fatal("connect: ", err)
     }
+    db, err := grove.Open(drv)
+    if err != nil {
+        log.Fatal("grove: ", err)
+    }
+
+    store := postgres.New(db)
     defer store.Close()
 
-    // Run migrations (idempotent -- safe to call on every startup).
+    // Idempotent: safe to call on every startup.
     if err := store.Migrate(ctx); err != nil {
-        log.Fatal("migrate:", err)
+        log.Fatal("migrate: ", err)
     }
 
-    // Verify connectivity.
-    if err := store.Ping(ctx); err != nil {
-        log.Fatal("ping:", err)
+    v, err := vault.New(
+        vault.WithStore(store),
+        vault.WithAppID("myapp"),
+        vault.WithEncryptionKeyEnv("VAULT_ENCRYPTION_KEY"), // 32 bytes, hex or base64
+    )
+    if err != nil {
+        log.Fatal(err)
     }
 
-    // Create an encryptor with a 32-byte key.
-    key := make([]byte, 32)
-    copy(key, "my-secret-encryption-key-32byte")
-    enc, _ := crypto.NewEncryptor(key)
+    ctx = scope.WithScope(ctx, "myapp", "acme", "", "")
 
-    // Wire up services using the shared store.
-    secretSvc := secret.NewService(store, enc, secret.WithAppID("myapp"))
-    cfgSvc := config.NewService(store, config.WithAppID("myapp"))
-
-    // Store and retrieve a secret.
-    meta, err := secretSvc.Set(ctx, "api_key", []byte("sk-live-abc123"), "")
+    meta, err := v.Secrets().Set(ctx, "api_key", []byte("sk-live-abc123"), "")
     if err != nil {
         log.Fatal(err)
     }
     fmt.Printf("Secret stored: key=%s version=%d\n", meta.Key, meta.Version)
 
-    sec, _ := secretSvc.Get(ctx, "api_key", "")
-    fmt.Printf("Decrypted: %s\n", string(sec.Value))
-
-    // Store and read config.
-    _ = cfgSvc.Set(ctx, "max_retries", 3, "")
-    fmt.Printf("Max retries: %d\n", cfgSvc.Int(ctx, "max_retries", 1))
-
-    // Define and evaluate a feature flag.
-    _ = store.DefineFlag(ctx, &flag.Definition{
-        Key:          "dark_mode",
-        Type:         flag.TypeBool,
-        DefaultValue: false,
-        Enabled:      true,
-        AppID:        "myapp",
-    })
-
-    engine := flag.NewEngine(store)
-    val, _ := engine.Evaluate(ctx, "dark_mode", "myapp")
-    fmt.Printf("dark_mode = %v\n", val)
+    if err := v.Config().Set(ctx, "max_retries", 3, ""); err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("Max retries: %d\n", v.Config().Int(ctx, "max_retries", 1))
 }
 ```

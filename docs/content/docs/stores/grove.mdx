@@ -1,76 +1,53 @@
 ---
-title: PostgreSQL Store (Grove ORM)
-description: PostgreSQL backend using Grove ORM with pgdriver.
+title: Grove Integration
+description: How Vault's database stores sit on Grove.
 ---
 
-The PostgreSQL store (`store/postgres`) provides a production-ready backend that uses the [Grove ORM](https://github.com/xraph/grove) with `pgdriver` for PostgreSQL. It maps Vault entities to Grove model structs and uses programmatic migrations to create all required tables.
+Vault's PostgreSQL, SQLite and MongoDB stores are all built on [Grove](https://github.com/xraph/grove): each one takes a `*grove.DB` opened with the matching Grove driver. There is no separate `store/grovestore` package. This page covers what the three have in common; each store's own page has the details.
 
-## Usage
+| Store | Package | Grove driver |
+|-------|---------|--------------|
+| [PostgreSQL](/docs/stores/postgres) | `store/postgres` | `pgdriver` |
+| [SQLite](/docs/stores/sqlite) | `store/sqlite` | `sqlitedriver` |
+| [MongoDB](/docs/stores/mongo) | `store/mongo` | `mongodriver` |
+
+## Constructor pattern
 
 ```go
-import (
-    "github.com/xraph/grove"
-    "github.com/xraph/grove/drivers/pgdriver"
-    "github.com/xraph/vault/store/postgres"
-)
+// Open a driver, then wrap it in a grove.DB.
+drv := pgdriver.New()
+if err := drv.Open(ctx, dsn); err != nil {
+    log.Fatal(err)
+}
+db, err := grove.Open(drv)
+if err != nil {
+    log.Fatal(err)
+}
 
-// Open a PostgreSQL connection via Grove's pgdriver.
-db := grove.Open(pgdriver.New(
-    pgdriver.WithDSN("postgres://user:pass@localhost:5432/vault?sslmode=disable"),
-))
-
-s := postgres.New(db)
+s := postgres.New(db) // or sqlite.New(db), mongo.New(db)
 if err := s.Migrate(ctx); err != nil {
     log.Fatal(err)
 }
 ```
 
-## Options
+Every constructor has the shape `New(db *grove.DB, opts ...StoreOption) *Store`, and each package has a `WithLogger(l log.Logger)` option taking a `github.com/xraph/go-utils/log` logger.
 
-| Option | Signature | Description |
-|--------|-----------|-------------|
-| `WithLogger` | `WithLogger(l *slog.Logger) StoreOption` | Sets the structured logger. Defaults to `slog.Default()`. |
+## Migrations
 
-```go
-s := postgres.New(db, postgres.WithLogger(slog.Default()))
-```
+Each package exports a Grove migration group, `Migrations`, named `"vault"`, and each store's `Migrate` method creates what that backend needs:
 
-## Internals
+- PostgreSQL runs idempotent DDL statements directly.
+- SQLite runs its migration group through Grove's migrator, so import `github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate` for its side effect.
+- MongoDB builds its indexes, which creates any collection that doesn't exist yet.
 
-| Aspect | Detail |
-|--------|--------|
-| Driver | Grove ORM with `pgdriver` (PostgreSQL) |
-| Migrations | Programmatic DDL statements executed via `pgdriver.PgDB` |
-| Transactions | Database-level ACID transactions |
+## Auto-detection with Forge
 
-## Tables
+Under the Forge extension you don't build the store yourself. The extension resolves a `*grove.DB` from the DI container (the one named by `WithGroveDatabase` or `grove_database`, else the default) and picks the store from the driver name:
 
-The store creates 11 tables across secrets, flags, config, overrides, rotation, and audit:
+| Grove driver | Store |
+|--------------|-------|
+| `pg` | `store/postgres` |
+| `sqlite` | `store/sqlite` |
+| `mongo` | `store/mongo` |
 
-| Table | Entity |
-|-------|--------|
-| `vault_secrets` | `secret.Secret` |
-| `vault_secret_versions` | `secret.Version` |
-| `vault_flags` | `flag.Definition` |
-| `vault_flag_rules` | `flag.Rule` |
-| `vault_flag_overrides` | `flag.TenantOverride` |
-| `vault_config` | `config.Entry` |
-| `vault_config_versions` | `config.EntryVersion` |
-| `vault_overrides` | `override.Override` |
-| `vault_rotation_policies` | `rotation.Policy` |
-| `vault_rotation_records` | `rotation.Record` |
-| `vault_audit` | `audit.Entry` |
-
-## Lifecycle methods
-
-| Method | Behaviour |
-|--------|-----------|
-| `Migrate(ctx)` | Creates all 11 tables and indexes via programmatic DDL |
-| `Ping(ctx)` | Calls `db.Ping(ctx)` to verify connectivity |
-| `Close()` | Calls `db.Close()` to release the database connection |
-
-## When to use
-
-- **Production deployments** -- durable, ACID-compliant storage with connection pooling.
-- **Multi-instance deployments** -- all application instances share the same database.
-- **Teams already using PostgreSQL** -- leverage existing infrastructure and expertise.
+The extension never calls `Migrate`, though. Run it once yourself before the first start; see [Forge extension](/docs/guides/forge-extension#migrations).

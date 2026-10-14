@@ -97,7 +97,7 @@ The `Logger` records audit entries and optionally broadcasts them via an audit h
 ```go
 logger := audit.NewLogger(auditStore,
     audit.WithHook(auditHookExtension),
-    audit.WithLogger(slogLogger),
+    audit.WithLogger(logger), // a github.com/xraph/go-utils/log Logger
 )
 ```
 
@@ -106,7 +106,7 @@ logger := audit.NewLogger(auditStore,
 | Option | Signature | Description |
 |--------|-----------|-------------|
 | `WithHook` | `WithHook(h *audithook.Extension) LoggerOption` | Attaches an audit hook extension for event broadcasting |
-| `WithLogger` | `WithLogger(sl *slog.Logger) LoggerOption` | Sets the slog logger for internal error reporting |
+| `WithLogger` | `WithLogger(sl log.Logger) LoggerOption` | Sets the `github.com/xraph/go-utils/log` logger for internal error reporting |
 
 ### LogAccess
 
@@ -275,7 +275,7 @@ ext := audithook.New(recorder,
 | Option | Signature | Description |
 |--------|-----------|-------------|
 | `WithActions` | `WithActions(actions ...string) Option` | Limits recording to only the specified actions. If not set, all actions are recorded. |
-| `WithLogger` | `WithLogger(l *slog.Logger) Option` | Sets the logger for internal error reporting |
+| `WithLogger` | `WithLogger(l log.Logger) Option` | Sets the logger for internal error reporting |
 
 ### Extension.Record
 
@@ -317,8 +317,8 @@ package main
 import (
     "context"
     "fmt"
-    "log/slog"
 
+    glog "github.com/xraph/go-utils/log"
     "github.com/xraph/vault/audit"
     audithook "github.com/xraph/vault/audit_hook"
     "github.com/xraph/vault/scope"
@@ -346,13 +346,13 @@ func main() {
             audithook.ActionSecretDeleted,
             audithook.ActionSecretRotated,
         ),
-        audithook.WithLogger(slog.Default()),
+        audithook.WithLogger(glog.NewProductionLogger()),
     )
 
     // Create the audit logger.
     logger := audit.NewLogger(auditStore,
         audit.WithHook(ext),
-        audit.WithLogger(slog.Default()),
+        audit.WithLogger(glog.NewProductionLogger()),
     )
 
     // Log a successful access.

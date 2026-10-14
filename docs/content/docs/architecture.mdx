@@ -29,10 +29,10 @@ Vault is organized as a set of focused Go packages. The root `vault` package def
 │  (composite: secret.Store + flag.Store + config.Store +                │
 │   override.Store + rotation.Store + audit.Store +                      │
 │   Migrate / Ping / Close)                                              │
-├───────────────┬─────────────────┬───────────────────────────────────────┤
-│ store/memory  │ store/postgres  │ store/grovestore                     │
-│ (in-process)  │ (pgx pool)      │ (Grove ORM)                         │
-└───────────────┴─────────────────┴───────────────────────────────────────┘
+├───────────────┬─────────────────────────────────────────────────────────┤
+│ store/memory  │ store/postgres, store/sqlite, store/mongo              │
+│ (in-process)  │ (all on a *grove.DB)                                   │
+└───────────────┴─────────────────────────────────────────────────────────┘
 ```
 
 ## Service construction
@@ -186,9 +186,10 @@ val, err := chain.Get(ctx, "feature-x")
 | `audit` | `github.com/xraph/vault/audit` | Audit log entries, store interface, logger |
 | `audit_hook` | `github.com/xraph/vault/audit_hook` | Audit event extension for external systems |
 | `source` | `github.com/xraph/vault/source` | Composable config sources (memory, env, database, chain) |
-| `plugin` | `github.com/xraph/vault/plugin` | Plugin interfaces (8 capabilities) and registry |
+| `plugin` | `github.com/xraph/vault/plugin` | Plugin interfaces (8 capabilities) and registry; nothing in Vault calls it yet |
 | `metrics` | `github.com/xraph/vault/metrics` | Counter/Histogram interfaces and collector |
 | `store` | `github.com/xraph/vault/store` | Composite `Store` interface definition |
 | `store/memory` | `github.com/xraph/vault/store/memory` | In-memory store (testing and development) |
-| `store/postgres` | `github.com/xraph/vault/store/postgres` | PostgreSQL store (pgx connection pool) |
-| `store/grovestore` | `github.com/xraph/vault/store/grovestore` | Grove ORM store (PostgreSQL via Grove) |
+| `store/postgres` | `github.com/xraph/vault/store/postgres` | PostgreSQL store on a `*grove.DB` (pgdriver) |
+| `store/sqlite` | `github.com/xraph/vault/store/sqlite` | SQLite store on a `*grove.DB` (sqlitedriver) |
+| `store/mongo` | `github.com/xraph/vault/store/mongo` | MongoDB store on a `*grove.DB` (mongodriver) |

@@ -97,7 +97,8 @@ err := store.SetFlagRules(ctx, "new_feature", "myapp", []*flag.Rule{rule})
 Other rule types for tenant targeting:
 
 ```go
-// Tag-based targeting (match tenants with a specific tag).
+// Tag-based targeting. Accepted, but not implemented yet: it never matches,
+// so use WhenTenant with an explicit list for now.
 tagRule := flag.WhenTenantTag("plan", "enterprise").Return(true)
 
 // Percentage rollout (deterministic hash of tenantID + flagKey).
