@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,9 +127,20 @@ func TestExtensionWiresTelemetryIntoForge(t *testing.T) {
 		t.Errorf("vault spans = %s", got)
 	}
 
+	// A manual rotation, so the duration histogram the docs query has a
+	// series on the scrape.
+	v.Rotation().RegisterRotator(secretName, func(_ context.Context, _ []byte) ([]byte, error) {
+		return []byte(secretValue + "-rotated"), nil
+	})
+	if err := v.Rotation().RotateNow(t.Context(), secretName, ""); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
 	body := scrape(t, app)
 	ops := seriesLines(body, "forge_"+telemetry.MetricSecretOperations)
-	if !hasSeries(ops, `op="set"`, `result="ok"`, "} 1") || !hasSeries(ops, `op="get"`, `result="ok"`, "} 1") {
+	// One get and one set each from the request, and one each from the
+	// rotation, which reads the current value and writes the new one.
+	if !hasSeries(ops, `op="set"`, `result="ok"`, "} 2") || !hasSeries(ops, `op="get"`, `result="ok"`, "} 2") {
 		t.Errorf("secret operation series:\n%s", strings.Join(ops, "\n"))
 	}
 	cryptoOps := seriesLines(body, "forge_"+telemetry.MetricCryptoOperations)
@@ -140,10 +152,54 @@ func TestExtensionWiresTelemetryIntoForge(t *testing.T) {
 		t.Errorf("flag series:\n%s", strings.Join(flags, "\n"))
 	}
 
+	rotations := seriesLines(body, "forge_"+telemetry.MetricRotations)
+	if !hasSeries(rotations, `trigger="manual"`, `result="ok"`, "} 1") {
+		t.Errorf("rotation series:\n%s", strings.Join(rotations, "\n"))
+	}
+	buckets := seriesLines(body, "forge_"+telemetry.MetricRotationDuration+"_bucket")
+	if len(buckets) != len(telemetry.RotationDurationBuckets)+1 {
+		t.Errorf("got %d rotation duration buckets, want %d:\n%s",
+			len(buckets), len(telemetry.RotationDurationBuckets)+1, strings.Join(buckets, "\n"))
+	}
+	if !hasSeries(buckets, `le="300"`, `trigger="manual"`, `result="ok"`, "} 1") ||
+		!hasSeries(buckets, `le="+Inf"`, `trigger="manual"`, `result="ok"`, "} 1") {
+		t.Errorf("rotation duration buckets:\n%s", strings.Join(buckets, "\n"))
+	}
+	if count := seriesLines(body, "forge_"+telemetry.MetricRotationDuration+"_count"); !hasSeries(count, `trigger="manual"`, "} 1") {
+		t.Errorf("rotation duration count:\n%s", strings.Join(count, "\n"))
+	}
+
 	for _, needle := range []string{secretName, secretValue, flagKey} {
 		if strings.Contains(body, needle) {
 			t.Errorf("the scrape carries %q", needle)
 		}
 	}
 	telemetrytest.AssertNoLeak(t, rec, secretName, secretValue, flagKey, "app1")
+}
+
+// A vault.WithMetrics you pass through WithVaultOption wins over the app's
+// metrics, which the extension puts first.
+func TestYourOwnWithMetricsWins(t *testing.T) {
+	prevTP, prevProp := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	app := forge.New(forge.WithAppName("vault-own-metrics-test"), forge.WithAppLogger(forge.NewNoopLogger()))
+	sink := telemetrytest.NewSink()
+	ext := New(WithStore(memory.New()), WithAppID("app1"), WithVaultOption(vault.WithMetrics(sink)))
+	if err := ext.Register(app); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if _, err := ext.Vault().Secrets().Set(t.Context(), "k", []byte("v"), ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if got := sink.Count(telemetry.MetricSecretOperations, map[string]string{"op": "set", "result": "ok"}); got != 1 {
+		t.Errorf("your sink saw %v sets, want 1", got)
+	}
+	if lines := seriesLines(scrape(t, app), "forge_"+telemetry.MetricSecretOperations); len(lines) != 0 {
+		t.Errorf("the app's metrics recorded too:\n%s", strings.Join(lines, "\n"))
+	}
 }

@@ -120,3 +120,53 @@ func TestEvaluateStoreFailureSpan(t *testing.T) {
 	}
 	telemetrytest.AssertNoLeak(t, rec, "checkout-redesign-4c2d", "store down")
 }
+
+// Every reason the engine can reach shows up on the span as the same string
+// Detail.Reason carries.
+func TestEvaluateSpanReasons(t *testing.T) {
+	const tenant = "tenant-initech-5c1a"
+	s := memory.New()
+	defineFlag(t, s, "flag-off", true, false)
+	defineFlag(t, s, "flag-override", false, true)
+	if err := s.SetFlagTenantOverride(bg(), "flag-override", testApp, tenant, true); err != nil {
+		t.Fatal(err)
+	}
+	defineFlag(t, s, "flag-rule", false, true)
+	rule := flag.WhenTenant(tenant).Return(true)
+	rule.FlagKey, rule.AppID, rule.Priority = "flag-rule", testApp, 1
+	if err := s.SetFlagRules(bg(), "flag-rule", testApp, []*flag.Rule{rule}); err != nil {
+		t.Fatal(err)
+	}
+	defineFlag(t, s, "flag-default", false, true)
+
+	rec := telemetrytest.Spans(t)
+	sink := telemetrytest.NewSink()
+	engine := flag.NewEngine(s, flag.WithMetrics(sink))
+	ctx := withTenant(tenant)
+
+	cases := []struct{ key, reason string }{
+		{"flag-off", flag.ReasonDisabled},
+		{"flag-override", flag.ReasonTenantOverride},
+		{"flag-rule", flag.ReasonRule},
+		{"flag-default", flag.ReasonDefault},
+	}
+	for _, c := range cases {
+		if _, err := engine.Evaluate(ctx, c.key, testApp); err != nil {
+			t.Fatalf("Evaluate(%s): %v", c.key, err)
+		}
+	}
+
+	spans := telemetrytest.Named(rec, "evaluate flag")
+	if len(spans) != len(cases) {
+		t.Fatalf("got %d evaluate spans, want %d", len(spans), len(cases))
+	}
+	for i, c := range cases {
+		if got, _ := telemetrytest.Attr(spans[i], "vault.flag.reason"); got != c.reason {
+			t.Errorf("%s: vault.flag.reason = %q, want %q", c.key, got, c.reason)
+		}
+	}
+	if got := sink.Count(telemetry.MetricFlagEvaluations, evals("store", "ok")); got != float64(len(cases)) {
+		t.Errorf("store/ok = %v, want %d", got, len(cases))
+	}
+	telemetrytest.AssertNoLeak(t, rec, tenant, "flag-off", "flag-override", "flag-rule", "flag-default")
+}
