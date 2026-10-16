@@ -11,8 +11,12 @@ import (
 	"time"
 
 	confypkg "github.com/xraph/confy"
+	gometrics "github.com/xraph/go-utils/metrics"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/internal/telemetry"
 	"github.com/xraph/vault/secret"
 )
 
@@ -73,6 +77,14 @@ func WithKeyPatterns(patterns ...string) VaultSourceOption {
 	}
 }
 
+// WithSourceMetrics counts the source's watch polls on m by result: changed,
+// unchanged or error. A poll that fails is otherwise silent, since confy's
+// callback only hears about changes. In a Forge app pass app.Metrics(); vault's
+// Forge extension does this for you. A nil m records nothing.
+func WithSourceMetrics(m gometrics.Metrics) VaultSourceOption {
+	return func(s *VaultConfigSource) { s.metricsSink = m }
+}
+
 // VaultConfigSource is a confy ConfigSource backed by vault's config and secret stores.
 type VaultConfigSource struct {
 	name         string
@@ -91,6 +103,9 @@ type VaultConfigSource struct {
 	watching     bool
 	watchStop    chan struct{}
 	lastSnapshot map[string]int64 // vault key -> version for change detection
+
+	metricsSink gometrics.Metrics
+	polls       *telemetry.Counter
 }
 
 // NewVaultConfigSource creates a new VaultConfigSource. secrets reads
@@ -109,6 +124,8 @@ func NewVaultConfigSource(configStore config.Store, secrets SecretReader, appID 
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.polls = telemetry.NewCounter(s.metricsSink, telemetry.MetricConfigPolls,
+		"Config source polls by source and result.", "source", "result")
 	return s
 }
 
@@ -260,15 +277,27 @@ func (s *VaultConfigSource) watchLoop(ctx context.Context, stop <-chan struct{},
 	}
 }
 
+// Result label values for MetricConfigPolls.
+const (
+	pollChanged   = "changed"
+	pollUnchanged = "unchanged"
+)
+
 // pollAndNotify loads current config and fires callback if any version changed.
+//
+// A poll that finds a change hands it to callback under a "notify config
+// watchers" root span. ctx may carry the span of whoever called Watch, long
+// finished by now, so the span starts its own trace. A poll that finds
+// nothing starts no span.
 func (s *VaultConfigSource) pollAndNotify(ctx context.Context, callback func(map[string]any)) {
 	entries, err := s.configStore.ListConfig(ctx, s.appID, config.ListOpts{})
 	if err != nil {
+		s.polls.Inc("confy", telemetry.ResultError)
 		return // Skip on error.
 	}
 
 	s.mu.Lock()
-	changed := false
+	changed := 0
 	newSnapshot := make(map[string]int64, len(entries))
 	result := make(map[string]any, len(entries))
 
@@ -281,21 +310,30 @@ func (s *VaultConfigSource) pollAndNotify(ctx context.Context, callback func(map
 		newSnapshot[e.Key] = e.Version
 
 		if prev, ok := s.lastSnapshot[e.Key]; !ok || prev != e.Version {
-			changed = true
+			changed++
 		}
 	}
 
 	// Detect deletions of previously tracked keys.
 	for k := range s.lastSnapshot {
 		if _, ok := newSnapshot[k]; !ok {
-			changed = true
+			changed++
 		}
 	}
 
 	s.lastSnapshot = newSnapshot
 	s.mu.Unlock()
 
-	if changed {
-		callback(result)
+	if changed == 0 {
+		s.polls.Inc("confy", pollUnchanged)
+		return
 	}
+	s.polls.Inc("confy", pollChanged)
+
+	_, span := telemetry.StartRoot(ctx, "notify config watchers", trace.WithAttributes(
+		attribute.String("vault.config.source", "confy"),
+		attribute.Int("vault.config.changed", changed),
+	))
+	defer span.End()
+	callback(result)
 }

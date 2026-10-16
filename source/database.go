@@ -7,8 +7,13 @@ import (
 	"sync"
 	"time"
 
+	gometrics "github.com/xraph/go-utils/metrics"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/config"
+	"github.com/xraph/vault/internal/telemetry"
 )
 
 // DatabaseOption configures a Database source.
@@ -19,11 +24,21 @@ func WithPollInterval(d time.Duration) DatabaseOption {
 	return func(db *Database) { db.pollInterval = d }
 }
 
+// WithMetrics counts the source's watch polls on m by result: changed,
+// unchanged or error. A failed read is otherwise silent: the poll skips the
+// key until the next tick. A nil m records nothing.
+func WithMetrics(m gometrics.Metrics) DatabaseOption {
+	return func(db *Database) { db.metricsSink = m }
+}
+
 // Database reads configuration from a config.Store backend.
 type Database struct {
 	store        config.Store
 	appID        string
 	pollInterval time.Duration
+
+	metricsSink gometrics.Metrics
+	polls       *telemetry.Counter
 
 	mu           sync.RWMutex
 	watchers     map[string][]WatchFunc
@@ -45,6 +60,8 @@ func NewDatabase(store config.Store, appID string, opts ...DatabaseOption) *Data
 	for _, opt := range opts {
 		opt(d)
 	}
+	d.polls = telemetry.NewCounter(d.metricsSink, telemetry.MetricConfigPolls,
+		"Config source polls by source and result.", "source", "result")
 	return d
 }
 
@@ -141,6 +158,12 @@ func (d *Database) pollLoop(ctx context.Context) {
 }
 
 // pollOnce checks all watched keys for version changes.
+//
+// The first change a poll finds starts a "notify config watchers" root span,
+// and every watcher it calls gets that span's context. ctx is the first Watch
+// caller's, whose span may have ended long ago, so the span starts its own
+// trace. A poll that finds no change starts no span. The poll counts once:
+// error if any read failed, otherwise changed or unchanged.
 func (d *Database) pollOnce(ctx context.Context) {
 	// Snapshot the watched keys.
 	d.mu.RLock()
@@ -149,6 +172,35 @@ func (d *Database) pollOnce(ctx context.Context) {
 		keys = append(keys, k)
 	}
 	d.mu.RUnlock()
+
+	var (
+		span      trace.Span
+		notifyCtx = ctx
+		changed   int
+		readErr   bool
+	)
+	notify := func() context.Context {
+		if span == nil {
+			notifyCtx, span = telemetry.StartRoot(ctx, "notify config watchers",
+				trace.WithAttributes(attribute.String("vault.config.source", "database")))
+		}
+		changed++
+		return notifyCtx
+	}
+	defer func() {
+		if span != nil {
+			span.SetAttributes(attribute.Int("vault.config.changed", changed))
+			span.End()
+		}
+		switch {
+		case readErr:
+			d.polls.Inc("database", telemetry.ResultError)
+		case changed > 0:
+			d.polls.Inc("database", "changed")
+		default:
+			d.polls.Inc("database", "unchanged")
+		}
+	}()
 
 	for _, key := range keys {
 		entry, err := d.store.GetConfig(ctx, key, d.appID)
@@ -160,17 +212,22 @@ func (d *Database) pollOnce(ctx context.Context) {
 		d.mu.RUnlock()
 
 		if err != nil {
-			if errors.Is(err, vault.ErrConfigNotFound) && prevVersion > 0 {
-				// Key was deleted.
-				d.mu.Lock()
-				d.lastVersions[key] = 0
-				d.mu.Unlock()
+			if errors.Is(err, vault.ErrConfigNotFound) {
+				if prevVersion > 0 {
+					// Key was deleted.
+					d.mu.Lock()
+					d.lastVersions[key] = 0
+					d.mu.Unlock()
 
-				for _, fn := range fns {
-					fn(ctx, key, nil)
+					nctx := notify()
+					for _, fn := range fns {
+						fn(nctx, key, nil)
+					}
 				}
+				continue
 			}
 			// Other errors: skip this tick.
+			readErr = true
 			continue
 		}
 
@@ -178,14 +235,15 @@ func (d *Database) pollOnce(ctx context.Context) {
 			continue // No change.
 		}
 
-		// Version changed — update tracker and fire callbacks.
+		// Version changed: update tracker and fire callbacks.
 		d.mu.Lock()
 		d.lastVersions[key] = entry.Version
 		d.mu.Unlock()
 
 		val := entryToValue(entry)
+		nctx := notify()
 		for _, fn := range fns {
-			fn(ctx, key, val)
+			fn(nctx, key, val)
 		}
 	}
 }

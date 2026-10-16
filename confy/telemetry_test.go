@@ -1,0 +1,81 @@
+package confy_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/xraph/vault"
+	"github.com/xraph/vault/config"
+	vaultconfy "github.com/xraph/vault/confy"
+	"github.com/xraph/vault/id"
+	"github.com/xraph/vault/internal/telemetry"
+	"github.com/xraph/vault/internal/telemetrytest"
+	"github.com/xraph/vault/store/memory"
+)
+
+const (
+	leakConfigKey   = "billing.webhook-signing-key-2e6c"
+	leakConfigValue = "whsec-config-value-c0d4"
+)
+
+func polls(result string) map[string]string {
+	return map[string]string{"source": "confy", "result": result}
+}
+
+type brokenConfigStore struct{ *memory.Store }
+
+func (brokenConfigStore) ListConfig(context.Context, string, config.ListOpts) ([]*config.Entry, error) {
+	return nil, errors.New("list " + leakConfigKey + " failed")
+}
+
+// Only a poll that finds a change starts a span, and it starts its own trace
+// rather than join the span of whoever called Watch.
+func TestPollSpansAndMetrics(t *testing.T) {
+	store := memory.New()
+	rec := telemetrytest.Spans(t)
+	sink := telemetrytest.NewSink()
+	src := vaultconfy.NewVaultConfigSource(store, newSecretsReader(store), "app1", vaultconfy.WithSourceMetrics(sink))
+	ctx, watcher := telemetry.Start(t.Context(), "start confy")
+	defer watcher.End()
+
+	var calls int
+	notify := func(map[string]any) { calls++ }
+
+	src.PollForTest(ctx, notify)
+	if n := len(rec.Ended()); n != 0 {
+		t.Fatalf("an idle poll started %d spans", n)
+	}
+
+	if err := store.SetConfig(bg(), &config.Entry{
+		Entity: vault.NewEntity(), ID: id.NewConfigID(), Key: leakConfigKey, Value: leakConfigValue, AppID: "app1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	src.PollForTest(ctx, notify)
+	src.PollForTest(ctx, notify)
+
+	spans := telemetrytest.Named(rec, "notify config watchers")
+	if len(spans) != 1 || calls != 1 {
+		t.Fatalf("spans = %d, callbacks = %d, want 1 and 1", len(spans), calls)
+	}
+	if spans[0].Parent().IsValid() {
+		t.Error("the notify span hangs off the Watch caller's span; it must be a root")
+	}
+	for k, want := range map[string]string{"vault.config.source": "confy", "vault.config.changed": "1"} {
+		if v, _ := telemetrytest.Attr(spans[0], k); v != want {
+			t.Errorf("%s = %q, want %q", k, v, want)
+		}
+	}
+
+	broken := vaultconfy.NewVaultConfigSource(brokenConfigStore{store}, nil, "app1", vaultconfy.WithSourceMetrics(sink))
+	broken.PollForTest(ctx, notify)
+
+	for result, want := range map[string]float64{"unchanged": 2, "changed": 1, "error": 1} {
+		if got := sink.Count(telemetry.MetricConfigPolls, polls(result)); got != want {
+			t.Errorf("result=%s = %v, want %v", result, got, want)
+		}
+	}
+	telemetrytest.AssertNoLeak(t, rec, leakConfigKey, leakConfigValue, "app1")
+	sink.AssertNoLeak(t, leakConfigKey, leakConfigValue, "app1")
+}
