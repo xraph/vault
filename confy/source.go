@@ -190,7 +190,9 @@ func (s *VaultConfigSource) Watch(ctx context.Context, callback func(map[string]
 	s.watchStop = stop
 	s.watching = true
 
-	go s.watchLoop(ctx, stop, callback)
+	// The loop outlives this call, so it drops the caller's span: the list
+	// it reads every tick must not land in the caller's trace.
+	go s.watchLoop(telemetry.Detach(ctx), stop, callback)
 
 	return nil
 }
@@ -286,9 +288,9 @@ const (
 // pollAndNotify loads current config and fires callback if any version changed.
 //
 // A poll that finds a change hands it to callback under a "notify config
-// watchers" root span. ctx may carry the span of whoever called Watch, long
-// finished by now, so the span starts its own trace. A poll that finds
-// nothing starts no span.
+// watchers" root span. The loop's ctx carries no span (Watch detaches it), so
+// the list read is traced nowhere, and a poll that finds nothing starts no
+// span.
 func (s *VaultConfigSource) pollAndNotify(ctx context.Context, callback func(map[string]any)) {
 	entries, err := s.configStore.ListConfig(ctx, s.appID, config.ListOpts{})
 	if err != nil {

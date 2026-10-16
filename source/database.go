@@ -117,7 +117,9 @@ func (d *Database) Watch(ctx context.Context, key string, fn WatchFunc) error {
 		d.stopCh = make(chan struct{})
 		d.done = make(chan struct{})
 		d.polling = true
-		go d.pollLoop(ctx)
+		// The loop outlives this call, so it drops the caller's span: the
+		// reads it makes every tick must not land in the caller's trace.
+		go d.pollLoop(telemetry.Detach(ctx))
 	}
 
 	return nil
@@ -160,10 +162,10 @@ func (d *Database) pollLoop(ctx context.Context) {
 // pollOnce checks all watched keys for version changes.
 //
 // The first change a poll finds starts a "notify config watchers" root span,
-// and every watcher it calls gets that span's context. ctx is the first Watch
-// caller's, whose span may have ended long ago, so the span starts its own
-// trace. A poll that finds no change starts no span. The poll counts once:
-// error if any read failed, otherwise changed or unchanged.
+// and every watcher it calls gets that span's context. The loop's ctx carries
+// no span (Watch detaches it), so the reads that find nothing are traced
+// nowhere, and a poll that finds no change starts no span. The poll counts
+// once: error if any read failed, otherwise changed or unchanged.
 func (d *Database) pollOnce(ctx context.Context) {
 	// Snapshot the watched keys.
 	d.mu.RLock()

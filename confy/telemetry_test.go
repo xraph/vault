@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/vault"
 	"github.com/xraph/vault/config"
@@ -78,4 +81,48 @@ func TestPollSpansAndMetrics(t *testing.T) {
 	}
 	telemetrytest.AssertNoLeak(t, rec, leakConfigKey, leakConfigValue, "app1")
 	sink.AssertNoLeak(t, leakConfigKey, leakConfigValue, "app1")
+}
+
+// probeConfigStore reports, for every list, whether the ctx it got carries a
+// valid span: grove would start a db.client span under one.
+type probeConfigStore struct {
+	*memory.Store
+	listed chan bool
+}
+
+func (p probeConfigStore) ListConfig(ctx context.Context, appID string, opts config.ListOpts) ([]*config.Entry, error) {
+	select {
+	case p.listed <- trace.SpanContextFromContext(ctx).IsValid():
+	default:
+	}
+	return p.Store.ListConfig(ctx, appID, opts)
+}
+
+// The watch loop outlives Watch, so its idle polls must not carry the span
+// of whoever called Watch.
+func TestWatchLoopDropsTheCallersSpan(t *testing.T) {
+	store := memory.New()
+	probe := probeConfigStore{Store: store, listed: make(chan bool, 1)}
+	src := vaultconfy.NewVaultConfigSource(probe, nil, "app1", vaultconfy.WithSourcePollInterval(5*time.Millisecond))
+
+	telemetrytest.Spans(t)
+	ctx, caller := telemetry.Start(t.Context(), "start confy")
+	if err := src.Watch(ctx, func(map[string]any) {}); err != nil {
+		t.Fatal(err)
+	}
+	caller.End()
+	defer func() {
+		if err := src.StopWatch(); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	select {
+	case valid := <-probe.listed:
+		if valid {
+			t.Error("an idle poll ran under the Watch caller's span")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watch loop never polled")
+	}
 }

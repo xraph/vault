@@ -52,7 +52,9 @@ Every span is kind `Internal` and carries the instrumentation scope `github.com/
 
 The secret, flag and rotation spans are children of whatever span your context carries, so in a Forge app they sit under the request. A cache hit on a flag gets no span: it's the hot path and nothing runs under it.
 
-`rotate due secrets` and `notify config watchers` always start a new trace. The rotation loop and the pollers run on a context that was handed over once, at start or by the first `Watch` call, and its span finished long ago. A pass or a poll that finds nothing to do starts no span, so an idle loop doesn't leave a trace every tick. Each `rotate secret` in a scheduled pass is a child of that pass, and `source.Database` passes the notify span's context to every `WatchFunc`.
+The rotation loop and the two pollers outlive the call that started them: `rotation.Manager.Start` (which forge runs inside its `start vault` span), or the first `Watch`. Each loop keeps that context's values and cancellation but drops its span. That matters because Grove starts a `db.client` span under any valid parent, even one that ended long ago, so without it every idle tick's policy list or config read would pile into the boot or request trace forever. Now those idle reads belong to no trace at all, and you still see their timing in `db_client_operation_duration_seconds`.
+
+When a tick does find work, it starts `rotate due secrets` or `notify config watchers` as the root of a new trace, and the work happens under it: the claims and each `rotate secret` in a scheduled pass, or every `WatchFunc` that `source.Database` calls, which gets the notify span's context. A pass or a poll that finds nothing starts no span. `source.Database.Watch` still reads the key once on your context, since that read is part of your call.
 
 Vault doesn't treat a missing secret or flag as a failure. The span says `found=false` and keeps an unset status. A real failure sets the status to `Error` with a short description, and adds one `exception` event whose only attribute is `exception.type`:
 

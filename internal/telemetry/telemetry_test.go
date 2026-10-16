@@ -131,3 +131,24 @@ func TestCounterAndHistogramLabels(t *testing.T) {
 		t.Errorf("observations = %d, want 1", got)
 	}
 }
+
+type ctxKey struct{}
+
+func TestDetachDropsOnlyTheSpan(t *testing.T) {
+	telemetrytest.Spans(t)
+	parent, cancel := context.WithCancel(context.WithValue(t.Context(), ctxKey{}, "kept"))
+	ctx, span := telemetry.Start(parent, "start vault")
+	span.End()
+
+	detached := telemetry.Detach(ctx)
+	if trace.SpanContextFromContext(detached).IsValid() {
+		t.Error("Detach kept the span")
+	}
+	if detached.Value(ctxKey{}) != "kept" {
+		t.Error("Detach lost a value")
+	}
+	cancel()
+	if detached.Err() == nil {
+		t.Error("Detach lost the cancellation")
+	}
+}

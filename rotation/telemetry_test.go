@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/vault/internal/telemetry"
 	"github.com/xraph/vault/internal/telemetrytest"
@@ -163,4 +164,49 @@ func TestScheduledPassSpans(t *testing.T) {
 	}
 
 	telemetrytest.AssertNoLeak(t, rec, leakKey, leakValue, leakNewValue)
+}
+
+// probeStore reports, for every policy list, whether the ctx it got carries a
+// valid span: grove would start a db.client span under one.
+type probeStore struct {
+	*memory.Store
+	listed chan bool
+}
+
+func (p probeStore) ListRotationPolicies(ctx context.Context, appID string) ([]*rotation.Policy, error) {
+	select {
+	case p.listed <- trace.SpanContextFromContext(ctx).IsValid():
+	default:
+	}
+	return p.Store.ListRotationPolicies(ctx, appID)
+}
+
+// The loop outlives Start, so its idle list reads must not carry the span of
+// whoever called Start (forge's "start vault" span, or a request's).
+func TestLoopDropsTheCallersSpan(t *testing.T) {
+	s := memory.New()
+	probe := probeStore{Store: s, listed: make(chan bool, 1)}
+	mgr := rotation.NewManager(probe, setupSecretService(t, s),
+		rotation.WithAppID(testApp), rotation.WithCheckInterval(5*time.Millisecond))
+
+	telemetrytest.Spans(t)
+	ctx, boot := telemetry.Start(t.Context(), "start vault")
+	if err := mgr.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	boot.End()
+	defer func() {
+		if err := mgr.Stop(t.Context()); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	select {
+	case valid := <-probe.listed:
+		if valid {
+			t.Error("the loop's policy list ran under the caller's span")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop never listed policies")
+	}
 }

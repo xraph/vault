@@ -41,6 +41,16 @@ func StartRoot(ctx context.Context, name string, opts ...trace.SpanStartOption) 
 	return Start(ctx, name, append(opts, trace.WithNewRoot())...)
 }
 
+// Detach returns ctx without its span, keeping its values and its
+// cancellation. A long-lived loop calls it once on the ctx it was handed:
+// that ctx can carry forge's "start <ext>" span or a request's server span,
+// and grove starts a db.client span under any valid span context, even an
+// ended one. Without Detach every idle tick's query would land in that old
+// trace.
+func Detach(ctx context.Context) context.Context {
+	return trace.ContextWithSpanContext(ctx, trace.SpanContext{})
+}
+
 // Fail marks span as failed. The status description and the exception
 // event's exception.type are both ErrorType(err), never err.Error().
 func Fail(span trace.Span, err error) {

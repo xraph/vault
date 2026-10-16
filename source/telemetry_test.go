@@ -108,3 +108,50 @@ func TestDatabasePollSpansAndMetrics(t *testing.T) {
 	telemetrytest.AssertNoLeak(t, rec, leakConfigKey, leakConfigValue, "app1")
 	sink.AssertNoLeak(t, leakConfigKey, leakConfigValue, "app1")
 }
+
+// probeGetStore reports, for every read, whether the ctx it got carries a
+// valid span: grove would start a db.client span under one.
+type probeGetStore struct {
+	*memory.Store
+	read chan bool
+}
+
+func (p probeGetStore) GetConfig(ctx context.Context, key, appID string) (*config.Entry, error) {
+	select {
+	case p.read <- trace.SpanContextFromContext(ctx).IsValid():
+	default:
+	}
+	return p.Store.GetConfig(ctx, key, appID)
+}
+
+// Watch's own seed read belongs to the caller and keeps its span. The poll
+// loop outlives Watch, so its idle reads must not.
+func TestPollLoopDropsTheCallersSpan(t *testing.T) {
+	mem := memory.New()
+	setConfig(t, mem, "v1")
+	probe := probeGetStore{Store: mem, read: make(chan bool, 1)}
+	db := source.NewDatabase(probe, "app1", source.WithPollInterval(5*time.Millisecond))
+
+	telemetrytest.Spans(t)
+	ctx, caller := telemetry.Start(t.Context(), "start watcher")
+	if err := db.Watch(ctx, leakConfigKey, func(context.Context, string, *source.Value) {}); err != nil {
+		t.Fatal(err)
+	}
+	caller.End()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	for i, want := range []bool{true, false} {
+		select {
+		case valid := <-probe.read:
+			if valid != want {
+				t.Errorf("read %d carried a valid span = %v, want %v (the seed read keeps the caller's span, the loop's must not)", i, valid, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("read %d never happened", i)
+		}
+	}
+}

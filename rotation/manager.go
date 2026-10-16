@@ -186,7 +186,9 @@ func (m *Manager) RotatorKeys() []string {
 }
 
 // Start begins the background rotation check loop. The loop runs until
-// Stop is called or the context is cancelled.
+// Stop is called or the context is cancelled. It keeps ctx's values and
+// cancellation but not its span, so the policy list it reads on every tick
+// never lands in the trace of whoever called Start.
 //
 // Start is idempotent: calling it while a loop is already running is a
 // no-op, because starting a second loop would overwrite the cancel func
@@ -200,7 +202,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		return nil
 	}
 
-	loopCtx, cancel := context.WithCancel(ctx)
+	// The loop outlives the call that started it, so it drops that call's
+	// span: the policy list it reads every tick must not land in that trace.
+	loopCtx, cancel := context.WithCancel(telemetry.Detach(ctx))
 	done := make(chan struct{})
 	m.cancel = cancel
 	m.done = done
