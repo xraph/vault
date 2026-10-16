@@ -8,8 +8,12 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xraph/vault/id"
+	"github.com/xraph/vault/internal/telemetry"
 	"github.com/xraph/vault/scope"
 	"github.com/xraph/vault/secret"
 )
@@ -80,6 +84,14 @@ func WithOnRotate(fn func(ctx context.Context, key, appID string, err error)) Ma
 	return func(m *Manager) { m.onRotate = fn }
 }
 
+// WithMetrics records rotation attempts and their duration on m, by trigger
+// (scheduled or manual) and result. In a Forge app pass app.Metrics(); vault's
+// Forge extension does this for you. A nil m records nothing. No label ever
+// carries a secret key.
+func WithMetrics(m gometrics.Metrics) ManagerOption {
+	return func(mgr *Manager) { mgr.metricsSink = m }
+}
+
 // Manager handles scheduled secret rotation with registered rotator functions.
 type Manager struct {
 	store         Store
@@ -89,6 +101,10 @@ type Manager struct {
 	checkInterval time.Duration
 	claimLease    time.Duration
 	onRotate      func(ctx context.Context, key, appID string, err error)
+
+	metricsSink gometrics.Metrics
+	attempts    *telemetry.Counter
+	duration    *telemetry.Histogram
 
 	mu       sync.RWMutex
 	rotators map[string]Rotator // secretKey → rotator
@@ -115,8 +131,29 @@ func NewManager(store Store, secretSvc *secret.Service, opts ...ManagerOption) *
 	for _, o := range opts {
 		o(m)
 	}
+	m.attempts = telemetry.NewCounter(m.metricsSink, telemetry.MetricRotations,
+		"Rotation attempts by trigger and result.", "trigger", "result")
+	m.duration = telemetry.NewHistogram(m.metricsSink, telemetry.MetricRotationDuration,
+		"Duration of rotation attempts, the rotator included.", telemetry.RotationDurationBuckets,
+		"trigger", "result")
 	return m
 }
+
+// Trigger label values: what started a rotation.
+const (
+	triggerScheduled = "scheduled"
+	triggerManual    = "manual"
+)
+
+// The steps a rotation can fail at. Each is the status of a failed "rotate
+// secret" span, which never carries the error's text: a rotator's error can
+// hold a secret value, and every other one quotes the key.
+const (
+	stepNoRotator = "no rotator registered"
+	stepRead      = "read current secret failed"
+	stepRotator   = "rotator failed"
+	stepStore     = "store new value failed"
+)
 
 // RegisterRotator registers a rotator function for the given secret key.
 //
@@ -204,32 +241,53 @@ func (m *Manager) Stop(_ context.Context) error {
 // app-level policy's schedule for a secret it never touched. The other scope
 // values in ctx (app, user, IP) are kept.
 func (m *Manager) RotateNow(ctx context.Context, secretKey, appID string) error {
+	return m.rotateNow(ctx, secretKey, appID, triggerManual)
+}
+
+// rotateNow is RotateNow with the trigger the metrics and span report. It
+// runs under a "rotate secret" span; the secret reads and writes nest inside.
+func (m *Manager) rotateNow(ctx context.Context, secretKey, appID, trigger string) error {
+	ctx, span := telemetry.Start(ctx, "rotate secret",
+		trace.WithAttributes(attribute.String("vault.rotation.trigger", trigger)))
+	defer span.End()
+	start := time.Now()
+
 	if appID == "" {
 		appID = m.appID
 	}
 	ctx = scope.WithTenantID(ctx, "")
-	err := m.rotate(ctx, secretKey, appID)
+	step, err := m.rotate(ctx, secretKey, appID)
+
+	result := telemetry.ResultOK
+	if err != nil {
+		result = telemetry.ResultError
+		telemetry.FailAs(span, step, err)
+	}
+	m.attempts.Inc(trigger, result)
+	m.duration.Observe(time.Since(start).Seconds(), trigger, result)
+
 	if m.onRotate != nil {
 		m.onRotate(ctx, secretKey, appID, err)
 	}
 	return err
 }
 
-// rotate is RotateNow's body. appID is already resolved.
-func (m *Manager) rotate(ctx context.Context, secretKey, appID string) error {
+// rotate is RotateNow's body. appID is already resolved. On failure it also
+// returns the step that failed, one of the step constants.
+func (m *Manager) rotate(ctx context.Context, secretKey, appID string) (string, error) {
 	// Look up registered rotator.
 	m.mu.RLock()
 	rotator, ok := m.rotators[secretKey]
 	m.mu.RUnlock()
 
 	if !ok {
-		return fmt.Errorf("rotation: no rotator registered for %q", secretKey)
+		return stepNoRotator, fmt.Errorf("rotation: no rotator registered for %q", secretKey)
 	}
 
 	// Get current secret.
 	currentSecret, err := m.secretService.Get(ctx, secretKey, appID)
 	if err != nil {
-		return fmt.Errorf("rotation: get current secret %q: %w", secretKey, err)
+		return stepRead, fmt.Errorf("rotation: get current secret %q: %w", secretKey, err)
 	}
 
 	oldVersion := currentSecret.Version
@@ -239,13 +297,13 @@ func (m *Manager) rotate(ctx context.Context, secretKey, appID string) error {
 	// from the current secret before the rotator runs.
 	currentMeta, err := m.secretService.GetMeta(ctx, secretKey, appID)
 	if err != nil {
-		return fmt.Errorf("rotation: get current secret meta %q: %w", secretKey, err)
+		return stepRead, fmt.Errorf("rotation: get current secret meta %q: %w", secretKey, err)
 	}
 
 	// Invoke the rotator.
 	newValue, err := rotator(ctx, currentSecret.Value)
 	if err != nil {
-		return fmt.Errorf("rotation: rotator failed for %q: %w", secretKey, err)
+		return stepRotator, fmt.Errorf("rotation: rotator failed for %q: %w", secretKey, err)
 	}
 
 	var setOpts []secret.SetOption
@@ -259,7 +317,7 @@ func (m *Manager) rotate(ctx context.Context, secretKey, appID string) error {
 	// Set the new value (auto-versions), carrying expiry and metadata forward.
 	meta, err := m.secretService.Set(ctx, secretKey, newValue, appID, setOpts...)
 	if err != nil {
-		return fmt.Errorf("rotation: set new secret %q: %w", secretKey, err)
+		return stepStore, fmt.Errorf("rotation: set new secret %q: %w", secretKey, err)
 	}
 
 	// Record the rotation.
@@ -281,7 +339,7 @@ func (m *Manager) rotate(ctx context.Context, secretKey, appID string) error {
 	m.updatePolicyTimestamps(ctx, secretKey, appID, now)
 
 	m.logger.Info("rotation: completed", log.String("key", secretKey), log.Int64("old_version", oldVersion), log.Int64("new_version", meta.Version))
-	return nil
+	return "", nil
 }
 
 // loop periodically checks for due rotations. done is the channel Start
@@ -310,6 +368,10 @@ func (m *Manager) loop(ctx context.Context, done chan struct{}) {
 // given due time. A policy another replica has already claimed is skipped
 // without logging. A due policy with no rotator registered here is logged
 // and left unclaimed, so a replica that has one can still take it.
+//
+// A pass that finds something to claim runs under a "rotate due secrets" root
+// span, with one "rotate secret" child per rotation. A pass with nothing due
+// starts no span, so an idle loop doesn't mint a trace every tick.
 func (m *Manager) checkDuePolicies(ctx context.Context) {
 	appID := m.appID
 	if appID == "" {
@@ -323,6 +385,7 @@ func (m *Manager) checkDuePolicies(ctx context.Context) {
 	}
 
 	now := time.Now().UTC()
+	due := make([]*Policy, 0, len(policies))
 	for _, p := range policies {
 		if !p.Enabled {
 			continue
@@ -340,24 +403,44 @@ func (m *Manager) checkDuePolicies(ctx context.Context) {
 				log.Any("error", fmt.Errorf("rotation: no rotator registered for %q", p.SecretKey)))
 			continue
 		}
+		due = append(due, p)
+	}
+	if len(due) == 0 {
+		return
+	}
 
+	ctx, span := telemetry.StartRoot(ctx, "rotate due secrets",
+		trace.WithAttributes(attribute.Int("vault.rotation.due", len(due))))
+	var claimedCount, failed int
+	defer func() {
+		span.SetAttributes(
+			attribute.Int("vault.rotation.claimed", claimedCount),
+			attribute.Int("vault.rotation.failed", failed),
+		)
+		span.End()
+	}()
+
+	for _, p := range due {
 		// RotateNow runs serially, so a now read at the top of the pass may
 		// be well behind by the time a later policy is claimed. The lease
 		// starts from the moment of the claim.
 		claimAt := time.Now().UTC()
-		claimed, err := m.store.ClaimDueRotation(ctx, p.SecretKey, p.AppID, claimAt, claimAt.Add(m.claimLease))
-		if err != nil {
+		claimed, claimErr := m.store.ClaimDueRotation(ctx, p.SecretKey, p.AppID, claimAt, claimAt.Add(m.claimLease))
+		if claimErr != nil {
+			telemetry.FailAs(span, "claim failed", claimErr)
 			m.logger.Error("rotation: claim due policy failed",
-				log.String("key", p.SecretKey), log.Any("error", err))
+				log.String("key", p.SecretKey), log.Any("error", claimErr))
 			continue
 		}
 		if !claimed {
 			continue
 		}
+		claimedCount++
 
-		if err := m.RotateNow(ctx, p.SecretKey, p.AppID); err != nil {
+		if rotErr := m.rotateNow(ctx, p.SecretKey, p.AppID, triggerScheduled); rotErr != nil {
+			failed++
 			m.logger.Error("rotation: scheduled rotation failed",
-				log.String("key", p.SecretKey), log.Any("error", err))
+				log.String("key", p.SecretKey), log.Any("error", rotErr))
 		}
 	}
 }
