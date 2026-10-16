@@ -167,6 +167,12 @@ func (e *Extension) Register(fapp forge.App) error {
 // touch the forge app or logger, so it can be exercised in tests without a
 // live forge.App.
 func (e *Extension) buildVault() (*vault.Vault, error) {
+	// The app's metrics go first, so a vault.WithMetrics passed through
+	// WithVaultOption still wins.
+	if m := e.metrics(); m != nil {
+		e.vaultOpts = append([]vault.Option{vault.WithMetrics(m)}, e.vaultOpts...)
+	}
+
 	// Build vault options from merged config.
 	if e.config.AppID != "" {
 		e.vaultOpts = append(e.vaultOpts, vault.WithAppID(e.config.AppID))
@@ -195,6 +201,15 @@ func (e *Extension) buildVault() (*vault.Vault, error) {
 		return nil, err
 	}
 	return v, nil
+}
+
+// metrics returns the app's metrics, or nil on an extension that was never
+// registered (or built without a BaseExtension, as some tests do).
+func (e *Extension) metrics() forge.Metrics {
+	if e.BaseExtension == nil {
+		return nil
+	}
+	return e.Metrics()
 }
 
 // Start implements [forge.Extension]. It starts the rotation manager's
@@ -325,6 +340,7 @@ func (e *Extension) mountToConfy(fapp forge.App) {
 	// Build source options from config.
 	sourceOpts := []vaultconfy.VaultSourceOption{
 		vaultconfy.WithSourcePollInterval(e.config.SourcePollInterval),
+		vaultconfy.WithSourceMetrics(e.metrics()),
 	}
 	if e.config.ConfyKeyPrefix != "" {
 		sourceOpts = append(sourceOpts, vaultconfy.WithKeyPrefix(e.config.ConfyKeyPrefix))

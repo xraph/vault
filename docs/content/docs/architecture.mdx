@@ -3,7 +3,7 @@ title: Architecture
 description: How Vault's packages fit together.
 ---
 
-Vault is organized as a set of focused Go packages. The root `vault` package defines shared types (entities, config, errors). Six service packages implement the domain logic. Supporting packages provide encryption, identity, scoping, configuration sources, plugins, audit hooks, and metrics. Three store backends implement the same composite interface.
+Vault is organized as a set of focused Go packages. The root `vault` package defines shared types (entities, config, errors). Six service packages implement the domain logic. Supporting packages provide encryption, identity, scoping, configuration sources, plugins and audit hooks. Three store backends implement the same composite interface.
 
 ## Package diagram
 
@@ -21,7 +21,7 @@ Vault is organized as a set of focused Go packages. The root `vault` package def
 │  scope  (context keys)   │    OnInit / OnShutdown                      │
 │  source (config sources) │    SourceProvider                            │
 │  audit_hook (events)     │    EncryptionProvider                       │
-│  metrics (counters)      │    FlagEvaluator                            │
+│  metrics (deprecated)    │    FlagEvaluator                            │
 │                          │    OnSecretAccess / OnConfigChange           │
 │                          │    RotationStrategy                          │
 ├──────────────────────────┴──────────────────────────────────────────────┤
@@ -187,7 +187,7 @@ val, err := chain.Get(ctx, "feature-x")
 | `audit_hook` | `github.com/xraph/vault/audit_hook` | Audit event extension for external systems |
 | `source` | `github.com/xraph/vault/source` | Composable config sources (memory, env, database, chain) |
 | `plugin` | `github.com/xraph/vault/plugin` | Plugin interfaces (8 capabilities) and registry; nothing in Vault calls it yet |
-| `metrics` | `github.com/xraph/vault/metrics` | Counter/Histogram interfaces and collector |
+| `metrics` | `github.com/xraph/vault/metrics` | Deprecated Counter/Histogram interfaces that nothing records through; see [Observability](/docs/subsystems/observability) |
 | `store` | `github.com/xraph/vault/store` | Composite `Store` interface definition |
 | `store/memory` | `github.com/xraph/vault/store/memory` | In-memory store (testing and development) |
 | `store/postgres` | `github.com/xraph/vault/store/postgres` | PostgreSQL store on a `*grove.DB` (pgdriver) |

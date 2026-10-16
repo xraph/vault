@@ -1,6 +1,11 @@
 // Package metrics provides interfaces and a collector for Vault operational metrics.
 // The interfaces are compatible with common metric libraries (Prometheus, etc.)
 // and can be bridged to external systems via the MetricFactory.
+//
+// Deprecated: vault never recorded through Collector, so its instruments
+// always read zero. Pass a go-utils metrics sink with vault.WithMetrics (the
+// Forge extension passes app.Metrics() for you) to get the metrics vault
+// actually records. This package is kept so existing imports still build.
 package metrics
 
 // Counter is a monotonically increasing counter.
