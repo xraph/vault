@@ -2,6 +2,7 @@ package vault
 
 import (
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
 
 	"github.com/xraph/vault/store"
 )
@@ -34,6 +35,17 @@ func WithEncryptionKeyEnv(envVar string) Option {
 func WithLogger(l log.Logger) Option {
 	return func(v *Vault) {
 		v.logger = l
+	}
+}
+
+// WithMetrics records vault's metrics on m: secret operations, encrypt and
+// decrypt calls, flag evaluations, and rotation attempts with their duration.
+// In a Forge app pass app.Metrics(); vault's Forge extension does this for
+// you. A nil m, the default, records nothing. Spans need no option: vault
+// starts them on the global tracer provider, which forge.New installs.
+func WithMetrics(m gometrics.Metrics) Option {
+	return func(v *Vault) {
+		v.metrics = m
 	}
 }
 
