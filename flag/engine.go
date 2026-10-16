@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"time"
 
+	gometrics "github.com/xraph/go-utils/metrics"
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/xraph/vault/core"
+	"github.com/xraph/vault/internal/telemetry"
 	"github.com/xraph/vault/scope"
 )
 
@@ -76,6 +80,14 @@ func WithCacheMaxEntries(n int) EngineOption {
 	return func(e *Engine) { e.cacheMaxEntries = n }
 }
 
+// WithMetrics counts evaluations on m by where the answer came from (the
+// cache or the store) and by result. In a Forge app pass app.Metrics(); vault's
+// Forge extension does this for you. A nil m records nothing. No label ever
+// carries a flag key, a tenant or a user.
+func WithMetrics(m gometrics.Metrics) EngineOption {
+	return func(e *Engine) { e.metricsSink = m }
+}
+
 // Engine evaluates feature flags using definitions, rules, and overrides.
 type Engine struct {
 	store Store
@@ -84,6 +96,9 @@ type Engine struct {
 	cacheEnabled    bool
 	cacheTTL        time.Duration
 	cacheMaxEntries int
+
+	metricsSink gometrics.Metrics
+	evals       *telemetry.Counter
 }
 
 // NewEngine creates a flag evaluation engine.
@@ -95,8 +110,16 @@ func NewEngine(store Store, opts ...EngineOption) *Engine {
 	if e.cacheEnabled {
 		e.cache = newEvaluationCache(e.cacheTTL, e.cacheMaxEntries)
 	}
+	e.evals = telemetry.NewCounter(e.metricsSink, telemetry.MetricFlagEvaluations,
+		"Flag evaluations by where the answer came from and result.", "source", "result")
 	return e
 }
+
+// Source label values for MetricFlagEvaluations.
+const (
+	sourceCache = "cache"
+	sourceStore = "store"
+)
 
 // Evaluate returns the value for a flag key and app ID.
 // Evaluation order: disabled -> tenant override -> rules (by priority) -> default.
@@ -112,6 +135,7 @@ func (e *Engine) Evaluate(ctx context.Context, key, appID string) (any, error) {
 	var gen uint64
 	if e.cache != nil {
 		if val, ok := e.cache.get(key, appID, tenantID, userID); ok {
+			e.evals.Inc(sourceCache, telemetry.ResultOK)
 			return val, nil
 		}
 		gen = e.cache.generation()
@@ -139,7 +163,29 @@ func (e *Engine) EvaluateDetail(ctx context.Context, key, appID string) (Detail,
 
 // evaluate holds the precedence. Both entry points go through it so the
 // explained path and the hot path can never disagree about the order.
-func (e *Engine) evaluate(ctx context.Context, key, appID string, withTrace bool) (Detail, error) {
+//
+// Every call reads the store, so every call gets an "evaluate flag" span, and
+// the store reads nest under it. A cache hit never gets here and costs no
+// span. The span carries the reason and whether the call was explained, never
+// the flag key, the tenant or the user.
+func (e *Engine) evaluate(ctx context.Context, key, appID string, withTrace bool) (d Detail, err error) {
+	ctx, span := telemetry.Start(ctx, "evaluate flag")
+	span.SetAttributes(attribute.Bool("vault.flag.explain", withTrace))
+	defer func() {
+		switch {
+		case err == nil:
+			span.SetAttributes(attribute.Bool("vault.flag.found", true), attribute.String("vault.flag.reason", d.Reason))
+			e.evals.Inc(sourceStore, telemetry.ResultOK)
+		case errors.Is(err, core.ErrFlagNotFound):
+			span.SetAttributes(attribute.Bool("vault.flag.found", false))
+			e.evals.Inc(sourceStore, telemetry.ResultNotFound)
+		default:
+			telemetry.Fail(span, err)
+			e.evals.Inc(sourceStore, telemetry.ResultError)
+		}
+		span.End()
+	}()
+
 	tenantID := contextString(ctx, ContextKeyTenantID)
 	userID := contextString(ctx, ContextKeyUserID)
 
