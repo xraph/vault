@@ -1,322 +1,116 @@
 ---
 title: Observability
-description: Metric instruments for monitoring Vault operations.
+description: The spans and metrics Vault records, and how you turn them on.
 ---
 
-The `metrics` package provides a set of metric interfaces and a pre-built `Collector` with 13 instruments covering all Vault operations. The interfaces are designed to be compatible with popular metric libraries (Prometheus, OpenTelemetry, StatsD) and can be bridged to any backend via the `MetricFactory`.
+In a Forge app you don't have to do anything. Register the extension and Vault's spans go to the tracer provider `forge.New` installs, while its metrics land on `/_/metrics` next to forge's own. Outside Forge you pass a metrics sink yourself, and the spans go to whatever global OpenTelemetry tracer provider your process sets.
 
-## Architecture
+## Turning it on
 
-```
-metrics.MetricFactory (creates named Counter/Histogram instances)
-  └── metrics.Collector (holds all 13 Vault instruments)
+With the Forge extension, the app's metrics are wired in for you. The extension passes `app.Metrics()` to the vault before any `WithVaultOption` options you give it (so a `vault.WithMetrics` of your own still wins), and it hands the same sink to the confy source when `mount_to_confy` is on.
 
-metrics.NoopFactory (no-op implementation for testing/disabled metrics)
-  └── metrics.NewNoopCollector()
-```
-
-The `Collector` is a flat struct with one field per instrument. You pass a `MetricFactory` to `NewCollector` and it creates all instruments with standardized names. Code throughout Vault increments or observes these instruments at the appropriate points.
-
-## Installation
+Using Vault as a library, pass a `github.com/xraph/go-utils/metrics` sink to `vault.New`:
 
 ```go
-import "github.com/xraph/vault/metrics"
-```
-
-## Interfaces
-
-### Counter
-
-A monotonically increasing counter for tracking occurrences.
-
-```go
-type Counter interface {
-    Inc()
-    Add(float64)
-}
-```
-
-| Method | Description |
-|--------|-------------|
-| `Inc()` | Increments by 1 |
-| `Add(float64)` | Adds an arbitrary non-negative value |
-
-### Histogram
-
-Observes a distribution of values (typically latencies or sizes).
-
-```go
-type Histogram interface {
-    Observe(float64)
-}
-```
-
-| Method | Description |
-|--------|-------------|
-| `Observe(float64)` | Records a single observation |
-
-### MetricFactory
-
-Creates named metric instances. Implement this interface to bridge Vault metrics to your preferred monitoring backend.
-
-```go
-type MetricFactory interface {
-    Counter(name string) Counter
-    Histogram(name string) Histogram
-}
-```
-
-## Collector
-
-The `Collector` holds all 13 Vault metric instruments. Each field is initialized by the factory when `NewCollector` is called.
-
-```go
-type Collector struct {
-    SecretAccessed Counter
-    SecretSet      Counter
-    SecretDeleted  Counter
-    SecretRotated  Counter
-    FlagEvaluated  Counter
-    FlagEvalTime   Histogram
-    ConfigRead     Counter
-    ConfigWritten  Counter
-    OverrideRead   Counter
-    AuditRecorded  Counter
-    Encrypted      Counter
-    Decrypted      Counter
-    SourceLatency  Histogram
-}
-```
-
-### Creating a Collector
-
-```go
-func NewCollector(f MetricFactory) *Collector
-```
-
-```go
-collector := metrics.NewCollector(myPrometheusFactory)
-```
-
-### Metric naming table
-
-| Field | Metric name | Type | Description |
-|-------|-------------|------|-------------|
-| `SecretAccessed` | `vault_secret_accessed_total` | Counter | Secret read operations |
-| `SecretSet` | `vault_secret_set_total` | Counter | Secret write operations |
-| `SecretDeleted` | `vault_secret_deleted_total` | Counter | Secret delete operations |
-| `SecretRotated` | `vault_secret_rotated_total` | Counter | Secret rotation completions |
-| `FlagEvaluated` | `vault_flag_evaluated_total` | Counter | Flag evaluation calls |
-| `FlagEvalTime` | `vault_flag_eval_duration_seconds` | Histogram | Flag evaluation latency |
-| `ConfigRead` | `vault_config_read_total` | Counter | Config read operations |
-| `ConfigWritten` | `vault_config_written_total` | Counter | Config write operations |
-| `OverrideRead` | `vault_override_read_total` | Counter | Override resolution reads |
-| `AuditRecorded` | `vault_audit_recorded_total` | Counter | Audit entries recorded |
-| `Encrypted` | `vault_encrypted_total` | Counter | Encryption operations |
-| `Decrypted` | `vault_decrypted_total` | Counter | Decryption operations |
-| `SourceLatency` | `vault_source_latency_seconds` | Histogram | Configuration source read latency |
-
-### Using the Collector
-
-```go
-// After a secret is read.
-collector.SecretAccessed.Inc()
-
-// After a secret is written.
-collector.SecretSet.Inc()
-
-// After a flag evaluation.
-start := time.Now()
-value := flagService.Bool(ctx, "my-flag", false)
-collector.FlagEvaluated.Inc()
-collector.FlagEvalTime.Observe(time.Since(start).Seconds())
-
-// After an encryption operation.
-collector.Encrypted.Inc()
-
-// Observe source read latency.
-start = time.Now()
-val, err := source.Get(ctx, "key")
-collector.SourceLatency.Observe(time.Since(start).Seconds())
-```
-
-## NoopFactory
-
-The `NoopFactory` creates no-op metric instances that silently discard all observations. Use it when metrics collection is disabled or in tests.
-
-```go
-type NoopFactory struct{}
-
-func (NoopFactory) Counter(string) Counter   { return noopCounter{} }
-func (NoopFactory) Histogram(string) Histogram { return noopHistogram{} }
-```
-
-### NewNoopCollector
-
-Convenience function that creates a `Collector` with all no-op instruments.
-
-```go
-func NewNoopCollector() *Collector
-```
-
-```go
-collector := metrics.NewNoopCollector()
-// All operations are silently discarded.
-collector.SecretAccessed.Inc() // no-op
-```
-
-## Prometheus bridge example
-
-Bridge Vault metrics to Prometheus by implementing `MetricFactory`:
-
-```go
-package prommetrics
-
-import (
-    "github.com/prometheus/client_golang/prometheus"
-    "github.com/xraph/vault/metrics"
+v, err := vault.New(
+    vault.WithStore(st),
+    vault.WithEncryptionKey(key),
+    vault.WithMetrics(app.Metrics()), // any go-utils metrics.Metrics
 )
-
-// PrometheusFactory creates Prometheus-backed metric instances.
-type PrometheusFactory struct {
-    registry *prometheus.Registry
-}
-
-// NewPrometheusFactory creates a factory with the given registry.
-func NewPrometheusFactory(reg *prometheus.Registry) *PrometheusFactory {
-    return &PrometheusFactory{registry: reg}
-}
-
-// Counter creates a Prometheus counter.
-func (f *PrometheusFactory) Counter(name string) metrics.Counter {
-    c := prometheus.NewCounter(prometheus.CounterOpts{
-        Name: name,
-        Help: name,
-    })
-    f.registry.MustRegister(c)
-    return &promCounter{counter: c}
-}
-
-// Histogram creates a Prometheus histogram.
-func (f *PrometheusFactory) Histogram(name string) metrics.Histogram {
-    h := prometheus.NewHistogram(prometheus.HistogramOpts{
-        Name:    name,
-        Help:    name,
-        Buckets: prometheus.DefBuckets,
-    })
-    f.registry.MustRegister(h)
-    return &promHistogram{histogram: h}
-}
-
-// promCounter wraps prometheus.Counter to implement metrics.Counter.
-type promCounter struct {
-    counter prometheus.Counter
-}
-
-func (c *promCounter) Inc()            { c.counter.Inc() }
-func (c *promCounter) Add(v float64)   { c.counter.Add(v) }
-
-// promHistogram wraps prometheus.Histogram to implement metrics.Histogram.
-type promHistogram struct {
-    histogram prometheus.Histogram
-}
-
-func (h *promHistogram) Observe(v float64) { h.histogram.Observe(v) }
 ```
 
-Using the Prometheus bridge:
+That one option reaches the secret service, the flag engine and the rotation manager. If you build those yourself, each takes the same sink through its own option:
 
-```go
-package main
+| Option | Records |
+|--------|---------|
+| `vault.WithMetrics(m)` | Everything below that `vault.New` builds |
+| `secret.WithMetrics(m)` | Secret operations, encrypt and decrypt calls |
+| `flag.WithMetrics(m)` | Flag evaluations (an `EngineOption`) |
+| `rotation.WithMetrics(m)` | Rotation attempts and their duration |
+| `confy.WithSourceMetrics(m)` | Polls of the confy config source |
+| `source.WithMetrics(m)` | Polls of `source.Database` |
 
-import (
-    "net/http"
+A nil sink, the default, records nothing. Spans need no option at all.
 
-    "github.com/prometheus/client_golang/prometheus"
-    "github.com/prometheus/client_golang/prometheus/promhttp"
-    "github.com/xraph/vault/metrics"
-)
+Vault doesn't time its own database queries. Grove does that for every driver: a `db.client` span per query and the `db_client_operation_duration_seconds` histogram. A Grove span only starts under an existing parent, so Vault's spans also give the queries behind a secret read, a rotation or a config change something to nest under. Without them, a background rotation's queries would show up in the histogram and nowhere in a trace.
 
-func main() {
-    reg := prometheus.NewRegistry()
-    factory := prommetrics.NewPrometheusFactory(reg)
+## Spans
 
-    // Create the Vault collector with Prometheus backend.
-    collector := metrics.NewCollector(factory)
+Every span is kind `Internal` and carries the instrumentation scope `github.com/xraph/vault`.
 
-    // Use the collector throughout your application.
-    collector.SecretAccessed.Inc()
-    collector.FlagEvalTime.Observe(0.003)
+| Span | Started by | Attributes |
+|------|------------|------------|
+| `get secret` | `secret.Service.Get` | `vault.secret.found` (bool), `vault.secret.encrypted` (bool, when found) |
+| `get secret version` | `secret.Service.GetVersion` | `vault.secret.found`, `vault.secret.encrypted` |
+| `set secret` | `secret.Service.Set` | `vault.secret.encrypted` |
+| `delete secret` | `secret.Service.Delete` | `vault.secret.found` |
+| `backfill version encryption` | `secret.Service.BackfillVersionEncryption`, which the extension runs at start | `vault.backfill.scanned`, `vault.backfill.marked` (ints) |
+| `evaluate flag` | `flag.Engine.Evaluate` on a cache miss, and every `EvaluateDetail` | `vault.flag.explain` (bool), `vault.flag.found` (bool), `vault.flag.reason` (`disabled`, `tenantOverride`, `rule`, `default`) |
+| `rotate secret` | `rotation.Manager.RotateNow` and the scheduled loop | `vault.rotation.trigger` (`scheduled`, `manual`) |
+| `rotate due secrets` | A scheduled pass with at least one due policy this replica can rotate | `vault.rotation.due`, `vault.rotation.claimed`, `vault.rotation.failed` (ints) |
+| `notify config watchers` | A confy source or `source.Database` poll that found a change | `vault.config.source` (`confy`, `database`), `vault.config.changed` (int) |
 
-    // Expose metrics via HTTP.
-    http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-    http.ListenAndServe(":9090", nil)
-}
+The secret, flag and rotation spans are children of whatever span your context carries, so in a Forge app they sit under the request. A cache hit on a flag gets no span: it's the hot path and nothing runs under it.
+
+`rotate due secrets` and `notify config watchers` always start a new trace. The rotation loop and the pollers run on a context that was handed over once, at start or by the first `Watch` call, and its span finished long ago. A pass or a poll that finds nothing to do starts no span, so an idle loop doesn't leave a trace every tick. Each `rotate secret` in a scheduled pass is a child of that pass, and `source.Database` passes the notify span's context to every `WatchFunc`.
+
+Vault doesn't treat a missing secret or flag as a failure. The span says `found=false` and keeps an unset status. A real failure sets the status to `Error` with a short description, and adds one `exception` event whose only attribute is `exception.type`:
+
+| Description | When |
+|-------------|------|
+| `decrypt failed` | A secret row the configured key can't open |
+| `no rotator registered` | `RotateNow` for a key with no rotator |
+| `read current secret failed` | Rotation couldn't read the secret it was rotating |
+| `rotator failed` | Your rotator returned an error |
+| `store new value failed` | Rotation couldn't write the new value |
+| `claim failed` | The scheduled pass couldn't claim a due policy |
+| The error type | Anything else: a Vault sentinel name such as `ErrDecryptionFailed`, or the Go type of the innermost error |
+
+`exception.type` is always the sentinel name or the Go type.
+
+## Metrics
+
+Forge scrapes every metric with its namespace prefix, so `vault_flags_evaluated_total` appears as `forge_vault_flags_evaluated_total`. Outside Forge the name is whatever your sink makes of the bare one.
+
+| Scraped name | Type | Labels |
+|--------------|------|--------|
+| `forge_vault_secret_operations_attempted_total` | Counter | `op` (`get`, `get_version`, `set`, `delete`), `result` (`ok`, `not_found`, `error`) |
+| `forge_vault_crypto_operations_attempted_total` | Counter | `op` (`encrypt`, `decrypt`), `result` (`ok`, `error`) |
+| `forge_vault_flags_evaluated_total` | Counter | `source` (`cache`, `store`), `result` (`ok`, `not_found`, `error`) |
+| `forge_vault_rotations_attempted_total` | Counter | `trigger` (`scheduled`, `manual`), `result` (`ok`, `error`) |
+| `forge_vault_rotation_duration_seconds` | Histogram | `trigger` (`scheduled`, `manual`), `result` (`ok`, `error`) |
+| `forge_vault_config_sources_polled_total` | Counter | `source` (`confy`, `database`), `result` (`changed`, `unchanged`, `error`) |
+
+The crypto counter covers the encrypt and decrypt calls the secret service makes on reads and writes. The backfill's trial decrypts stay out of it, since a row the key can't open is how the backfill tells plaintext from ciphertext.
+
+The rotation histogram measures the whole attempt, your rotator included, with buckets at 5ms, 10ms, 50ms, 100ms, 500ms, 1s, 5s, 10s, 30s, 60s and 300s. The top one matches the five-minute claim lease a scheduled rotation has to finish inside.
+
+A config source poll counts once. For `source.Database`, which reads each watched key on its own, `error` means at least one read failed on that tick.
+
+A few queries to start from:
+
+```text
+# Share of flag evaluations the cache answered
+sum(rate(forge_vault_flags_evaluated_total{source="cache"}[5m]))
+  / sum(rate(forge_vault_flags_evaluated_total[5m]))
+
+# Rows the configured key can't decrypt (a key mismatch or tampered data)
+sum(rate(forge_vault_crypto_operations_attempted_total{op="decrypt", result="error"}[5m]))
+
+# p95 rotation time, by trigger
+histogram_quantile(0.95,
+  sum by (le, trigger) (rate(forge_vault_rotation_duration_seconds_bucket[1h])))
+
+# Config polls that failed
+sum by (source) (increase(forge_vault_config_sources_polled_total{result="error"}[15m]))
 ```
 
-## Custom backend example
+## What never leaves Vault
 
-Implement `MetricFactory` for any backend (StatsD, Datadog, OpenTelemetry, etc.):
+None of these go on a span, an event, a status or a metric label: secret values, plaintext or ciphertext, key material, secret names, flag keys, config keys and values, app, tenant and user IDs, IP addresses, and error text. Secret names are on the list because they leak the shape of what you store. Error text is on it because store errors quote the key, and a rotator's error can quote the value it was rotating.
 
-```go
-type StatsDFactory struct {
-    client *statsd.Client
-}
+Logs are a different matter. The rotation manager and the audit logger write secret keys into their log lines. The Forge extension doesn't pass `e.Logger()` to the vault, so in a Forge app those lines go nowhere, but if you pass `vault.WithLogger` yourself, treat that log stream as sensitive.
 
-func (f *StatsDFactory) Counter(name string) metrics.Counter {
-    return &statsdCounter{client: f.client, name: name}
-}
+## The metrics package
 
-func (f *StatsDFactory) Histogram(name string) metrics.Histogram {
-    return &statsdHistogram{client: f.client, name: name}
-}
-
-type statsdCounter struct {
-    client *statsd.Client
-    name   string
-}
-
-func (c *statsdCounter) Inc()          { c.client.Incr(c.name, nil, 1) }
-func (c *statsdCounter) Add(v float64) { c.client.Count(c.name, int64(v), nil, 1) }
-
-type statsdHistogram struct {
-    client *statsd.Client
-    name   string
-}
-
-func (h *statsdHistogram) Observe(v float64) {
-    h.client.Histogram(h.name, v, nil, 1)
-}
-```
-
-## Full example
-
-```go
-package main
-
-import (
-    "fmt"
-    "time"
-
-    "github.com/xraph/vault/metrics"
-)
-
-func main() {
-    // For production: use a real factory (Prometheus, StatsD, etc.).
-    // For development/testing: use the no-op collector.
-    collector := metrics.NewNoopCollector()
-
-    // Simulate operations.
-    collector.SecretAccessed.Inc()
-    collector.SecretSet.Inc()
-    collector.SecretSet.Inc()
-    collector.FlagEvaluated.Add(100)
-
-    // Track latency.
-    start := time.Now()
-    time.Sleep(5 * time.Millisecond) // simulate work
-    collector.FlagEvalTime.Observe(time.Since(start).Seconds())
-
-    fmt.Println("Metrics recorded (no-op in this example)")
-}
-```
+`github.com/xraph/vault/metrics` is deprecated. It defines a `Collector` of thirteen counters and histograms, but nothing in Vault ever recorded through it, so they always read zero. It stays so existing imports keep building. Use `vault.WithMetrics`.

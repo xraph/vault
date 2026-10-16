@@ -63,6 +63,7 @@ src := vaultconfy.NewVaultConfigSource(v.Store(), v.Secrets(), "myapp",
 | `WithKeyPrefix` | `WithKeyPrefix(prefix string)` | Prepends a prefix to vault keys in confy. |
 | `WithKeys` | `WithKeys(keys ...string)` | Whitelist of specific vault keys to mount. |
 | `WithKeyPatterns` | `WithKeyPatterns(patterns ...string)` | Glob patterns to filter vault keys. |
+| `WithSourceMetrics` | `WithSourceMetrics(m metrics.Metrics)` | Counts watch polls by result on a go-utils sink. The Forge extension passes `app.Metrics()`. |
 
 ### Selective mounting
 

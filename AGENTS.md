@@ -59,13 +59,15 @@ Shared conformance tests live in `internal/storetest` (`RunSecretExpiry`, `RunVe
 | `crypto/` | AES-256-GCM encryptor and the encryption key providers, including the env var one |
 | `source/` | Config sources (memory, env, database) and a priority chain |
 | `plugin/` | Plugin base interface, the optional capability interfaces, and the registry |
-| `metrics/` | Metric interfaces and a no-op implementation |
+| `metrics/` | Deprecated metric interfaces nothing records through. Real metrics go through `vault.WithMetrics` |
 | `confy/` | Adapter that exposes vault as a confy config source and secret provider |
 | `audit_hook/` | Forwards audit events to an external `Recorder` |
 | `store/` | `store.Store`, the composite interface, plus the `memory`, `postgres`, `sqlite` and `mongo` backends |
 | `extension/` | The Forge extension, its options and YAML config |
 | `extension/contract/` | Dashboard contract contributor: the embedded `manifest.yaml` and the intent handlers |
 | `internal/storetest/` | Shared store conformance tests |
+| `internal/telemetry/` | Span helpers, metric names and label vectors over a go-utils sink. Every span and metric vault records goes through it |
+| `internal/telemetrytest/` | Span recorder, fake metrics sink and leak assertions for tests |
 | `docs/` | Fumadocs site (Next.js, pnpm) |
 
 `MIGRATION.md` records, page by page, how the dashboard moved from templ to the React shell. `api/`, `encryption/`, `middleware/`, `telemetry/` and `_examples/` exist on disk but hold no tracked files.
@@ -81,6 +83,8 @@ IDs come from `id.New(prefix)` or the typed constructors like `id.NewSecretID()`
 Every backend implements `store.Store`, which embeds each subsystem's `Store` interface plus `Migrate`, `Ping` and `Close`. A new store method goes into the subsystem interface first, then into all four backends. The Postgres, SQLite and Mongo stores are built on grove with `New(db *grove.DB, opts ...StoreOption)`, and each keeps its migrations in a `migrate.NewGroup("vault")` group in its own `migrations.go`. Append a new migration with the next `Version` and leave shipped ones alone. The SQLite store leaves the migration executor to the caller, so you import `github.com/xraph/grove/drivers/sqlitedriver/sqlitemigrate` for its side effect (the SQLite tests show how).
 
 Options are functional: `type Option func(*Vault)` on the root, `type Option func(*Extension)` on the extension, `StoreOption` on the stores. `vault.WithConfig` overlays only non-zero fields, so it combines with the other options in any order.
+
+Telemetry goes through `internal/telemetry`. Spans use the global tracer provider under the scope `github.com/xraph/vault`, and metrics go to the go-utils sink a package's `WithMetrics` option receives (nil records nothing). Background work starts its spans with `telemetry.StartRoot` and only when there's work. Nothing that names a secret, flag or config key, a value, a tenant or a user goes on a span or a label, and error text never goes on a span: mark failures with `telemetry.Fail` or `FailAs`. `docs/content/docs/subsystems/observability.mdx` lists every span and metric, so change it with them.
 
 Logging goes through `github.com/xraph/go-utils/log`. The default is `log.NewNoopLogger()` and you pass a real one with `WithLogger`. Inside the extension you log with `e.Logger()` and `forge.F` fields.
 
