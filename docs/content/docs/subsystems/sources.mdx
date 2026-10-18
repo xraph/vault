@@ -219,6 +219,7 @@ db := source.NewDatabase(configStore, "myapp")
 | Option | Signature | Description |
 |--------|-----------|-------------|
 | `WithPollInterval` | `WithPollInterval(d time.Duration) DatabaseOption` | Sets the polling interval for watch. Default is 30 seconds. |
+| `WithMetrics` | `WithMetrics(m metrics.Metrics) DatabaseOption` | Counts watch polls (changed, unchanged, error) on a go-utils sink. Nil, the default, records nothing. |
 
 ```go
 db := source.NewDatabase(configStore, "myapp",

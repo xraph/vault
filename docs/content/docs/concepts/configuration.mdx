@@ -79,6 +79,7 @@ type Option func(*Vault)
 | `WithEncryptionKey` | `WithEncryptionKey(key []byte) Option` | Sets the 32-byte AES-256-GCM master encryption key. |
 | `WithEncryptionKeyEnv` | `WithEncryptionKeyEnv(envVar string) Option` | Sets the environment variable name for the encryption key. |
 | `WithLogger` | `WithLogger(l log.Logger) Option` | Sets the structured logger (`github.com/xraph/go-utils/log`) for internal events. |
+| `WithMetrics` | `WithMetrics(m metrics.Metrics) Option` | Records Vault's metrics on a `github.com/xraph/go-utils/metrics` sink. Nil, the default, records nothing. See [Observability](/docs/subsystems/observability). |
 | `WithConfig` | `WithConfig(cfg Config) Option` | Overlays `cfg` onto the current configuration. Non-zero fields override; zero fields leave what earlier options set. |
 
 ### Usage

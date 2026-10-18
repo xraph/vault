@@ -199,6 +199,12 @@ The extension looks for a store in this order: `WithStore`, then the database na
 
 One thing to know before you deploy. The extension doesn't run migrations, so `disable_migrate` currently has no effect, and on a fresh PostgreSQL or SQLite database the tables Vault reads and writes don't exist until something calls `Migrate`. Create the tables yourself first: build the store, call `Migrate(ctx)`, and pass it in with `WithStore`. It also mounts no HTTP routes, which makes `base_path` and `disable_routes` no-ops too. The Forge dashboard reads Vault through a contract contributor instead; [MIGRATION.md](MIGRATION.md) describes the React plugin and what moved from the old templ pages.
 
+## Traces and metrics
+
+Under Forge you get both for free. Secret reads and writes, rotations and store-backed flag evaluations each get a span under the request that caused them, and the counters scrape from `/_/metrics` as `forge_vault_*`: secret operations, encrypt and decrypt calls, flag evaluations by cache or store, rotation attempts with a duration histogram, and config source polls. Outside Forge, pass a `github.com/xraph/go-utils/metrics` sink with `vault.WithMetrics`.
+
+No span or label ever carries a secret value, a secret name, a flag key or a tenant. The [observability docs](https://www.xraph.com/docs/vault/subsystems/observability) list every span, attribute, metric and label value.
+
 ## Configuration
 
 ```yaml

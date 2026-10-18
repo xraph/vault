@@ -6,6 +6,7 @@ import (
 	"time"
 
 	log "github.com/xraph/go-utils/log"
+	gometrics "github.com/xraph/go-utils/metrics"
 
 	"github.com/xraph/vault/audit"
 	audithook "github.com/xraph/vault/audit_hook"
@@ -24,9 +25,10 @@ import (
 // services, wires the audit logger into secret mutations, and hands the
 // whole thing out through accessors.
 type Vault struct {
-	config Config
-	logger log.Logger
-	store  store.Store
+	config  Config
+	logger  log.Logger
+	metrics gometrics.Metrics
+	store   store.Store
 
 	encryptor *crypto.Encryptor
 
@@ -80,6 +82,7 @@ func New(opts ...Option) (*Vault, error) {
 
 	v.secrets = secret.NewService(v.store, v.encryptor,
 		secret.WithAppID(v.config.AppID),
+		secret.WithMetrics(v.metrics),
 		secret.WithOnAccess(func(ctx context.Context, key, appID string) {
 			v.auditLog.LogAccess(scope.WithAppID(ctx, appID), key, "secret.get", "secret")
 		}),
@@ -88,7 +91,7 @@ func New(opts ...Option) (*Vault, error) {
 		}),
 	)
 
-	v.engine = flag.NewEngine(v.store, flag.WithCacheTTL(v.config.FlagCacheTTL))
+	v.engine = flag.NewEngine(v.store, flag.WithCacheTTL(v.config.FlagCacheTTL), flag.WithMetrics(v.metrics))
 	v.flags = flag.NewService(v.engine, flag.WithAppID(v.config.AppID))
 	v.flagMgr = flag.NewManager(v.store, v.engine,
 		flag.WithManagerAppID(v.config.AppID),
@@ -127,6 +130,7 @@ func New(opts ...Option) (*Vault, error) {
 	v.rotation = rotation.NewManager(v.store, v.secrets,
 		rotation.WithAppID(v.config.AppID),
 		rotation.WithLogger(v.logger),
+		rotation.WithMetrics(v.metrics),
 		// Every attempt leaves a row, so a failing rotation is something an
 		// operator can find by filtering on outcome.
 		rotation.WithOnRotate(func(ctx context.Context, key, appID string, err error) {

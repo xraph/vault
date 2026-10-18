@@ -234,6 +234,12 @@ dbHost := app.Config().GetString("vault.db.host", "localhost")
 
 See the [Confy Integration](/docs/guides/confy-integration) guide for details.
 
+## Traces and metrics
+
+You get both without configuring anything. Vault's spans (`get secret`, `set secret`, `rotate secret`, `evaluate flag` and the rest) go to the tracer provider `forge.New` installs, nested under the request that caused them, and the extension passes `app.Metrics()` to the vault so its counters scrape from `/_/metrics` as `forge_vault_*`. The rotation loop and the confy poller start their own root spans, and only when they actually do something.
+
+Grove already times every query the stores make, so you'll see `db.client` spans under Vault's. The [Observability](/docs/subsystems/observability) page lists every span, attribute, metric and label value. None of them carries a secret value, a secret name, a flag key or a tenant.
+
 ## Dashboard
 
 The extension registers a `vault` contract contributor with the Forge dashboard, and the React shell reads it through `@forge-go/dashboard-plugin-vault`. Add the plugin to your shell and you get overview, secrets, rotation, flags, config, overrides and audit pages. Nothing needs configuring on the Vault side.

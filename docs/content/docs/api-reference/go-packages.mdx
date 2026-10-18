@@ -22,7 +22,7 @@ All Vault packages are importable from the module `github.com/xraph/vault`. This
 | `scope` | `github.com/xraph/vault/scope` | `ContextKey` | `WithAppID()`, `WithTenantID()`, `WithUserID()`, `WithIP()`, `WithScope()`, `FromContext()` | Context-based request scoping |
 | `source` | `github.com/xraph/vault/source` | `Source`, `Value`, `WatchFunc` | (interface package) | Composable configuration source system |
 | `plugin` | `github.com/xraph/vault/plugin` | `Plugin`, `Registry`, `OnInit`, `OnShutdown`, `SourceProvider`, `EncryptionProvider`, `FlagEvaluator`, `OnSecretAccess`, `OnConfigChange`, `RotationStrategy` | `NewRegistry()`, `Registry.Register()` | Plugin system with capability discovery |
-| `metrics` | `github.com/xraph/vault/metrics` | `Collector`, `Counter`, `Histogram`, `MetricFactory`, `NoopFactory` | `NewCollector()`, `NewNoopCollector()` | Operational metrics interfaces and collector |
+| `metrics` | `github.com/xraph/vault/metrics` | `Collector`, `Counter`, `Histogram`, `MetricFactory`, `NoopFactory` | `NewCollector()`, `NewNoopCollector()` | Deprecated: never recorded anything. Use `vault.WithMetrics` |
 | `store` | `github.com/xraph/vault/store` | `Store` | (interface package) | Composite store interface definition |
 | `store/memory` | `github.com/xraph/vault/store/memory` | `Store` | `New()` | In-memory store for development and testing |
 | `store/postgres` | `github.com/xraph/vault/store/postgres` | `Store`, `StoreOption` | `New()`, `WithLogger()` | PostgreSQL backend on a `*grove.DB` |
@@ -57,6 +57,20 @@ type Config struct {
 }
 
 func DefaultConfig() Config
+```
+
+### Options
+
+`New(opts ...Option) (*Vault, error)` takes these.
+
+```go
+func WithStore(s store.Store) Option
+func WithAppID(appID string) Option
+func WithEncryptionKey(key []byte) Option
+func WithEncryptionKeyEnv(envVar string) Option
+func WithLogger(l log.Logger) Option
+func WithMetrics(m metrics.Metrics) Option // github.com/xraph/go-utils/metrics; nil records nothing
+func WithConfig(cfg Config) Option
 ```
 
 ### Sentinel errors
@@ -130,6 +144,7 @@ func NewService(store Store, encryptor *crypto.Encryptor, opts ...ServiceOption)
 func WithAppID(appID string) ServiceOption
 func WithOnAccess(fn OnAccessFunc) ServiceOption
 func WithOnMutate(fn OnMutateFunc) ServiceOption
+func WithMetrics(m metrics.Metrics) ServiceOption // go-utils sink; nil records nothing
 
 func (s *Service) Get(ctx, key, appID string) (*Secret, error)
 func (s *Service) GetMeta(ctx, key, appID string) (*Meta, error)
@@ -217,6 +232,8 @@ func (r *Rule) Return(value any) *Rule
 ```go
 func NewEngine(store Store, opts ...EngineOption) *Engine
 func WithCacheTTL(ttl time.Duration) EngineOption
+func WithCacheMaxEntries(n int) EngineOption
+func WithMetrics(m metrics.Metrics) EngineOption // go-utils sink; nil records nothing
 
 func (e *Engine) Evaluate(ctx, key, appID string) (any, error)
 ```
@@ -357,6 +374,9 @@ func NewManager(store Store, secretSvc *secret.Service, opts ...ManagerOption) *
 func WithCheckInterval(d time.Duration) ManagerOption   // default: 1 minute
 func WithLogger(l log.Logger) ManagerOption
 func WithAppID(appID string) ManagerOption
+func WithClaimLease(d time.Duration) ManagerOption // default: 5 minutes
+func WithOnRotate(fn func(ctx context.Context, key, appID string, err error)) ManagerOption
+func WithMetrics(m metrics.Metrics) ManagerOption // go-utils sink; nil records nothing
 
 func (m *Manager) RegisterRotator(secretKey string, r Rotator)
 func (m *Manager) Start(ctx context.Context) error
@@ -551,6 +571,10 @@ type Source interface {
     Watch(ctx context.Context, key string, fn WatchFunc) error
     Close() error
 }
+
+func NewDatabase(store config.Store, appID string, opts ...DatabaseOption) *Database
+func WithPollInterval(d time.Duration) DatabaseOption // default: 30 seconds
+func WithMetrics(m metrics.Metrics) DatabaseOption    // go-utils sink; counts watch polls
 ```
 
 ## plugin
@@ -597,6 +621,8 @@ func (r *Registry) RotationStrategyByName(name string) RotationStrategy
 ```
 
 ## metrics
+
+Deprecated. Nothing in Vault ever recorded through `Collector`, so its instruments always read zero. The package stays so existing imports keep building. For the metrics Vault does record, pass a go-utils sink with `vault.WithMetrics`; the [observability page](/docs/subsystems/observability) lists them.
 
 ```go
 type Counter interface {
