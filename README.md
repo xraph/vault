@@ -309,6 +309,6 @@ A plain test run covers the memory and SQLite stores. The PostgreSQL tests need 
 
 ## License
 
-See the [Vault repository](https://github.com/xraph/vault) for license terms.
+MIT. See [LICENSE](LICENSE).
 
 Vault is part of the [Forge](https://github.com/xraph/forge) forgery stack, built by [Rex Raphael](https://github.com/juicycleff) and [contributors](https://github.com/xraph/vault/graphs/contributors).
