@@ -66,6 +66,8 @@ func TestCommandInvalidatesReachTheClient(t *testing.T) {
 			body := `{"envelope":"v1","kind":"command","contributor":"vault","intent":"` + tt.intent + `",` +
 				`"csrf":"test","idempotencyKey":"test","payload":` + tt.payload + `}`
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/dashboard/v1", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
 			rec := httptest.NewRecorder()
 			transport.NewHandler(reg, wreg, d, nil).ServeHTTP(rec, req)
 
